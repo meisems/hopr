@@ -311,10 +311,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           {/* Logo text */}
           <div className="text-center">
             <h1 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-purple-400 bg-clip-text text-transparent">
-              OmniSwap
+              Hopr
             </h1>
             <p className="text-xs sm:text-base text-gray-400 mt-1 tracking-widest uppercase">
-              Cross-Chain Trading
+              Hop Across Chains
             </p>
           </div>
         </div>

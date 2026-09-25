@@ -1,4 +1,4 @@
-# OmniSwap – Cross-Chain Trading Dashboard
+# Hopr – Hop Across Chains
 
 A high-speed, cross-chain trading system with a **Telegram Bot** and **Web Dashboard** that enables one-tap buys/sells across 6 blockchains with automatic chain detection.
 
@@ -56,7 +56,7 @@ npm install
 npm run build
 
 # Deploy to Pages
-npx wrangler pages deploy dist --project-name=omniswap
+npx wrangler pages deploy dist --project-name=hopr
 ```
 
 ### Backend (Cloudflare Workers)
@@ -65,7 +65,7 @@ npx wrangler pages deploy dist --project-name=omniswap
 npx wrangler deploy
 
 # Create D1 database
-npx wrangler d1 create omniswap-db
+npx wrangler d1 create hopr-db
 
 # Create KV namespace
 npx wrangler kv:namespace create CACHE

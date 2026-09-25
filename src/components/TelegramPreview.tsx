@@ -36,7 +36,7 @@ export default function TelegramPreview() {
   }, [showProgress, currentStep]);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText('@OmniSwapBot');
+    navigator.clipboard.writeText('@HoprBot');
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -50,7 +50,7 @@ export default function TelegramPreview() {
             <Bot className="w-4 h-4 text-white" />
           </div>
           <div>
-            <div className="text-sm font-semibold text-white">@OmniSwapBot</div>
+            <div className="text-sm font-semibold text-white">@HoprBot</div>
             <div className="text-[10px] text-green-400">online</div>
           </div>
         </div>

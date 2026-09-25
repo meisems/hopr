@@ -1,4 +1,4 @@
-name = "omniswap"
+name = "hopr"
 compatibility_date = "2024-01-01"
 main = "workers/index.ts"
 
@@ -6,10 +6,10 @@ main = "workers/index.ts"
 bucket = "./dist"
 
 [env.production]
-route = "omniswap.pages.dev/*"
+route = "hopr.pages.dev/*"
 
 [env.staging]
-route = "staging.omniswap.pages.dev/*"
+route = "staging.hopr.pages.dev/*"
 
 # Variables
 [vars]
@@ -18,7 +18,7 @@ ENVIRONMENT = "production"
 # D1 Database (for user data, trades, wallets)
 # [[d1_databases]]
 # binding = "DB"
-# database_name = "omniswap-db"
+# database_name = "hopr-db"
 # database_id = "your-database-id"
 
 # KV Namespace (for caching chain detection results)

@@ -1,5 +1,5 @@
 /**
- * OmniSwap Cloudflare Worker
+ * Hopr Cloudflare Worker
  * 
  * Handles API routes for:
  * - Chain detection (POST /api/detect)

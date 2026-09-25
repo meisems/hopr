@@ -1,4 +1,4 @@
-# OmniSwap Icon & Logo Implementation
+# Hopr Icon & Logo Implementation
 
 ## Overview
 Replaced all emoji usage with Lucide React icons and implemented real SVG chain logos for all 6 supported blockchains.
