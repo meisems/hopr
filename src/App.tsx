@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ChartPanel from './components/ChartPanel';
@@ -8,15 +8,28 @@ import PositionsTable from './components/PositionsTable';
 import WalletPanel from './components/WalletPanel';
 import SettingsModal from './components/SettingsModal';
 import TelegramPreview from './components/TelegramPreview';
+import SplashScreen from './components/SplashScreen';
 import { DetectedToken } from './services/chainDetector';
 
 function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  const handleSplashComplete = () => {
+    setShowSplash(false);
+  };
+
   return (
-    <div className="min-h-screen bg-[#0a0b0f] text-white">
+    <>
+      {/* Splash Screen */}
+      <AnimatePresence>
+        {showSplash && <SplashScreen onComplete={handleSplashComplete} />}
+      </AnimatePresence>
+
+      {/* Main App */}
+      <div className={`min-h-screen bg-[#0a0b0f] text-white transition-opacity duration-700 ${showSplash ? 'opacity-0' : 'opacity-100'}`}>
       {/* Background gradient */}
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-600/5 rounded-full blur-3xl" />
@@ -239,6 +252,7 @@ function App() {
       {/* Settings Modal */}
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+    </>
   );
 }
 

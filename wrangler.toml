@@ -1,0 +1,27 @@
+name = "omniswap"
+compatibility_date = "2024-01-01"
+main = "workers/index.ts"
+
+[site]
+bucket = "./dist"
+
+[env.production]
+route = "omniswap.pages.dev/*"
+
+[env.staging]
+route = "staging.omniswap.pages.dev/*"
+
+# Variables
+[vars]
+ENVIRONMENT = "production"
+
+# D1 Database (for user data, trades, wallets)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "omniswap-db"
+# database_id = "your-database-id"
+
+# KV Namespace (for caching chain detection results)
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "your-kv-namespace-id"
