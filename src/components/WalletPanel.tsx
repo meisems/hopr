@@ -2,7 +2,20 @@ import { useState } from 'react';
 import { Wallet, ChevronDown, ChevronUp, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { mockWalletBalances } from '../data/mockData';
 import { formatUsd } from '../services/chainDetector';
+import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
+
+function getChainKey(chainId: number): string {
+  const map: Record<number, string> = {
+    1151111081099710: 'sol',
+    42161: 'arb',
+    8453: 'base',
+    56: 'bsc',
+    4663: 'rhc',
+    5042: 'arc',
+  };
+  return map[chainId] || 'sol';
+}
 
 export default function WalletPanel() {
   const [expanded, setExpanded] = useState(false);
@@ -89,23 +102,24 @@ export default function WalletPanel() {
               className="overflow-hidden"
             >
               <div className="space-y-2 pb-2">
-                {mockWalletBalances.map((balance) => (
-                  <div key={balance.chainId} className="flex items-center justify-between py-2 px-3 bg-gray-800/30 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs" style={{ backgroundColor: balance.chainColor + '22', color: balance.chainColor }}>
-                        {balance.nativeSymbol.slice(0, 1)}
+                {mockWalletBalances.map((balance) => {
+                  const chainKey = getChainKey(balance.chainId);
+                  return (
+                    <div key={balance.chainId} className="flex items-center justify-between py-2 px-3 bg-gray-800/30 rounded-xl">
+                      <div className="flex items-center gap-2">
+                        <ChainLogo chainKey={chainKey} size={24} />
+                        <div>
+                          <div className="text-xs font-medium text-white">{balance.chainName}</div>
+                          <div className="text-xs text-gray-500">{balance.balance.toFixed(4)} {balance.nativeSymbol}</div>
+                        </div>
                       </div>
-                      <div>
-                        <div className="text-xs font-medium text-white">{balance.chainName}</div>
-                        <div className="text-xs text-gray-500">{balance.balance.toFixed(4)} {balance.nativeSymbol}</div>
+                      <div className="text-right">
+                        <div className="text-xs font-medium text-white">{formatUsd(balance.usdValue)}</div>
+                        <div className="text-xs text-gray-500">{((balance.usdValue / totalBalance) * 100).toFixed(1)}%</div>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-xs font-medium text-white">{formatUsd(balance.usdValue)}</div>
-                      <div className="text-xs text-gray-500">{((balance.usdValue / totalBalance) * 100).toFixed(1)}%</div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </motion.div>
           )}

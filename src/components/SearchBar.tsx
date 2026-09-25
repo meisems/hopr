@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, Loader2, X, Zap } from 'lucide-react';
+import { Search, Loader2, X, Zap, Coins } from 'lucide-react';
 import { detectChain, DetectedToken, formatAddress } from '../services/chainDetector';
+import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface SearchBarProps {
@@ -13,6 +14,18 @@ const QUICK_TOKENS = [
   { label: 'ARC', address: '0xabcdef1234567890abcdef1234567890abcdef12' },
   { label: 'BONK', address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' },
 ];
+
+function getChainKey(chainId: number): string {
+  const map: Record<number, string> = {
+    1151111081099710: 'sol',
+    42161: 'arb',
+    8453: 'base',
+    56: 'bsc',
+    4663: 'rhc',
+    5042: 'arc',
+  };
+  return map[chainId] || 'sol';
+}
 
 export default function SearchBar({ onTokenDetected }: SearchBarProps) {
   const [query, setQuery] = useState('');
@@ -132,8 +145,8 @@ export default function SearchBar({ onTokenDetected }: SearchBarProps) {
           >
             {detected ? (
               <div className="flex items-center gap-4 p-4 bg-gray-900/60 border border-gray-700/30 rounded-2xl">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: detected.chainColor + '22', color: detected.chainColor }}>
-                  {detected.symbol.slice(0, 2)}
+                <div className="w-10 h-10 rounded-full flex items-center justify-center">
+                  <ChainLogo chainKey={getChainKey(detected.chainId)} size={36} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">

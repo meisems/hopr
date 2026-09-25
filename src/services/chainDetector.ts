@@ -9,16 +9,15 @@ export interface ChainInfo {
   nativeToken: string;
   nativeSymbol: string;
   color: string;
-  icon: string;
 }
 
 export const SUPPORTED_CHAINS: ChainInfo[] = [
-  { id: 1151111081099710, name: 'Solana', key: 'sol', type: 'SVM', nativeToken: 'SOL', nativeSymbol: 'SOL', color: '#9945FF', icon: '◎' },
-  { id: 42161, name: 'Arbitrum One', key: 'arb', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#28A0F0', icon: '⟟' },
-  { id: 8453, name: 'Base', key: 'base', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#0052FF', icon: '⬡' },
-  { id: 56, name: 'BNB Chain', key: 'bsc', type: 'EVM', nativeToken: 'BNB', nativeSymbol: 'BNB', color: '#F0B90B', icon: '◆' },
-  { id: 4663, name: 'Robinhood Chain', key: 'rhc', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#00C853', icon: '⬢' },
-  { id: 5042, name: 'Arc Chain', key: 'arc', type: 'EVM', nativeToken: 'USDC', nativeSymbol: 'USDC', color: '#FF6D00', icon: '◈' },
+  { id: 1151111081099710, name: 'Solana', key: 'sol', type: 'SVM', nativeToken: 'SOL', nativeSymbol: 'SOL', color: '#9945FF' },
+  { id: 42161, name: 'Arbitrum One', key: 'arb', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#28A0F0' },
+  { id: 8453, name: 'Base', key: 'base', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#0052FF' },
+  { id: 56, name: 'BNB Chain', key: 'bsc', type: 'EVM', nativeToken: 'BNB', nativeSymbol: 'BNB', color: '#F0B90B' },
+  { id: 4663, name: 'Robinhood Chain', key: 'rhc', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#00C853' },
+  { id: 5042, name: 'Arc Chain', key: 'arc', type: 'EVM', nativeToken: 'USDC', nativeSymbol: 'USDC', color: '#FF6D00' },
 ];
 
 export interface DetectedToken {

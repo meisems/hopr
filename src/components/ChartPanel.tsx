@@ -2,8 +2,21 @@ import { useMemo } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { DetectedToken, formatUsd } from '../services/chainDetector';
 import { generateChartData } from '../data/mockData';
-import { TrendingUp, TrendingDown, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock, BarChart3 } from 'lucide-react';
+import ChainLogo from './ChainLogo';
 import { useState } from 'react';
+
+function getChainKey(chainId: number): string {
+  const map: Record<number, string> = {
+    1151111081099710: 'sol',
+    42161: 'arb',
+    8453: 'base',
+    56: 'bsc',
+    4663: 'rhc',
+    5042: 'arc',
+  };
+  return map[chainId] || 'sol';
+}
 
 interface ChartPanelProps {
   token: DetectedToken | null;
@@ -23,7 +36,9 @@ export default function ChartPanel({ token }: ChartPanelProps) {
     return (
       <div className="h-full flex items-center justify-center bg-gray-900/40 rounded-2xl border border-gray-800/50">
         <div className="text-center">
-          <div className="text-6xl mb-4">📊</div>
+          <div className="flex justify-center mb-4">
+            <BarChart3 className="w-16 h-16 text-gray-600" />
+          </div>
           <p className="text-gray-400 text-sm">Search for a token to view its chart</p>
         </div>
       </div>
@@ -36,8 +51,8 @@ export default function ChartPanel({ token }: ChartPanelProps) {
       <div className="p-4 border-b border-gray-800/50">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>
-              {token.symbol.slice(0, 2)}
+            <div className="w-8 h-8 rounded-full flex items-center justify-center">
+              <ChainLogo chainKey={getChainKey(token.chainId)} size={32} />
             </div>
             <div>
               <div className="flex items-center gap-2">

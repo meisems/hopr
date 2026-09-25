@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { X, Zap, Shield, Bell, Globe } from 'lucide-react';
+import { X, Zap, Shield, Bell, Globe, Lock } from 'lucide-react';
 import { SUPPORTED_CHAINS } from '../services/chainDetector';
+import ChainLogo from './ChainLogo';
 import { motion } from 'framer-motion';
 
 interface SettingsModalProps {
@@ -58,7 +59,9 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       : 'border-gray-700/50 bg-gray-800/40 text-gray-400 hover:border-gray-600'
                   }`}
                 >
-                  <div className="text-lg mb-1">{chain.icon}</div>
+                  <div className="flex justify-center mb-1">
+                    <ChainLogo chainKey={chain.key} size={24} />
+                  </div>
                   {chain.name}
                 </button>
               ))}
@@ -142,10 +145,13 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
           {/* Security notice */}
           <div className="p-3 bg-yellow-500/5 border border-yellow-500/20 rounded-xl">
-            <p className="text-xs text-yellow-400/80">
-              🔐 Private keys are encrypted with AES-256-GCM and never leave your device unencrypted. 
-              Keys are only decrypted in memory for the duration needed to sign transactions.
-            </p>
+            <div className="flex items-start gap-2">
+              <Lock className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-yellow-400/80">
+                Private keys are encrypted with AES-256-GCM and never leave your device unencrypted. 
+                Keys are only decrypted in memory for the duration needed to sign transactions.
+              </p>
+            </div>
           </div>
         </div>
 

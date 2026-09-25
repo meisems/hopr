@@ -2,7 +2,20 @@ import { useState } from 'react';
 import { ArrowRight, TrendingUp, TrendingDown, Loader2, CheckCircle2, ExternalLink } from 'lucide-react';
 import { mockPositions } from '../data/mockData';
 import { formatUsd, formatAddress } from '../services/chainDetector';
+import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
+
+function getChainKey(chainId: number): string {
+  const map: Record<number, string> = {
+    1151111081099710: 'sol',
+    42161: 'arb',
+    8453: 'base',
+    56: 'bsc',
+    4663: 'rhc',
+    5042: 'arc',
+  };
+  return map[chainId] || 'sol';
+}
 
 export default function PositionsTable() {
   const [sellingId, setSellingId] = useState<string | null>(null);
@@ -70,8 +83,8 @@ export default function PositionsTable() {
                 >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold" style={{ backgroundColor: position.token.chainColor + '22', color: position.token.chainColor }}>
-                        {position.token.symbol.slice(0, 2)}
+                      <div className="w-7 h-7 rounded-full flex items-center justify-center">
+                        <ChainLogo chainKey={getChainKey(position.token.chainId)} size={28} />
                       </div>
                       <div>
                         <div className="text-sm font-medium text-white">{position.token.symbol}</div>

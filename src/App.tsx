@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle } from 'lucide-react';
+import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ChartPanel from './components/ChartPanel';
 import TradeCard from './components/TradeCard';
@@ -9,6 +9,7 @@ import WalletPanel from './components/WalletPanel';
 import SettingsModal from './components/SettingsModal';
 import TelegramPreview from './components/TelegramPreview';
 import SplashScreen from './components/SplashScreen';
+import ChainLogo from './components/ChainLogo';
 import { DetectedToken } from './services/chainDetector';
 
 function App() {
@@ -170,21 +171,24 @@ function App() {
             <h3 className="text-lg font-semibold text-white mb-4">How It Works</h3>
             <div className="space-y-4">
               {[
-                { step: '1', title: 'Paste Any Address', desc: 'Paste a token contract address from any supported chain. Our engine auto-detects the chain instantly.', icon: '🔍' },
-                { step: '2', title: 'One-Tap Buy', desc: 'Click your desired amount. The system routes through LI.FI to bridge and swap in a single transaction.', icon: '🚀' },
-                { step: '3', title: 'Auto Track', desc: 'Your position is tracked with round-trip routing. Sell anytime and proceeds return to your original funding chain.', icon: '📊' },
-                { step: '4', title: 'Dual Interface', desc: 'Trade via Telegram bot or this web dashboard. Both share the same wallet and positions.', icon: '🔄' },
-              ].map((item) => (
-                <div key={item.step} className="flex gap-3">
-                  <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/20 rounded-xl flex items-center justify-center text-lg">
-                    {item.icon}
+                { step: '1', title: 'Paste Any Address', desc: 'Paste a token contract address from any supported chain. Our engine auto-detects the chain instantly.', icon: Search },
+                { step: '2', title: 'One-Tap Buy', desc: 'Click your desired amount. The system routes through LI.FI to bridge and swap in a single transaction.', icon: Rocket },
+                { step: '3', title: 'Auto Track', desc: 'Your position is tracked with round-trip routing. Sell anytime and proceeds return to your original funding chain.', icon: BarChart3 },
+                { step: '4', title: 'Dual Interface', desc: 'Trade via Telegram bot or this web dashboard. Both share the same wallet and positions.', icon: RefreshCw },
+              ].map((item) => {
+                const Icon = item.icon;
+                return (
+                  <div key={item.step} className="flex gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/20 rounded-xl flex items-center justify-center">
+                      <Icon className="w-5 h-5 text-purple-400" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-white">{item.title}</div>
+                      <div className="text-xs text-gray-400 mt-0.5 leading-relaxed">{item.desc}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-sm font-medium text-white">{item.title}</div>
-                    <div className="text-xs text-gray-400 mt-0.5 leading-relaxed">{item.desc}</div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Architecture note */}
@@ -206,17 +210,15 @@ function App() {
           <h3 className="text-sm font-semibold text-gray-400 mb-4">Supported Chains</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
             {[
-              { name: 'Solana', symbol: 'SOL', color: '#9945FF', icon: '◎', status: 'Active' },
-              { name: 'Arbitrum', symbol: 'ETH', color: '#28A0F0', icon: '⟟', status: 'Active' },
-              { name: 'Base', symbol: 'ETH', color: '#0052FF', icon: '⬡', status: 'Active' },
-              { name: 'BNB Chain', symbol: 'BNB', color: '#F0B90B', icon: '◆', status: 'Active' },
-              { name: 'Robinhood', symbol: 'ETH', color: '#00C853', icon: '⬢', status: 'Active' },
-              { name: 'Arc Chain', symbol: 'USDC', color: '#FF6D00', icon: '◈', status: 'Active' },
+              { name: 'Solana', symbol: 'SOL', key: 'sol', status: 'Active' },
+              { name: 'Arbitrum', symbol: 'ETH', key: 'arb', status: 'Active' },
+              { name: 'Base', symbol: 'ETH', key: 'base', status: 'Active' },
+              { name: 'BNB Chain', symbol: 'BNB', key: 'bsc', status: 'Active' },
+              { name: 'Robinhood', symbol: 'ETH', key: 'rhc', status: 'Active' },
+              { name: 'Arc Chain', symbol: 'USDC', key: 'arc', status: 'Active' },
             ].map((chain) => (
               <div key={chain.name} className="flex items-center gap-2 p-3 bg-gray-800/30 rounded-xl border border-gray-800/30 hover:border-gray-700/50 transition-all">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center text-lg" style={{ backgroundColor: chain.color + '22', color: chain.color }}>
-                  {chain.icon}
-                </div>
+                <ChainLogo chainKey={chain.key} size={28} />
                 <div>
                   <div className="text-xs font-medium text-white">{chain.name}</div>
                   <div className="text-[10px] text-gray-500">{chain.symbol} • {chain.status}</div>

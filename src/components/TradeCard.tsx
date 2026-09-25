@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { ArrowDownUp, Settings, Zap, Shield, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowDownUp, Settings, Zap, Shield, AlertTriangle, CheckCircle2, Loader2, Rocket, TrendingDown, Pencil, XCircle, BarChart3 } from 'lucide-react';
 import { DetectedToken, formatUsd, SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
+import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface TradeCardProps {
@@ -66,7 +67,9 @@ export default function TradeCard({ token }: TradeCardProps) {
     return (
       <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
         <div className="text-center py-8">
-          <div className="text-4xl mb-3">🔄</div>
+          <div className="flex justify-center mb-3">
+            <ArrowDownUp className="w-10 h-10 text-gray-600" />
+          </div>
           <p className="text-gray-400 text-sm">Select a token to trade</p>
         </div>
       </div>
@@ -124,7 +127,9 @@ export default function TradeCard({ token }: TradeCardProps) {
                           : 'border-gray-700/50 bg-gray-800/40 text-gray-400 hover:border-gray-600'
                       }`}
                     >
-                      <span className="block text-base">{chain.icon}</span>
+                      <div className="flex justify-center mb-1">
+                        <ChainLogo chainKey={chain.key} size={20} />
+                      </div>
                       <span className="block mt-0.5">{chain.name}</span>
                     </button>
                   ))}
@@ -268,9 +273,9 @@ export default function TradeCard({ token }: TradeCardProps) {
                   <button
                     key={preset}
                     onClick={() => handleBuy(preset)}
-                    className="py-2.5 bg-gradient-to-r from-green-600/80 to-emerald-600/80 hover:from-green-500 hover:to-emerald-500 rounded-xl text-sm font-semibold text-white transition-all active:scale-95"
+                    className="py-2.5 bg-gradient-to-r from-green-600/80 to-emerald-600/80 hover:from-green-500 hover:to-emerald-500 rounded-xl text-sm font-semibold text-white transition-all active:scale-95 flex items-center justify-center gap-1"
                   >
-                    🚀 {preset}
+                    <Rocket className="w-3.5 h-3.5" /> {preset}
                   </button>
                 ))}
               </div>
@@ -317,9 +322,9 @@ export default function TradeCard({ token }: TradeCardProps) {
                 <button
                   key={percent}
                   onClick={() => handleSell(percent)}
-                  className="py-3 bg-gradient-to-r from-red-600/80 to-rose-600/80 hover:from-red-500 hover:to-rose-500 rounded-xl text-sm font-semibold text-white transition-all active:scale-95"
+                  className="py-3 bg-gradient-to-r from-red-600/80 to-rose-600/80 hover:from-red-500 hover:to-rose-500 rounded-xl text-sm font-semibold text-white transition-all active:scale-95 flex items-center justify-center gap-1.5"
                 >
-                  🔴 Sell {percent}%
+                  <TrendingDown className="w-3.5 h-3.5" /> Sell {percent}%
                 </button>
               ))}
             </div>
