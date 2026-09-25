@@ -1,0 +1,27 @@
+name = "hopr"
+compatibility_date = "2024-01-01"
+main = "workers/index.ts"
+
+[site]
+bucket = "./dist"
+
+[env.production]
+route = "hopr.pages.dev/*"
+
+[env.staging]
+route = "staging.hopr.pages.dev/*"
+
+# Variables
+[vars]
+ENVIRONMENT = "production"
+
+# D1 Database (for user data, trades, wallets)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "hopr-db"
+# database_id = "your-database-id"
+
+# KV Namespace (for caching chain detection results)
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "your-kv-namespace-id"
