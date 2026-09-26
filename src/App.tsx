@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
@@ -19,6 +19,15 @@ const DocsPage = lazy(() => import('./components/DocsPage'));
 const PositionsPage = lazy(() => import('./components/PositionsPage'));
 const HistoryPage = lazy(() => import('./components/HistoryPage'));
 const BridgePage = lazy(() => import('./components/BridgePage'));
+
+type Page = 'dashboard' | 'positions' | 'history' | 'bridge' | 'docs';
+const PAGE_PATHS: Record<Page, string> = { dashboard: '/', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs' };
+const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation' };
+
+function pageFromPath(pathname: string): Page {
+  const match = (Object.entries(PAGE_PATHS) as [Page, string][]).find(([, path]) => path === pathname);
+  return match?.[0] ?? 'dashboard';
+}
 
 function BlackHoleSplash({ isExiting, onExitStart, onExitComplete }: { isExiting: boolean; onExitStart: () => void; onExitComplete: () => void }) {
   const { settings } = useBlackHoleSettings();
@@ -53,11 +62,26 @@ function PageLoading() {
 
 function AppContent() {
   const [preloaderPhase, setPreloaderPhase] = useState<'loading' | 'exiting' | 'ready'>('loading');
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'positions' | 'history' | 'bridge' | 'docs'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    return pageFromPath(window.location.pathname);
+  });
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [splashRun, setSplashRun] = useState(0);
+
+  useEffect(() => {
+    document.title = `${PAGE_TITLES[currentPage]} · Hopr`;
+    window.history.replaceState({ page: currentPage }, '', PAGE_PATHS[currentPage]);
+    localStorage.setItem('hopr-page', currentPage);
+  }, [currentPage]);
+
+  useEffect(() => {
+    const handlePopState = () => setCurrentPage(pageFromPath(window.location.pathname));
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   const previewBlackHole = () => {
     setSettingsOpen(false);

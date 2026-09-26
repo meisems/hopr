@@ -43,6 +43,9 @@ export interface DetectedToken {
   liquidity: number;
   fdv: number;
   change24h: number;
+  /** DexScreener pool used to request real OHLCV history. */
+  pairAddress?: string;
+  geckoNetwork?: string;
   /** true if resolved via bytecode probing rather than an indexed DexScreener pair */
   freshDeployment: boolean;
 }
@@ -60,6 +63,7 @@ function isEvmAddress(str: string): boolean {
 
 interface DexScreenerPair {
   chainId: string;
+  pairAddress?: string;
   baseToken: { address: string; name: string; symbol: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
@@ -84,6 +88,15 @@ const DEXSCREENER_CHAIN_SLUGS: Record<string, number> = {
   arc: 5042,
 };
 
+const GECKO_NETWORKS: Record<string, string> = {
+  solana: 'solana',
+  arbitrum: 'arbitrum',
+  base: 'base',
+  bsc: 'bsc',
+  robinhood: 'robinhood-chain',
+  arc: 'arc',
+};
+
 function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo): DetectedToken {
   return {
     address: pair.baseToken.address,
@@ -98,6 +111,8 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     liquidity: pair.liquidity?.usd ?? 0,
     fdv: pair.fdv ?? 0,
     change24h: pair.priceChange?.h24 ?? 0,
+    pairAddress: pair.pairAddress,
+    geckoNetwork: GECKO_NETWORKS[pair.chainId.toLowerCase()],
     freshDeployment: false,
   };
 }
