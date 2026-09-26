@@ -164,17 +164,49 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       // Clear
       ctx.clearRect(0, 0, w, h);
 
-      // Draw static stars
+      // Bend background light into the characteristic paired images around the shadow.
+      const lensMix = Math.min(1, holeSizeRef.current / (minDim * 0.16));
+      const einsteinRadius = Math.max(1, holeSizeRef.current * 1.1);
       stars.forEach((star) => {
-        const dist = Math.sqrt((star.x - cx) ** 2 + (star.y - cy) ** 2);
-        if (dist > holeSizeRef.current * 1.8) {
-          const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
+        const dx = star.x - cx;
+        const dy = star.y - cy;
+        const betaPixels = Math.sqrt(dx * dx + dy * dy);
+        const beta = betaPixels / einsteinRadius;
+        const root = Math.sqrt(beta * beta + 4);
+        const primaryRadius = einsteinRadius * (beta + root) * 0.5;
+        const secondaryRadius = einsteinRadius * (root - beta) * 0.5;
+        const magnification = Math.min(3.2, 0.5 + (beta * beta + 2) / (2 * Math.max(beta, 0.06) * root));
+        const angle = betaPixels > 0 ? Math.atan2(dy, dx) : 0;
+        const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
+        const color = star.warmth > 0.82 ? '255, 225, 180' : '218, 242, 255';
+        const drawImage = (imageRadius: number, imageAngle: number, alpha: number, sizeScale: number) => {
+          if (imageRadius < holeSizeRef.current * 0.76 || alpha <= 0.01) return;
+          const x = cx + Math.cos(imageAngle) * imageRadius;
+          const y = cy + Math.sin(imageAngle) * imageRadius;
           ctx.beginPath();
-          ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-          ctx.fillStyle = star.warmth > 0.82
-            ? `rgba(255, 225, 180, ${twinkle})`
-            : `rgba(218, 242, 255, ${twinkle})`;
+          ctx.arc(x, y, star.size * sizeScale, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${color}, ${Math.min(1, alpha)})`;
           ctx.fill();
+          if (star.size > 1.1 && alpha > 0.35) {
+            ctx.beginPath();
+            ctx.arc(x, y, star.size * sizeScale * 2.8, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${color}, ${alpha * 0.12})`;
+            ctx.fill();
+          }
+        };
+
+        const primaryX = cx + Math.cos(angle) * primaryRadius;
+        const primaryY = cy + Math.sin(angle) * primaryRadius;
+        const blendedX = star.x + (primaryX - star.x) * lensMix;
+        const blendedY = star.y + (primaryY - star.y) * lensMix;
+        const blendedRadius = Math.sqrt((blendedX - cx) ** 2 + (blendedY - cy) ** 2);
+        const blendedAngle = Math.atan2(blendedY - cy, blendedX - cx);
+        drawImage(blendedRadius, blendedAngle, twinkle * (1 - lensMix * 0.18) * Math.sqrt(magnification), 1 + lensMix * (Math.sqrt(magnification) - 1));
+
+        // The fainter, mirrored image makes close alignments resolve into luminous arcs.
+        if (beta < 3.6 && lensMix > 0.04) {
+          const secondaryMagnification = Math.max(0, magnification - 1);
+          drawImage(secondaryRadius, angle + Math.PI, twinkle * lensMix * Math.min(0.42, secondaryMagnification * 0.2), 0.8 + Math.sqrt(secondaryMagnification) * 0.2);
         }
       });
 
@@ -261,13 +293,24 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.globalCompositeOperation = 'lighter';
         ctx.filter = 'blur(0.35px)';
 
-        // The disk is flattened by perspective instead of drawn as stacked circles.
+        // Perspective-flattened plasma disk, Doppler-brightened on its approaching side.
         const diskGradient = ctx.createLinearGradient(-radius * 1.8, 0, radius * 1.8, 0);
-        diskGradient.addColorStop(0, `rgba(47, 126, 132, ${0.16 * reveal})`);
-        diskGradient.addColorStop(0.28, `rgba(255, 171, 78, ${0.5 * reveal})`);
-        diskGradient.addColorStop(0.5, `rgba(255, 244, 196, ${0.95 * reveal})`);
-        diskGradient.addColorStop(0.72, `rgba(255, 130, 49, ${0.52 * reveal})`);
-        diskGradient.addColorStop(1, `rgba(39, 101, 111, ${0.14 * reveal})`);
+        diskGradient.addColorStop(0, `rgba(42, 108, 125, ${0.08 * reveal})`);
+        diskGradient.addColorStop(0.24, `rgba(255, 127, 55, ${0.2 * reveal})`);
+        diskGradient.addColorStop(0.48, `rgba(255, 184, 94, ${0.48 * reveal})`);
+        diskGradient.addColorStop(0.68, `rgba(255, 246, 211, ${0.98 * reveal})`);
+        diskGradient.addColorStop(0.82, `rgba(255, 143, 55, ${0.62 * reveal})`);
+        diskGradient.addColorStop(1, `rgba(48, 117, 126, ${0.1 * reveal})`);
+
+        // A soft plasma envelope adds depth without washing out the central shadow.
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.58, radius * 0.4, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 143, 62, ${0.09 * reveal})`;
+        ctx.lineWidth = Math.max(2, radius * 0.14);
+        ctx.shadowColor = 'rgba(255, 126, 49, 0.7)';
+        ctx.shadowBlur = radius * 0.18;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
 
         ctx.beginPath();
         ctx.ellipse(0, 0, radius * 1.38, radius * 0.28, 0, 0, Math.PI * 2);
@@ -275,10 +318,11 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.lineWidth = Math.max(1.5, radius * 0.07);
         ctx.stroke();
 
+        // The far side of the disk bends over the top of the shadow.
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.62, radius * 0.42, 0, Math.PI * 0.08, Math.PI * 0.92);
-        ctx.strokeStyle = `rgba(244, 150, 71, ${0.22 * reveal})`;
-        ctx.lineWidth = Math.max(1, radius * 0.035);
+        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 1.08, Math.PI * 1.92);
+        ctx.strokeStyle = `rgba(255, 182, 105, ${0.38 * reveal})`;
+        ctx.lineWidth = Math.max(1, radius * 0.028);
         ctx.stroke();
 
         ctx.restore();
@@ -294,7 +338,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.fillStyle = lensGrad;
         ctx.fill();
 
-        // Event horizon: perfectly dark, with a narrow photon ring just outside it.
+        // Event horizon and thin photon ring: the shadow remains absolute black.
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 0.72, 0, Math.PI * 2);
         ctx.fillStyle = '#000';
@@ -302,13 +346,34 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
         const photonAlpha = phaseRef.current === 'forming' ? 0.7 : 0.92;
         ctx.beginPath();
-        ctx.arc(cx, cy, radius * 0.86, 0, Math.PI * 2);
+        ctx.arc(cx, cy, radius * 0.82, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(255, 224, 160, ${photonAlpha})`;
-        ctx.lineWidth = Math.max(1, radius * 0.045);
+        ctx.lineWidth = Math.max(1, radius * 0.024);
         ctx.shadowColor = 'rgba(255, 160, 67, 0.8)';
-        ctx.shadowBlur = Math.max(3, radius * 0.12);
+        ctx.shadowBlur = Math.max(3, radius * 0.09);
         ctx.stroke();
         ctx.shadowBlur = 0;
+
+        // The near-side plasma stays in front of the shadow, completing the lensed disk.
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(diskRotation);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 0.1, Math.PI * 0.9);
+        ctx.strokeStyle = `rgba(255, 177, 91, ${0.62 * reveal})`;
+        ctx.lineWidth = Math.max(1.2, radius * 0.034);
+        ctx.shadowColor = 'rgba(255, 173, 82, 0.85)';
+        ctx.shadowBlur = radius * 0.08;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 0.18, Math.PI * 0.82);
+        ctx.strokeStyle = `rgba(255, 239, 190, ${0.68 * reveal})`;
+        ctx.lineWidth = Math.max(0.7, radius * 0.012);
+        ctx.shadowBlur = 0;
+        ctx.stroke();
+        ctx.restore();
 
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 0.96, 0, Math.PI * 2);
