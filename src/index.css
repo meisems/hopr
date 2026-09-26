@@ -121,24 +121,48 @@ html.light .text-white {
 }
 
 html.light .text-gray-400 {
-  color: #4b5563 !important;
+  color: #374151 !important;
 }
 
 html.light .text-gray-500 {
-  color: #6b7280 !important;
+  color: #4b5563 !important;
 }
 
 html.light .text-gray-300 {
   color: #374151 !important;
 }
 
+html.light .text-gray-200 {
+  color: #1f2937 !important;
+}
+
 html.light .text-gray-600 {
   color: #4b5563 !important;
 }
 
+html.light .text-brand-200,
 html.light .text-brand-300,
 html.light .text-brand-400 {
   color: #0f766e !important;
+}
+
+html.light .text-orange-100,
+html.light .text-orange-200,
+html.light .text-orange-300,
+html.light .text-orange-400 {
+  color: #c2410c !important;
+}
+
+html.light .text-yellow-400 {
+  color: #a16207 !important;
+}
+
+html.light .text-green-400 {
+  color: #15803d !important;
+}
+
+html.light .text-red-300 {
+  color: #b91c1c !important;
 }
 
 html.light .text-purple-300,
