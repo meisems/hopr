@@ -1,14 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import ts from 'typescript';
-
-const workerSource = await readFile(new URL('../workers/index.ts', import.meta.url), 'utf8');
-const workerJavaScript = ts.transpileModule(workerSource, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
-}).outputText;
-const workerModule = await import(`data:text/javascript;base64,${Buffer.from(workerJavaScript).toString('base64')}`);
-const worker = workerModule.default;
+import worker from '../workers/index.ts';
 const env = { TELEGRAM_BOT_TOKEN: 'test-token', TELEGRAM_WEBHOOK_SECRET: 'test-secret' };
 
 function createKv() {
@@ -113,9 +105,11 @@ test('Link wallet buttons prompt for a public address and save the private reply
   }, { extraEnv });
   assert.deepEqual(chooseNetwork.calls.at(-1).body.reply_markup.inline_keyboard, [
     [
-      { text: 'Link EVM', callback_data: 'wallet:set:evm' },
-      { text: 'Link Solana', callback_data: 'wallet:set:solana' },
+      { text: 'Link EVM (read-only)', callback_data: 'wallet:set:evm' },
+      { text: 'Link Solana (read-only)', callback_data: 'wallet:set:solana' },
     ],
+    [{ text: 'Create trading wallet', callback_data: 'wallet:generate' }],
+    [{ text: 'Import private key', callback_data: 'wallet:import' }],
     [{ text: 'Help', callback_data: 'help' }],
   ]);
 
@@ -201,8 +195,7 @@ test('dashboard-style trade callbacks require a stored token context before quot
   const { calls } = await sendUpdate({
     callback_query: { id: 'trade-preview', data: 'trade:buy:0.5', message: { chat: { id: 322, type: 'private' } } },
   });
-  assert.match(calls.at(-1).body.text, /Open a supported EVM token lookup first/);
-  assert.match(calls.at(-1).body.text, /D1\/KV profile store/);
+  assert.match(calls.at(-1).body.text, /Open a token lookup first/);
 });
 
 test('D1-backed Telegram profiles persist when KV is absent', async () => {

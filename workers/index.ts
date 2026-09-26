@@ -335,7 +335,7 @@ async function handleTelegramMessage(
     return;
   }
   if (command === '/help' || !text) {
-    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons execute immediately once you have a trading wallet — there is no confirmation step.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons execute immediately once you have a trading wallet — there is no confirmation step. The bot does not sign or submit trades without the required wallet and execution setup.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
   if (command === '/wallet' || command === '/balances') {
@@ -431,15 +431,19 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env): P
   const name = typeof token.name === 'string' ? token.name : 'Unknown token';
   const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
   const result = `${symbol} — ${name}\nChain: ${chain}\nAddress: ${address}\nPrice: $${price.toPrecision(6)}\n24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\nLiquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\nFDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n\nMarket data from DexScreener. This bot does not execute trades.`;
+
+  // Do not make Telegram wait for D1/KV. The market result is the user-visible
+  // response; persistence is best-effort and runs concurrently with delivery.
   if (env.DB || env.TELEGRAM_STATE) {
-    const profile = await readTelegramProfile(chatId, env) ?? {};
-    await writeTelegramProfile(chatId, {
-      ...profile,
-      lastTokenAddress: address,
-      lastTokenChainId: typeof token.chainId === 'number' ? token.chainId : undefined,
-      lastTokenChainType: token.chainType === 'SVM' ? 'SVM' : 'EVM',
-      lastTokenSymbol: symbol,
-    }, env);
+    void readTelegramProfile(chatId, env)
+      .then((profile) => writeTelegramProfile(chatId, {
+        ...(profile ?? {}),
+        lastTokenAddress: address,
+        lastTokenChainId: typeof token.chainId === 'number' ? token.chainId : undefined,
+        lastTokenChainType: token.chainType === 'SVM' ? 'SVM' : 'EVM',
+        lastTokenSymbol: symbol,
+      }, env))
+      .catch((error) => console.error('Telegram token profile persistence failed', error));
   }
   await sendTelegramMessage(chatId, result, env, telegramTokenKeyboard(address));
 }
@@ -695,12 +699,6 @@ async function handleTelegramImportKey(chatId: number, args: string[], env: Env)
   } catch {
     await sendTelegramMessage(chatId, 'That key could not be parsed. Double-check the format and try again — and delete the bad message either way.', env);
   }
-}
-
-function telegramExportWarningKeyboard() {
-  return {
-    inline_keyboard: [[{ text: '⚠️ Reveal private keys', callback_data: 'wallet:export' }]],
-  };
 }
 
 async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<void> {
@@ -1118,17 +1116,14 @@ async function handleChainDetection(
     return Response.json({ error: 'Token not found' }, { status: 404, headers: corsHeaders });
   }
 
-  // Cache for 5 minutes
+  // Cache for 5 minutes. Do not add KV write latency to the token response.
   if (env.CACHE) {
-    ctx_wait(5 * 60); // Helper to set cache TTL
-    await env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 });
+    void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch((error) => {
+      console.error('Token detection cache write failed', error);
+    });
   }
 
   return Response.json(result, { headers: { ...corsHeaders, 'X-Cache': 'MISS' } });
-}
-
-function ctx_wait(seconds: number) {
-  // Placeholder for cache TTL
 }
 
 async function handleWalletBalances(

@@ -7,7 +7,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "telegram:configure": "node scripts/configure-telegram.mjs",
-    "test:telegram": "node --test tests/telegram-*.test.mjs"
+    "test:telegram": "node --import tsx --test tests/telegram-*.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
@@ -35,6 +35,7 @@
     "@types/uuid": "^9.0.7",
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.1.7",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0",
     "vite": "^6.3.5"
   }
