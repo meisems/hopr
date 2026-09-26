@@ -23,6 +23,7 @@ export default function WalletPanel() {
   const [copied, setCopied] = useState<string | null>(null);
 
   const totalBalance = mockWalletBalances.reduce((sum, b) => sum + b.usdValue, 0);
+  const hasWallet = mockWalletBalances.length > 0;
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -36,8 +37,8 @@ export default function WalletPanel() {
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const evmAddress = '0x7a3B...9f2E';
-  const solAddress = '7xKX...pQ4m';
+  const evmAddress = 'Not connected';
+  const solAddress = 'Not connected';
 
   return (
     <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
@@ -56,8 +57,8 @@ export default function WalletPanel() {
           </button>
         </div>
         <div className="mt-2">
-          <div className="text-2xl font-bold text-white">{formatUsd(totalBalance)}</div>
-          <div className="text-xs text-gray-500">Across 6 chains</div>
+          <div className="text-2xl font-bold text-white">{hasWallet ? formatUsd(totalBalance) : '—'}</div>
+          <div className="text-xs text-gray-500">{hasWallet ? `Across ${mockWalletBalances.length} chains` : 'Connect a wallet to view balances'}</div>
         </div>
       </div>
 
@@ -68,8 +69,8 @@ export default function WalletPanel() {
             <span className="text-xs text-gray-500">EVM:</span>
             <span className="text-xs text-gray-300 font-mono">{evmAddress}</span>
           </div>
-          <button onClick={() => handleCopy('0x7a3B...9f2E')} className="p-1 hover:bg-gray-800 rounded transition-colors">
-            {copied === '0x7a3B...9f2E' ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
+          <button onClick={() => handleCopy(evmAddress)} className="p-1 hover:bg-gray-800 rounded transition-colors">
+            {copied === evmAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
           </button>
         </div>
         <div className="flex items-center justify-between">
@@ -77,8 +78,8 @@ export default function WalletPanel() {
             <span className="text-xs text-gray-500">SOL:</span>
             <span className="text-xs text-gray-300 font-mono">{solAddress}</span>
           </div>
-          <button onClick={() => handleCopy('7xKX...pQ4m')} className="p-1 hover:bg-gray-800 rounded transition-colors">
-            {copied === '7xKX...pQ4m' ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
+          <button onClick={() => handleCopy(solAddress)} className="p-1 hover:bg-gray-800 rounded transition-colors">
+            {copied === solAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
           </button>
         </div>
       </div>
@@ -102,7 +103,9 @@ export default function WalletPanel() {
               className="overflow-hidden"
             >
               <div className="space-y-2 pb-2">
-                {mockWalletBalances.map((balance) => {
+                {mockWalletBalances.length === 0 ? (
+                  <p className="py-3 text-xs text-gray-500">No chain balances available yet.</p>
+                ) : mockWalletBalances.map((balance) => {
                   const chainKey = getChainKey(balance.chainId);
                   return (
                     <div key={balance.chainId} className="flex items-center justify-between py-2 px-3 bg-gray-800/30 rounded-xl">
@@ -115,7 +118,7 @@ export default function WalletPanel() {
                       </div>
                       <div className="text-right">
                         <div className="text-xs font-medium text-white">{formatUsd(balance.usdValue)}</div>
-                        <div className="text-xs text-gray-500">{((balance.usdValue / totalBalance) * 100).toFixed(1)}%</div>
+                        <div className="text-xs text-gray-500">{totalBalance > 0 ? ((balance.usdValue / totalBalance) * 100).toFixed(1) : '0.0'}%</div>
                       </div>
                     </div>
                   );

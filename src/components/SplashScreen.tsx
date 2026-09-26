@@ -79,21 +79,22 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
     window.addEventListener('resize', resize);
 
     // Initialize particles based on screen size
-    const particleCount = Math.min(250, Math.floor((w * h) / 6000));
+    const particleCount = Math.min(320, Math.max(150, Math.floor((w * h) / 4800)));
     particlesRef.current = Array.from({ length: particleCount }, () =>
       createParticle(w, h)
     );
 
     // Pre-generate static star positions
-    const stars = Array.from({ length: 80 }, () => ({
+    const stars = Array.from({ length: 260 }, () => ({
       x: Math.random() * w,
       y: Math.random() * h,
-      size: Math.random() * 1.2 + 0.3,
+      size: Math.random() < 0.92 ? Math.random() * 1.1 + 0.2 : Math.random() * 2 + 1,
       twinkle: Math.random() * Math.PI * 2,
+      warmth: Math.random(),
     }));
 
     // Orbiting "charge" ring shown while the mark is forming
-    const chargeDots = Array.from({ length: 14 }, (_, i) => ({
+    const chargeDots = Array.from({ length: 22 }, (_, i) => ({
       offset: (i / 14) * Math.PI * 2,
       radiusJitter: Math.random() * 0.15 + 0.9,
     }));
@@ -107,11 +108,11 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       const minDim = Math.min(w, h);
 
       // Phase transitions
-      if (elapsed > 0.8 && phaseRef.current === 'forming') {
+      if (elapsed > 0.55 && phaseRef.current === 'forming') {
         phaseRef.current = 'pulling';
         setPhase('pulling');
       }
-      if (elapsed > 2.8 && phaseRef.current === 'pulling') {
+      if (elapsed > 1.9 && phaseRef.current === 'pulling') {
         phaseRef.current = 'consuming';
         setPhase('consuming');
         if (!shockwaveFired) {
@@ -119,18 +120,18 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           setShockwave(true);
         }
       }
-      if (elapsed > 4.5 && phaseRef.current === 'consuming') {
+      if (elapsed > 3.25 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
         setPhase('gone');
-        setTimeout(() => onCompleteRef.current(), 600);
+        setTimeout(() => onCompleteRef.current(), 360);
         cancelAnimationFrame(animationRef.current);
         return;
       }
 
       // Update hole size
-      const targetHoleSize = phaseRef.current === 'forming' ? minDim * 0.04 :
-        phaseRef.current === 'pulling' ? minDim * 0.14 :
-        phaseRef.current === 'consuming' ? minDim * 0.38 :
+      const targetHoleSize = phaseRef.current === 'forming' ? minDim * 0.035 :
+        phaseRef.current === 'pulling' ? minDim * 0.16 :
+        phaseRef.current === 'consuming' ? minDim * 0.42 :
         minDim * 0.55;
       holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * 0.04;
       setHoleSize(holeSizeRef.current);
@@ -156,10 +157,12 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       stars.forEach((star) => {
         const dist = Math.sqrt((star.x - cx) ** 2 + (star.y - cy) ** 2);
         if (dist > holeSizeRef.current * 1.8) {
-          const twinkle = 0.3 + Math.sin(elapsed * 2 + star.twinkle) * 0.3;
+          const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
           ctx.beginPath();
           ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(255, 255, 255, ${twinkle})`;
+          ctx.fillStyle = star.warmth > 0.82
+            ? `rgba(255, 225, 180, ${twinkle})`
+            : `rgba(218, 242, 255, ${twinkle})`;
           ctx.fill();
         }
       });
@@ -222,7 +225,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       // Orbiting charge ring while the mark first forms — a subtle "powering up" cue
       if (phaseRef.current === 'forming') {
-        const chargeProgress = Math.min(1, elapsed / 0.8);
+        const chargeProgress = Math.min(1, elapsed / 0.55);
         chargeDots.forEach((dot) => {
           const angle = dot.offset + elapsed * 3.2;
           const radius = minDim * 0.09 * dot.radiusJitter;
@@ -255,6 +258,13 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       }
 
       // Gravitational lensing glow
+      const nebulaGrad = ctx.createRadialGradient(cx, cy, minDim * 0.12, cx, cy, minDim * 0.75);
+      nebulaGrad.addColorStop(0, 'rgba(20, 70, 78, 0.10)');
+      nebulaGrad.addColorStop(0.55, 'rgba(15, 33, 54, 0.08)');
+      nebulaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = nebulaGrad;
+      ctx.fillRect(0, 0, w, h);
+
       const lensGrad = ctx.createRadialGradient(cx, cy, holeSizeRef.current * 0.85, cx, cy, holeSizeRef.current * 1.6);
       lensGrad.addColorStop(0, 'rgba(63, 176, 170, 0.28)');
       lensGrad.addColorStop(0.4, 'rgba(39, 117, 119, 0.12)');

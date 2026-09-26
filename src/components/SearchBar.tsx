@@ -10,13 +10,6 @@ interface SearchBarProps {
   onTokenDetected: (token: DetectedToken) => void;
 }
 
-const QUICK_TOKENS = [
-  { label: 'MPEPE', address: '0x946102eA7Df8c2652a1B3a96e23B8b0a703410a5' },
-  { label: 'RHT', address: '0x1234567890abcdef1234567890abcdef12345678' },
-  { label: 'ARC', address: '0xabcdef1234567890abcdef1234567890abcdef12' },
-  { label: 'BONK', address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' },
-];
-
 function getChainKey(chainId: number): string {
   const map: Record<number, string> = {
     1151111081099710: 'sol',
@@ -106,11 +99,6 @@ export default function SearchBar({ onTokenDetected }: SearchBarProps) {
     debouncedSearch(query);
   };
 
-  const handleQuickToken = async (address: string) => {
-    setQuery(address);
-    debouncedSearch(address);
-  };
-
   const clearSearch = () => {
     setQuery('');
     setDetected(null);
@@ -148,20 +136,6 @@ export default function SearchBar({ onTokenDetected }: SearchBarProps) {
         <div className="hidden sm:flex items-center gap-1 px-3 py-2 bg-gray-800/60 rounded-xl border border-gray-700/30">
           <kbd className="text-xs text-gray-400 font-mono">⌘K</kbd>
         </div>
-      </div>
-
-      {/* Quick tokens */}
-      <div className="flex items-center gap-2 mt-3 flex-wrap">
-        <span className="text-xs text-gray-500">Quick:</span>
-        {QUICK_TOKENS.map((t) => (
-          <button
-            key={t.address}
-            onClick={() => handleQuickToken(t.address)}
-            className="px-3 py-1 text-xs bg-gray-800/60 hover:bg-gray-700/60 border border-gray-700/30 rounded-lg text-gray-300 hover:text-white transition-all"
-          >
-            {t.label}
-          </button>
-        ))}
       </div>
 
       {/* Rate limit warning */}

@@ -146,10 +146,10 @@ function AppContent() {
           transition={{ delay: 0.2 }}
           className="grid grid-cols-2 sm:grid-cols-4 gap-3"
         >
-          <StatCard icon={<Activity className="w-4 h-4" />} label="24h Volume" value="$12.4M" change="+18.3%" positive />
-          <StatCard icon={<Shield className="w-4 h-4" />} label="Trades Today" value="1,847" change="+24.1%" positive />
-          <StatCard icon={<Zap className="w-4 h-4" />} label="Avg Speed" value="28s" change="-12%" positive />
-          <StatCard icon={<Activity className="w-4 h-4" />} label="Active Users" value="3,421" change="+8.7%" positive />
+          <StatCard icon={<Activity className="w-4 h-4" />} label="24h Volume" value="—" change="No data" positive />
+          <StatCard icon={<Shield className="w-4 h-4" />} label="Trades Today" value="—" change="No data" positive />
+          <StatCard icon={<Zap className="w-4 h-4" />} label="Avg Speed" value="—" change="No data" positive />
+          <StatCard icon={<Activity className="w-4 h-4" />} label="Active Users" value="—" change="No data" positive />
         </motion.section>
 
         {/* Main trading area */}

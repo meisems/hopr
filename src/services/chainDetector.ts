@@ -47,88 +47,9 @@ function isEvmAddress(str: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(str);
 }
 
-// Simulated token database for demo purposes
-const MOCK_TOKENS: Record<string, DetectedToken> = {
-  'So11111111111111111111111111111111': {
-    address: 'So11111111111111111111111111111111',
-    name: 'Wrapped SOL',
-    symbol: 'SOL',
-    decimals: 9,
-    chainId: 1151111081099710,
-    chainType: 'SVM',
-    chainName: 'Solana',
-    chainColor: '#9945FF',
-    priceUsd: 178.42,
-    liquidity: 892000000,
-    fdv: 82000000000,
-    change24h: 3.2,
-  },
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': {
-    address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    name: 'USD Coin',
-    symbol: 'USDC',
-    decimals: 6,
-    chainId: 1151111081099710,
-    chainType: 'SVM',
-    chainName: 'Solana',
-    chainColor: '#9945FF',
-    priceUsd: 1.0,
-    liquidity: 450000000,
-    fdv: 32000000000,
-    change24h: 0.01,
-  },
-  '0x1234567890abcdef1234567890abcdef12345678': {
-    address: '0x1234567890abcdef1234567890abcdef12345678',
-    name: 'Robinhood Token',
-    symbol: 'RHT',
-    decimals: 18,
-    chainId: 4663,
-    chainType: 'EVM',
-    chainName: 'Robinhood Chain',
-    chainColor: '#00C853',
-    priceUsd: 0.00234,
-    liquidity: 1250000,
-    fdv: 2340000,
-    change24h: 15.7,
-  },
-  '0xabcdef1234567890abcdef1234567890abcdef12': {
-    address: '0xabcdef1234567890abcdef1234567890abcdef12',
-    name: 'Arc Protocol',
-    symbol: 'ARC',
-    decimals: 18,
-    chainId: 5042,
-    chainType: 'EVM',
-    chainName: 'Arc Chain',
-    chainColor: '#FF6D00',
-    priceUsd: 0.087,
-    liquidity: 3400000,
-    fdv: 8700000,
-    change24h: -2.4,
-  },
-  '0x946102eA7Df8c2652a1B3a96e23B8b0a703410a5': {
-    address: '0x946102eA7Df8c2652a1B3a96e23B8b0a703410a5',
-    name: 'Moon Pepe',
-    symbol: 'MPEPE',
-    decimals: 18,
-    chainId: 8453,
-    chainType: 'EVM',
-    chainName: 'Base',
-    chainColor: '#0052FF',
-    priceUsd: 0.0000123,
-    liquidity: 890000,
-    fdv: 1230000,
-    change24h: 42.5,
-  },
-};
-
 export async function detectChain(address: string): Promise<DetectedToken | null> {
   // Simulate network delay
   await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
-
-  // Check if it's a known mock token
-  if (MOCK_TOKENS[address]) {
-    return MOCK_TOKENS[address];
-  }
 
   // Solana detection
   if (isBase58(address)) {

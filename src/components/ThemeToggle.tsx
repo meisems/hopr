@@ -2,12 +2,15 @@ import { motion } from 'framer-motion';
 import { useTheme } from '../context/ThemeContext';
 
 export default function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, toggleThemeAt } = useTheme();
   const isDark = theme === 'dark';
 
   return (
     <button
-      onClick={toggleTheme}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        toggleThemeAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      }}
       className="relative w-14 h-7 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 dark:from-slate-700 dark:to-slate-900 transition-all duration-300 hover:scale-105 active:scale-95"
       aria-label="Toggle theme"
     >

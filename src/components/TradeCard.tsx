@@ -222,7 +222,7 @@ export default function TradeCard({ token }: TradeCardProps) {
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-gray-500">Balance</div>
-                  <div className="text-sm text-gray-300">{userBalance?.balance.toFixed(4)} {fundingChain.nativeSymbol}</div>
+                  <div className="text-sm text-gray-300">{userBalance ? `${userBalance.balance.toFixed(4)} ${fundingChain.nativeSymbol}` : 'Not connected'}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-2">
@@ -307,10 +307,10 @@ export default function TradeCard({ token }: TradeCardProps) {
             <div className="bg-gray-800/40 rounded-xl p-4">
               <div className="text-xs text-gray-500 mb-2">Sell {token.symbol}</div>
               <div className="text-sm text-gray-300">
-                Holdings: <span className="text-white font-semibold">~50,000,000 {token.symbol}</span>
+                Holdings: <span className="text-white font-semibold">No holdings recorded</span>
               </div>
               <div className="text-xs text-gray-500 mt-1">
-                Value: <span className="text-white">≈ ${formatUsd(50000000 * token.priceUsd)}</span>
+                Value: <span className="text-white">—</span>
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 Returns to: <span className="text-purple-400">{fundingChain.name} ({fundingChain.nativeSymbol})</span>

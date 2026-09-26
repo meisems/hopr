@@ -74,7 +74,9 @@ export default function PositionsTable() {
           </thead>
           <tbody>
             <AnimatePresence>
-              {mockPositions.map((position) => (
+              {mockPositions.length === 0 ? (
+                <tr><td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">No active positions yet. Search for a token and complete a trade to see it here.</td></tr>
+              ) : mockPositions.map((position) => (
                 <motion.tr
                   key={position.id}
                   initial={{ opacity: 1 }}
