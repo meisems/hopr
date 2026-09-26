@@ -289,18 +289,16 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
         ctx.save();
         ctx.translate(cx, cy);
-        ctx.rotate(diskRotation);
         ctx.globalCompositeOperation = 'lighter';
         ctx.filter = 'blur(0.35px)';
 
-        // Perspective-flattened plasma disk, Doppler-brightened on its approaching side.
+        // A fixed viewing angle keeps Doppler brightening on the approaching side.
         const diskGradient = ctx.createLinearGradient(-radius * 1.8, 0, radius * 1.8, 0);
-        diskGradient.addColorStop(0, `rgba(42, 108, 125, ${0.08 * reveal})`);
-        diskGradient.addColorStop(0.24, `rgba(255, 127, 55, ${0.2 * reveal})`);
-        diskGradient.addColorStop(0.48, `rgba(255, 184, 94, ${0.48 * reveal})`);
-        diskGradient.addColorStop(0.68, `rgba(255, 246, 211, ${0.98 * reveal})`);
-        diskGradient.addColorStop(0.82, `rgba(255, 143, 55, ${0.62 * reveal})`);
-        diskGradient.addColorStop(1, `rgba(48, 117, 126, ${0.1 * reveal})`);
+        diskGradient.addColorStop(0, `rgba(126, 194, 255, ${0.9 * reveal})`);
+        diskGradient.addColorStop(0.18, `rgba(255, 225, 178, ${0.72 * reveal})`);
+        diskGradient.addColorStop(0.42, `rgba(255, 155, 77, ${0.4 * reveal})`);
+        diskGradient.addColorStop(0.7, `rgba(255, 111, 51, ${0.2 * reveal})`);
+        diskGradient.addColorStop(1, `rgba(136, 48, 35, ${0.07 * reveal})`);
 
         // A soft plasma envelope adds depth without washing out the central shadow.
         ctx.beginPath();
@@ -318,46 +316,74 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.lineWidth = Math.max(1.5, radius * 0.07);
         ctx.stroke();
 
-        // The far side of the disk bends over the top of the shadow.
+        // Light from the far side of the disk is lensed into upper and lower humps.
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 1.08, Math.PI * 1.92);
-        ctx.strokeStyle = `rgba(255, 182, 105, ${0.38 * reveal})`;
-        ctx.lineWidth = Math.max(1, radius * 0.028);
+        ctx.ellipse(0, 0, radius * 1.28, radius * 0.82, 0, Math.PI * 1.08, Math.PI * 1.92);
+        ctx.strokeStyle = `rgba(255, 190, 137, ${0.32 * reveal})`;
+        ctx.lineWidth = Math.max(0.8, radius * 0.018);
         ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.28, radius * 0.82, 0, Math.PI * 0.08, Math.PI * 0.92);
+        ctx.strokeStyle = `rgba(255, 166, 111, ${0.2 * reveal})`;
+        ctx.lineWidth = Math.max(0.7, radius * 0.014);
+        ctx.stroke();
+
+        // Turbulent bright knots orbit at different rates, with the approaching side boosted.
+        for (let knot = 0; knot < 6; knot++) {
+          const orbitRadius = 1.12 + (knot % 3) * 0.12;
+          const angularSpeed = 0.82 / Math.sqrt(orbitRadius);
+          const angle = elapsed * angularSpeed + knot * Math.PI / 3;
+          const x = Math.cos(angle) * radius * orbitRadius;
+          const y = Math.sin(angle) * radius * orbitRadius * 0.28;
+          const dopplerBoost = 0.35 + 0.65 * (0.5 + 0.5 * Math.cos(angle - Math.PI));
+          const knotAlpha = reveal * (0.22 + 0.42 * dopplerBoost);
+          ctx.beginPath();
+          ctx.arc(x, y, Math.max(1, radius * 0.018), 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 226, 174, ${knotAlpha})`;
+          ctx.shadowColor = 'rgba(255, 157, 79, 0.72)';
+          ctx.shadowBlur = radius * 0.045;
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
 
         ctx.restore();
 
-        // Broad lensing glow fades smoothly into the star field.
+        // A restrained warm corona around the lensed shadow, not a solid teal halo.
         const lensGrad = ctx.createRadialGradient(cx, cy, radius * 0.72, cx, cy, radius * 2.8);
-        lensGrad.addColorStop(0, 'rgba(255, 206, 126, 0.12)');
-        lensGrad.addColorStop(0.22, 'rgba(63, 176, 170, 0.16)');
-        lensGrad.addColorStop(0.58, 'rgba(24, 70, 78, 0.07)');
+        lensGrad.addColorStop(0, 'rgba(255, 190, 126, 0.1)');
+        lensGrad.addColorStop(0.22, 'rgba(255, 125, 58, 0.08)');
+        lensGrad.addColorStop(0.58, 'rgba(105, 55, 42, 0.025)');
         lensGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 2.8, 0, Math.PI * 2);
         ctx.fillStyle = lensGrad;
         ctx.fill();
 
-        // Event horizon and thin photon ring: the shadow remains absolute black.
+        // The observed shadow is larger than the event horizon and remains absolute black.
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 0.72, 0, Math.PI * 2);
         ctx.fillStyle = '#000';
         ctx.fill();
 
         const photonAlpha = phaseRef.current === 'forming' ? 0.7 : 0.92;
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius * 0.82, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(255, 224, 160, ${photonAlpha})`;
-        ctx.lineWidth = Math.max(1, radius * 0.024);
-        ctx.shadowColor = 'rgba(255, 160, 67, 0.8)';
-        ctx.shadowBlur = Math.max(3, radius * 0.09);
-        ctx.stroke();
+        [
+          { radius: 0.785, alpha: photonAlpha, width: 0.018, blur: 0.07 },
+          { radius: 0.855, alpha: photonAlpha * 0.28, width: 0.008, blur: 0.025 },
+          { radius: 0.91, alpha: photonAlpha * 0.1, width: 0.004, blur: 0.01 },
+        ].forEach((ring) => {
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius * ring.radius, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 218, 170, ${ring.alpha})`;
+          ctx.lineWidth = Math.max(0.55, radius * ring.width);
+          ctx.shadowColor = 'rgba(255, 151, 74, 0.65)';
+          ctx.shadowBlur = Math.max(0.8, radius * ring.blur);
+          ctx.stroke();
+        });
         ctx.shadowBlur = 0;
 
         // The near-side plasma stays in front of the shadow, completing the lensed disk.
         ctx.save();
         ctx.translate(cx, cy);
-        ctx.rotate(diskRotation);
         ctx.globalCompositeOperation = 'lighter';
         ctx.lineCap = 'round';
         ctx.beginPath();
@@ -377,8 +403,8 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 0.96, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(108, 203, 198, 0.28)';
-        ctx.lineWidth = Math.max(0.5, radius * 0.018);
+        ctx.strokeStyle = 'rgba(255, 182, 139, 0.1)';
+        ctx.lineWidth = Math.max(0.4, radius * 0.008);
         ctx.stroke();
       }
 
