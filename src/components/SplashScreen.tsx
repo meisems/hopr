@@ -366,72 +366,56 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           filter: phase === 'consuming' ? `blur(${(1 - logoScale) * 8}px)` : 'none',
         }}
       >
-        <div className="flex flex-col items-center gap-3 sm:gap-5">
-          {/* Logo icon */}
-          <div className="relative">
+        <motion.div
+          className="flex flex-col items-center gap-3 sm:gap-5"
+          initial={{ opacity: 0, scale: 0.35, y: 24, rotate: -10 }}
+          animate={{ opacity: 1, scale: [0.35, 1.08, 0.98, 1], y: [24, -5, 2, 0], rotate: [-10, 3, -1, 0] }}
+          transition={{ duration: 1.05, times: [0, 0.55, 0.8, 1], ease: [0.16, 1, 0.3, 1] }}
+        >
+          {/* Logo icon with a cinematic energy bloom and orbiting accents */}
+          <div className="relative w-24 h-24 sm:w-32 sm:h-32">
             <motion.div
-              className="w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center"
-              animate={{ scale: [1, 1.04, 1] }}
-              transition={{ opacity: { duration: 0.55, ease: 'easeOut' }, scale: { duration: 2.4, repeat: Infinity, ease: 'easeInOut' } }}
-            >
-              <img
-                src="/brand/logo-icon.png"
-                alt="Hopr"
-                className="w-full h-full object-contain drop-shadow-[0_0_18px_rgba(63,176,170,0.55)]"
+              className="absolute inset-[-18px] rounded-full border border-brand-300/30"
+              initial={{ scale: 0.35, opacity: 0, rotate: -30 }}
+              animate={{ scale: [0.35, 1.15, 1], opacity: [0, 0.8, 0.35], rotate: 360 }}
+              transition={{ duration: 1.3, ease: 'easeOut' }}
+            />
+            <motion.div
+              className="absolute inset-[-7px] rounded-full"
+              style={{ background: 'conic-gradient(from 40deg, transparent, rgba(114,210,203,0.85), transparent 32%, rgba(63,176,170,0.65), transparent 70%)' }}
+              initial={{ scale: 0.65, opacity: 0, rotate: -70 }}
+              animate={{ scale: [0.65, 1.08, 1], opacity: [0, 0.9, 0.55], rotate: 290 }}
+              transition={{ duration: 1.15, ease: 'easeOut' }}
+            />
+            {[0, 1, 2].map((i) => (
+              <motion.span
+                key={i}
+                className="absolute left-1/2 top-1/2 w-1.5 h-1.5 rounded-full bg-brand-200 shadow-[0_0_10px_rgba(114,210,203,0.9)]"
+                initial={{ opacity: 0, scale: 0 }}
+                animate={{ opacity: [0, 1, 0.8], scale: [0, 1, 0.8], x: Math.cos(i * 2.1) * 58, y: Math.sin(i * 2.1) * 58 }}
+                transition={{ duration: 0.9, delay: 0.18 + i * 0.08, ease: 'easeOut' }}
               />
+            ))}
+            <motion.div
+              className="relative z-10 w-full h-full flex items-center justify-center"
+              animate={{ scale: [1, 1.045, 1] }}
+              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              <img src="/brand/logo-icon.png" alt="Hopr" className="w-full h-full object-contain drop-shadow-[0_0_24px_rgba(63,176,170,0.7)]" />
             </motion.div>
-            {/* Glow */}
-            <div className="absolute inset-0 bg-brand-500/40 rounded-full blur-2xl opacity-70 -z-10" />
+            <div className="absolute inset-0 bg-brand-500/45 rounded-full blur-2xl opacity-80 -z-10" />
           </div>
 
-          {/* Logo text */}
-          <div className="text-center">
-            <h1 className="text-2xl sm:text-4xl font-bold gradient-text">
-              hopr
-            </h1>
-            <p className="text-xs sm:text-base text-gray-400 mt-1 tracking-widest uppercase">
-              Hop Across Chains
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Loading text at bottom */}
-      <AnimatePresence>
-        {phase !== 'gone' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            transition={{ delay: 0.8 }}
-            className="absolute bottom-6 sm:bottom-12 left-0 right-0 flex flex-col items-center gap-2 sm:gap-3"
+          <motion.h1
+            className="text-2xl sm:text-4xl font-bold gradient-text"
+            initial={{ opacity: 0, letterSpacing: '0.45em' }}
+            animate={{ opacity: 1, letterSpacing: '0.02em' }}
+            transition={{ delay: 0.42, duration: 0.7, ease: 'easeOut' }}
           >
-            <div className="flex gap-1.5">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <motion.div
-                  key={i}
-                  className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-brand-400 rounded-full"
-                  animate={{
-                    scale: [1, 1.8, 1],
-                    opacity: [0.3, 1, 0.3],
-                  }}
-                  transition={{
-                    duration: 1.2,
-                    repeat: Infinity,
-                    delay: i * 0.15,
-                  }}
-                />
-              ))}
-            </div>
-            <p className="text-[10px] sm:text-sm text-gray-500 tracking-wide text-center px-4">
-              {phase === 'logo' && 'HOPR online...'}
-              {phase === 'forming' && 'Event horizon detected...'}
-              {phase === 'pulling' && 'Cross-chain gravity engaged...'}
-              {phase === 'consuming' && 'Entering the event horizon...'}
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            hopr
+          </motion.h1>
+        </motion.div>
+      </div>
 
       {/* Vignette */}
       <div className="absolute inset-0 pointer-events-none" style={{
