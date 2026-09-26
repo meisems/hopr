@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { ArrowLeft, ArrowDown, Loader2, CheckCircle2, Zap, Clock } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { ArrowLeft, ArrowDown, Zap, Clock, AlertTriangle } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
 import ChainLogo from './ChainLogo';
@@ -14,7 +14,6 @@ export default function BridgePage({ onBack }: BridgePageProps) {
   const [fromChain, setFromChain] = useState(SUPPORTED_CHAINS[0]);
   const [toChain, setToChain] = useState(SUPPORTED_CHAINS[2]);
   const [amount, setAmount] = useState('1.0');
-  const [status, setStatus] = useState<'idle' | 'bridging' | 'done'>('idle');
 
   const fromBalance = mockWalletBalances.find((b) => b.chainId === fromChain.id);
   const numericAmount = parseFloat(amount) || 0;
@@ -25,12 +24,6 @@ export default function BridgePage({ onBack }: BridgePageProps) {
   const swapDirection = () => {
     setFromChain(toChain);
     setToChain(fromChain);
-  };
-
-  const handleBridge = () => {
-    if (numericAmount <= 0 || status === 'bridging') return;
-    setStatus('bridging');
-    setTimeout(() => setStatus('done'), 2200);
   };
 
   return (
@@ -61,8 +54,8 @@ export default function BridgePage({ onBack }: BridgePageProps) {
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
         <div className="max-w-md mx-auto bg-gray-900/60 rounded-2xl border border-gray-800/50 p-5 space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-white">Move funds cross-chain</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Routed through LI.FI — same engine that powers one-tap buys.</p>
+            <h2 className="text-lg font-semibold text-white">Bridge preview</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Illustrative route only; no live quote or transfer is available.</p>
           </div>
 
           {/* From */}
@@ -134,38 +127,16 @@ export default function BridgePage({ onBack }: BridgePageProps) {
             </div>
           </div>
 
-          {/* Fee / time estimate */}
+          {/* Illustrative fee / time placeholders */}
           <div className="space-y-1.5 text-xs text-gray-400 border-t border-gray-800/40 pt-3">
-            <div className="flex justify-between"><span>Network fee</span><span className="text-gray-300">≈ {estFee.toFixed(4)}</span></div>
-            <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Est. time</span><span className="text-gray-300">{estTime}</span></div>
+            <div className="flex justify-between"><span>Illustrative fee (not quoted)</span><span className="text-gray-300">≈ {estFee.toFixed(4)}</span></div>
+            <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Placeholder time</span><span className="text-gray-300">{estTime}</span></div>
           </div>
 
-          {/* Action */}
-          <AnimatePresence mode="wait">
-            {status === 'done' ? (
-              <motion.div
-                key="done"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex items-center justify-center gap-2 py-3 bg-green-500/10 border border-green-500/20 rounded-xl text-sm text-green-400 font-medium"
-              >
-                <CheckCircle2 className="w-4 h-4" /> Bridged to {toChain.name}
-              </motion.div>
-            ) : (
-              <motion.button
-                key="action"
-                onClick={handleBridge}
-                disabled={numericAmount <= 0 || status === 'bridging'}
-                className="w-full py-3 bg-brand-500 hover:bg-brand-400 disabled:opacity-50 disabled:hover:bg-brand-500 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
-              >
-                {status === 'bridging' ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Bridging...</>
-                ) : (
-                  <><Zap className="w-4 h-4" /> Bridge Funds</>
-                )}
-              </motion.button>
-            )}
-          </AnimatePresence>
+          <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm text-amber-100/90" role="status">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-300" />
+            <span>Bridge execution is not implemented. No wallet was signed and no transaction was sent.</span>
+          </div>
         </div>
       </main>
     </div>

@@ -19,10 +19,11 @@ export interface Env {
   RATE_LIMIT: KVNamespace; // For rate limiting
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
+  TELEGRAM_STATE?: KVNamespace;
 }
 
 interface TelegramMessage {
-  chat?: { id: number };
+  chat?: { id: number; type?: string };
   text?: string;
 }
 
@@ -46,6 +47,22 @@ const TELEGRAM_ACTION_KEYBOARD = {
     [{ text: 'Help', callback_data: 'help' }],
   ],
 };
+
+const TELEGRAM_CHAINS = [
+  { id: 1151111081099710, name: 'Solana', symbol: 'SOL' },
+  { id: 42161, name: 'Arbitrum One', symbol: 'ETH' },
+  { id: 8453, name: 'Base', symbol: 'ETH' },
+  { id: 56, name: 'BNB Chain', symbol: 'BNB' },
+  { id: 4663, name: 'Robinhood Chain', symbol: 'ETH' },
+  { id: 5042, name: 'Arc Chain', symbol: 'USDC' },
+];
+
+interface TelegramProfile {
+  evmAddress?: string;
+  solanaAddress?: string;
+  fundingChainId?: number;
+  slippagePercent?: number;
+}
 
 interface TradeRequest {
   userId: string;
@@ -196,8 +213,12 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (!chatId) return Response.json({ ok: true });
 
   if (callback) {
-    const callbackCommand = callback.data;
-    if (!callbackCommand || !['help', 'wallet', 'settings'].includes(callbackCommand)) {
+    const data = callback.data ?? '';
+    const chatType = callback.message?.chat?.type;
+    const recognized = ['help', 'wallet', 'settings'].includes(data)
+      || /^settings:chain:\d+$/.test(data)
+      || /^settings:slippage:(0\.5|1|3|5)$/.test(data);
+    if (!recognized) {
       await telegramApiCall('answerCallbackQuery', env, {
         callback_query_id: callback.id,
         text: 'This button is no longer available.',
@@ -205,33 +226,247 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       });
       return Response.json({ ok: true });
     }
-
     await telegramApiCall('answerCallbackQuery', env, { callback_query_id: callback.id });
-    await replyToTelegramCommand(chatId, `/${callbackCommand}`, env);
+    if ((data === 'wallet' || data === 'settings' || data.startsWith('settings:')) && chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
+      return Response.json({ ok: true });
+    }
+    await handleTelegramCallback(chatId, data, env);
     return Response.json({ ok: true });
   }
 
   const text = message?.text?.trim() ?? '';
-  const command = text.split(/\s+/)[0]?.toLowerCase().split('@')[0] ?? '';
-  await replyToTelegramCommand(chatId, command, env, text);
+  await handleTelegramMessage(chatId, message?.chat?.type, text, env);
 
   return Response.json({ ok: true });
 }
 
-async function replyToTelegramCommand(chatId: number, command: string, env: Env, messageText = ''): Promise<void> {
-  const reply = command === '/start'
-    ? 'Welcome to Hopr. Use the command menu or the buttons below to navigate.'
-    : command === '/help'
-      ? 'Hopr commands:\n/start - Open the bot\n/help - Show available commands\n/wallet - View wallet status\n/settings - View trading settings\n\nWallet balances, trading settings, token analysis, and trades are not connected to this Telegram bot yet.'
-      : command === '/wallet'
-        ? 'Telegram wallet status is not connected yet. No wallet actions are available in this bot build.'
-        : command === '/settings'
-          ? 'Telegram trading settings are not connected yet. No trading actions are available in this bot build.'
-          : messageText
-            ? 'This bot currently supports its command menu only. Use /help to see the available commands.'
-            : 'Use /help to see the available commands.';
+async function handleTelegramMessage(chatId: number, chatType: string | undefined, text: string, env: Env): Promise<void> {
+  const [rawCommand = '', ...args] = text.split(/\s+/);
+  const command = rawCommand.toLowerCase().split('@')[0];
 
-  await sendTelegramMessage(chatId, reply, env, TELEGRAM_ACTION_KEYBOARD);
+  if (command === '/start') {
+    await sendTelegramMessage(chatId, 'Welcome to Hopr. Use /help to see working commands. Token lookups, wallet balance reads, and personal settings are available.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  if (command === '/help' || !text) {
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for /wallet and /balances\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain and slippage preferences\n\nSend a token contract address by itself for a live DexScreener lookup. Wallet reads are public/read-only. This bot does not sign or submit trades.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  if (command === '/wallet' || command === '/balances') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For privacy, check wallet balances in a private chat with this bot.', env);
+      return;
+    }
+    if (args.length > 0) {
+      const network = args[0]?.toLowerCase();
+      const suppliedAddress = network === 'evm' || network === 'solana' ? args.slice(1).join(' ') : args.join(' ');
+      const isEvmAddress = /^0x[a-fA-F0-9]{40}$/.test(suppliedAddress);
+      const isSolanaAddress = suppliedAddress.length >= 32 && suppliedAddress.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(suppliedAddress);
+      if ((!isEvmAddress && !isSolanaAddress)
+        || (network === 'evm' && !isEvmAddress)
+        || (network === 'solana' && !isSolanaAddress)) {
+        await sendTelegramMessage(chatId, 'Usage: /wallet <public-address>, /wallet evm <address>, or /wallet solana <address>. Only public addresses are supported—never send a private key or seed phrase.', env);
+        return;
+      }
+      await showTelegramWalletBalances(chatId, isEvmAddress ? suppliedAddress : undefined, isSolanaAddress ? suppliedAddress : undefined, env);
+      return;
+    }
+    await showTelegramWallet(chatId, env);
+    return;
+  }
+  if (command === '/setwallet') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For privacy, link wallet addresses only in a private chat with this bot.', env);
+      return;
+    }
+    await setTelegramWallet(chatId, args, env);
+    return;
+  }
+  if (command === '/settings') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For privacy, manage personal settings in a private chat with this bot.', env);
+      return;
+    }
+    await showTelegramSettings(chatId, env);
+    return;
+  }
+
+  const address = normalizeTelegramAddress(text);
+  if (address) {
+    await lookupTelegramToken(chatId, address, env);
+    return;
+  }
+
+  await sendTelegramMessage(chatId, 'I could not match that to a command or token address. Use /help, or send a complete EVM or Solana token address.', env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+function normalizeTelegramAddress(text: string): string | null {
+  const value = text.trim();
+  if (/^0x[a-fA-F0-9]{40}$/.test(value)) return value;
+  if (value.length >= 32 && value.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(value)) return value;
+  return null;
+}
+
+async function lookupTelegramToken(chatId: number, address: string, env: Env): Promise<void> {
+  const response = await handleChainDetection(address, env, {});
+  const token = await response.json() as Record<string, unknown>;
+  if (!response.ok) {
+    await sendTelegramMessage(chatId, 'No indexed token market was found for that address. Check the address and chain, then try again.', env);
+    return;
+  }
+
+  const numberOrZero = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  const price = numberOrZero(token.priceUsd);
+  const liquidity = numberOrZero(token.liquidity);
+  const fdv = numberOrZero(token.fdv);
+  const change = numberOrZero(token.change24h);
+  const symbol = typeof token.symbol === 'string' ? token.symbol : 'Unknown';
+  const name = typeof token.name === 'string' ? token.name : 'Unknown token';
+  const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
+  const result = `${symbol} — ${name}\nChain: ${chain}\nAddress: ${address}\nPrice: $${price.toPrecision(6)}\n24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\nLiquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\nFDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n\nMarket data from DexScreener. This bot does not execute trades.`;
+  await sendTelegramMessage(chatId, result, env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+async function readTelegramProfile(chatId: number, env: Env): Promise<TelegramProfile | null> {
+  if (!env.TELEGRAM_STATE) return null;
+  const stored = await env.TELEGRAM_STATE.get(`telegram:${chatId}`);
+  if (!stored) return {};
+  try {
+    return JSON.parse(stored) as TelegramProfile;
+  } catch {
+    return {};
+  }
+}
+
+async function writeTelegramProfile(chatId: number, profile: TelegramProfile, env: Env): Promise<boolean> {
+  if (!env.TELEGRAM_STATE) return false;
+  await env.TELEGRAM_STATE.put(`telegram:${chatId}`, JSON.stringify(profile));
+  return true;
+}
+
+function shortenTelegramAddress(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+async function setTelegramWallet(chatId: number, args: string[], env: Env): Promise<void> {
+  if (!env.TELEGRAM_STATE) {
+    await sendTelegramMessage(chatId, 'Wallet linking needs a Cloudflare KV binding named TELEGRAM_STATE. Ask the bot owner to enable it, then retry.', env);
+    return;
+  }
+  const [network, suppliedAddress] = args;
+  const address = suppliedAddress?.trim() ?? '';
+  const isEvm = network?.toLowerCase() === 'evm' && /^0x[a-fA-F0-9]{40}$/.test(address);
+  const isSolana = network?.toLowerCase() === 'solana' && address.length >= 32 && address.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(address);
+  if (!isEvm && !isSolana) {
+    await sendTelegramMessage(chatId, 'Usage: /setwallet evm 0x… or /setwallet solana <base58-address>. Only a public address is needed—never send a seed phrase or private key.', env);
+    return;
+  }
+
+  const profile = await readTelegramProfile(chatId, env) ?? {};
+  if (isEvm) profile.evmAddress = address;
+  if (isSolana) profile.solanaAddress = address;
+  if (!await writeTelegramProfile(chatId, profile, env)) {
+    await sendTelegramMessage(chatId, 'Could not save your wallet address. Please try again later.', env);
+    return;
+  }
+  await sendTelegramMessage(chatId, `${network?.toUpperCase()} public address linked: ${shortenTelegramAddress(address)}. Only native balances are read; no signing or transactions are performed. Use /wallet to check balances.`, env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+async function showTelegramWallet(chatId: number, env: Env): Promise<void> {
+  const profile = await readTelegramProfile(chatId, env);
+  if (!profile) {
+    await sendTelegramMessage(chatId, 'To check a wallet now, use /wallet <public-address> or /balances <public-address>. To save an address for later, the bot owner must configure a Cloudflare KV binding named TELEGRAM_STATE. Never send a private key or seed phrase.', env);
+    return;
+  }
+  if (!profile.evmAddress && !profile.solanaAddress) {
+    await sendTelegramMessage(chatId, 'No public wallet addresses are linked yet. Use /wallet <public-address> for a one-time balance check, or /setwallet evm <address> and/or /setwallet solana <address> to save addresses. Never send private keys or seed phrases.', env);
+    return;
+  }
+
+  await showTelegramWalletBalances(chatId, profile.evmAddress, profile.solanaAddress, env);
+}
+
+async function showTelegramWalletBalances(chatId: number, evmAddress: string | undefined, solanaAddress: string | undefined, env: Env): Promise<void> {
+  const lines = ['Linked public wallets (read-only):'];
+  if (evmAddress) {
+    lines.push(`EVM ${shortenTelegramAddress(evmAddress)}:`);
+    const results = await Promise.all(TELEGRAM_CHAINS.filter((chain) => chain.id !== 1151111081099710).map(async (chain) => {
+      try {
+        const balance = await fetchEvmBalance(evmAddress, chain.id);
+        return `  ${chain.name}: ${Number(balance).toFixed(5)} ${chain.symbol}`;
+      } catch {
+        return `  ${chain.name}: unavailable`;
+      }
+    }));
+    lines.push(...results);
+  }
+  if (solanaAddress) {
+    try {
+      const balance = await fetchSolanaBalance(solanaAddress);
+      lines.push(`Solana ${shortenTelegramAddress(solanaAddress)}: ${Number(balance).toFixed(5)} SOL`);
+    } catch {
+      lines.push(`Solana ${shortenTelegramAddress(solanaAddress)}: unavailable`);
+    }
+  }
+  lines.push('\nTo save addresses, use /setwallet <evm|solana> <address>.');
+  await sendTelegramMessage(chatId, lines.join('\n'), env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+function telegramSettingsKeyboard() {
+  const chainRows = TELEGRAM_CHAINS.reduce<Array<Array<{ text: string; callback_data: string }>>>((rows, chain, index) => {
+    const row = Math.floor(index / 2);
+    rows[row] ??= [];
+    rows[row].push({ text: chain.name, callback_data: `settings:chain:${chain.id}` });
+    return rows;
+  }, []);
+  return {
+    inline_keyboard: [
+      ...chainRows,
+      [0.5, 1, 3, 5].map((slippage) => ({ text: `${slippage}% slippage`, callback_data: `settings:slippage:${slippage}` })),
+      [{ text: 'Wallets', callback_data: 'wallet' }, { text: 'Help', callback_data: 'help' }],
+    ],
+  };
+}
+
+async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
+  const profile = await readTelegramProfile(chatId, env);
+  if (!profile) {
+    await sendTelegramMessage(chatId, 'Personal settings need a Cloudflare KV binding named TELEGRAM_STATE. Ask the bot owner to enable it.', env);
+    return;
+  }
+  const chain = TELEGRAM_CHAINS.find((item) => item.id === profile.fundingChainId) ?? TELEGRAM_CHAINS[0];
+  const slippage = profile.slippagePercent ?? 1;
+  await sendTelegramMessage(chatId, `Your trade preferences (display only; Telegram trading is not enabled):\nFunding chain: ${chain.name}\nSlippage preference: ${slippage}%\n\nChoose a chain or slippage below.`, env, telegramSettingsKeyboard());
+}
+
+async function handleTelegramCallback(chatId: number, data: string, env: Env): Promise<void> {
+  if (data === 'help') return handleTelegramMessage(chatId, 'private', '/help', env);
+  if (data === 'wallet') return showTelegramWallet(chatId, env);
+  if (data === 'settings') return showTelegramSettings(chatId, env);
+
+  const chainMatch = data.match(/^settings:chain:(\d+)$/);
+  if (chainMatch) {
+    const chainId = Number(chainMatch[1]);
+    const chain = TELEGRAM_CHAINS.find((item) => item.id === chainId);
+    if (!chain) return sendTelegramMessage(chatId, 'That chain option is no longer available. Open /settings and try again.', env);
+    const profile = await readTelegramProfile(chatId, env);
+    if (!profile || !await writeTelegramProfile(chatId, { ...profile, fundingChainId: chain.id }, env)) {
+      return sendTelegramMessage(chatId, 'Settings storage is not available. Ask the bot owner to configure TELEGRAM_STATE.', env);
+    }
+    return showTelegramSettings(chatId, env);
+  }
+
+  const slippageMatch = data.match(/^settings:slippage:(0\.5|1|3|5)$/);
+  if (slippageMatch) {
+    const profile = await readTelegramProfile(chatId, env);
+    if (!profile || !await writeTelegramProfile(chatId, { ...profile, slippagePercent: Number(slippageMatch[1]) }, env)) {
+      return sendTelegramMessage(chatId, 'Settings storage is not available. Ask the bot owner to configure TELEGRAM_STATE.', env);
+    }
+    return showTelegramSettings(chatId, env);
+  }
+
+  await sendTelegramMessage(chatId, 'This button is no longer available. Use /help to see current commands.', env);
 }
 
 async function sendTelegramMessage(
@@ -253,8 +488,16 @@ async function telegramApiCall(method: string, env: Env, body: Record<string, un
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    console.error(`Telegram API ${method} failed with HTTP ${response.status}`);
+  let result: { ok?: boolean; description?: string };
+  try {
+    result = await response.json() as { ok?: boolean; description?: string };
+  } catch {
+    console.error(`Telegram API ${method} returned an invalid response (HTTP ${response.status})`);
+    throw new Error(`Telegram API request failed (${method})`);
+  }
+  if (!response.ok || !result.ok) {
+    console.error(`Telegram API ${method} failed with HTTP ${response.status}${result.description ? `: ${result.description}` : ''}`);
+    throw new Error(`Telegram API request failed (${method})`);
   }
 }
 
@@ -351,6 +594,8 @@ async function handleChainDetection(
         'arbitrum': { id: 42161, name: 'Arbitrum One', color: '#28A0F0' },
         'base': { id: 8453, name: 'Base', color: '#0052FF' },
         'bsc': { id: 56, name: 'BNB Chain', color: '#F0B90B' },
+        'robinhood': { id: 4663, name: 'Robinhood Chain', color: '#00C853' },
+        'arc': { id: 5042, name: 'Arc Chain', color: '#FF6D00' },
       };
       
       const chainInfo = chainMap[pair.chainId] || { id: 0, name: pair.chainId, color: '#666' };
@@ -429,8 +674,12 @@ async function fetchSolanaBalance(address: string): Promise<string> {
       params: [address],
     }),
   });
-  const data = await response.json();
-  return (data.result?.value / 1e9).toString();
+  if (!response.ok) throw new Error(`Solana RPC returned HTTP ${response.status}`);
+  const data = await response.json() as { result?: { value?: number }; error?: { message?: string } };
+  if (data.error || typeof data.result?.value !== 'number' || !Number.isFinite(data.result.value)) {
+    throw new Error(data.error?.message ?? 'Invalid Solana RPC response');
+  }
+  return (data.result.value / 1e9).toString();
 }
 
 async function fetchEvmBalance(address: string, chainId: number): Promise<string> {
@@ -438,8 +687,8 @@ async function fetchEvmBalance(address: string, chainId: number): Promise<string
     42161: 'https://arb1.arbitrum.io/rpc',
     8453: 'https://mainnet.base.org',
     56: 'https://bsc-dataseed.binance.org',
-    4663: 'https://rpc.robinhoodchain.io',
-    5042: 'https://rpc.arcchain.io',
+    4663: 'https://rpc.mainnet.chain.robinhood.com',
+    5042: 'https://rpc.mainnet.arc.io',
   };
 
   const rpcUrl = rpcUrls[chainId];
@@ -455,78 +704,44 @@ async function fetchEvmBalance(address: string, chainId: number): Promise<string
       params: [address, 'latest'],
     }),
   });
-  const data = await response.json();
-  const balance = BigInt(data.result || '0x0');
+  if (!response.ok) throw new Error(`EVM RPC returned HTTP ${response.status}`);
+  const data = await response.json() as { result?: string; error?: { message?: string } };
+  if (data.error || typeof data.result !== 'string' || !/^0x[0-9a-fA-F]+$/.test(data.result)) {
+    throw new Error(data.error?.message ?? 'Invalid EVM RPC response');
+  }
+  const balance = BigInt(data.result);
   return (Number(balance) / 1e18).toString();
 }
 
 async function handleTradeBuy(
-  body: TradeRequest,
-  env: Env,
+  _body: TradeRequest,
+  _env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
-  // Validate request
-  if (!body.userId || !body.tokenAddress || !body.amount) {
-    return Response.json({ error: 'Missing required fields' }, { status: 400, headers: corsHeaders });
-  }
-
-  // Generate trade ID
-  const tradeId = crypto.randomUUID();
-
-  // TODO: Implement LI.FI quote and execution
-  // 1. Get quote from LI.FI API
-  // 2. Sign transaction with user's key
-  // 3. Submit transaction
-  // 4. Store trade record in D1
-
-  // For now, return a mock response
   return Response.json({
-    tradeId,
-    status: 'PENDING',
-    message: 'Trade initiated. Use /api/trade/:id/status to poll for completion.',
-  }, { headers: corsHeaders });
+    error: 'Trade execution is not implemented.',
+    code: 'TRADE_EXECUTION_UNAVAILABLE',
+  }, { status: 501, headers: corsHeaders });
 }
 
 async function handleTradeSell(
-  body: TradeRequest & { percentage: number },
-  env: Env,
+  _body: TradeRequest & { percentage: number },
+  _env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
-  if (!body.userId || !body.tokenAddress || !body.percentage) {
-    return Response.json({ error: 'Missing required fields' }, { status: 400, headers: corsHeaders });
-  }
-
-  const tradeId = crypto.randomUUID();
-
-  // TODO: Implement reverse LI.FI swap
-  // 1. Look up original trade to get funding chain
-  // 2. Get LI.FI quote for reverse direction
-  // 3. Sign and execute
-  // 4. Update trade record
-
   return Response.json({
-    tradeId,
-    status: 'PENDING',
-    message: 'Sell initiated. Proceeds will return to original funding chain.',
-  }, { headers: corsHeaders });
+    error: 'Trade execution is not implemented.',
+    code: 'TRADE_EXECUTION_UNAVAILABLE',
+  }, { status: 501, headers: corsHeaders });
 }
 
 async function handleTradeStatus(
-  tradeId: string,
-  env: Env,
+  _tradeId: string,
+  _env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
-  // TODO: Query D1 for trade status
-  // Also poll LI.FI status API if trade is in bridge phase
-
   return Response.json({
-    tradeId,
-    status: 'COMPLETED',
-    steps: [
-      { name: 'Approval', status: 'DONE' },
-      { name: 'Swap', status: 'DONE' },
-      { name: 'Bridge', status: 'DONE' },
-      { name: 'Delivery', status: 'DONE' },
-    ],
-  }, { headers: corsHeaders });
+    error: 'Trade status is unavailable because trade execution is not implemented.',
+    code: 'TRADE_EXECUTION_UNAVAILABLE',
+  }, { status: 501, headers: corsHeaders });
 }

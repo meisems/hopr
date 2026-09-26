@@ -3,8 +3,10 @@ import { pathToFileURL } from 'node:url';
 export const TELEGRAM_COMMANDS = [
   { command: 'start', description: 'Start the Hopr bot' },
   { command: 'help', description: 'Show available commands and bot status' },
-  { command: 'wallet', description: 'Check Telegram wallet availability' },
-  { command: 'settings', description: 'Check Telegram settings availability' },
+  { command: 'wallet', description: 'Check a public wallet balance' },
+  { command: 'setwallet', description: 'Link a public wallet address' },
+  { command: 'balances', description: 'Refresh linked native-token balances' },
+  { command: 'settings', description: 'View funding-chain and slippage preferences' },
 ];
 
 function validateConfiguration({ token, webhookSecret, webhookUrl }) {

@@ -1,6 +1,6 @@
 # Hopr – Hop Across Chains
 
-A high-speed, cross-chain trading system with a **Telegram Bot** and **Web Dashboard** that enables one-tap buys/sells across 6 blockchains with automatic chain detection.
+A cross-chain dashboard prototype with a **Telegram Bot** for token market lookup, public-wallet native-balance reads, and saved preferences. Telegram does not sign or submit trades; the existing trade endpoints and UI are prototypes.
 
 ## 🌐 Supported Chains
 
@@ -29,8 +29,8 @@ A high-speed, cross-chain trading system with a **Telegram Bot** and **Web Dashb
 │  ┌───────────────────┼───────────────────────┐  │
 │  │  /api/detect      │ Chain Detection       │  │
 │  │  /api/wallet      │ Balance Queries       │  │
-│  │  /api/trade/buy   │ LI.FI Integration     │  │
-│  │  /api/trade/sell  │ Round-trip Routing    │  │
+│  │  /api/trade/buy   │ MOCK (not executed)   │  │
+│  │  /api/trade/sell  │ MOCK (not executed)   │  │
 │  └───────────────────┼───────────────────────┘  │
 │                      │                           │
 ├──────────────────────┼───────────────────────────┤
@@ -94,7 +94,9 @@ export TELEGRAM_WEBHOOK_URL='https://your-worker.workers.dev/telegram/webhook'
 npm run telegram:configure
 ```
 
-The setup script calls Telegram's Bot API to register the webhook for messages and button callbacks, publish `/start`, `/help`, `/wallet`, and `/settings` as command suggestions, and set the menu button to open the command list. It is safe to rerun after deploying. Keep the token and webhook secret out of source control and logs.
+The setup script calls Telegram's Bot API to register the webhook for messages and button callbacks, publish the bot commands, and set the menu button to open the command list. It is safe to rerun after deploying. Keep the token and webhook secret out of source control and logs.
+
+For persistent per-chat addresses and preferences, create a Cloudflare KV namespace (for example, `npx wrangler kv namespace create TELEGRAM_STATE`) and bind it to the Worker as `TELEGRAM_STATE` (Workers & Pages → your Worker → Settings → Bindings → Add → KV namespace). If deployments are managed by `wrangler.toml`, also add the returned namespace ID under a `[[kv_namespaces]]` entry with `binding = "TELEGRAM_STATE"`. Wallet commands are read-only and accept only public addresses; never send seed phrases or private keys. Without this binding, `/wallet <address>`, `/balances <address>`, and token lookup work immediately, while saved-wallet and preference commands explain that persistence has not been configured.
 
 ## 🎯 Features
 
@@ -103,21 +105,23 @@ The setup script calls Telegram's Bot API to register the webhook for messages a
 - Base58 → Solana SPL Token detection
 - 0x... → Multi-chain EVM probing (DexScreener + RPC fallback)
 
-### One-Tap Trading
-- Buy tokens on any chain using native tokens from your funding chain
-- LI.FI handles cross-chain bridging + swap in single transaction
-- Sell returns proceeds to original funding chain automatically
+### Trading status
+- The dashboard's trade animations and the original Telegram buy/sell preview are UI prototypes, not executed trades.
+- Worker trade routes are not connected to signing, transaction submission, or real trade-status storage.
+- Do not use those mock routes as evidence that a trade was quoted, sent, or completed.
 
 ### Dual Wallet Architecture
-- EVM keypair shared across Base, Arbitrum, BSC, Robinhood, Arc
-- Solana keypair for SVM interactions
-- AES-256-GCM encrypted storage, decrypted only during signing
+- EVM and Solana public wallet addresses can be linked to the Telegram bot for read-only balance checks
+- The bot never accepts private keys or seed phrases and does not sign transactions
 
 ### Telegram Bot
-- `/start` and `/help` – Welcome and command guide, with Wallet, Settings, and Help inline buttons
-- `/wallet` and `/settings` – Availability notices until those integrations are implemented
-- Telegram's native slash-command suggestions and menu button are configured by `npm run telegram:configure`
-- Wallet balances, token analysis, trading, and trade progress are not yet connected to the bot
+- `/start`, `/help` – Welcome and help, with inline navigation buttons
+- `/setwallet evm <address>` and `/setwallet solana <address>` – Store public addresses for read-only balance checks
+- `/wallet` and `/balances` – Read native balances on the supported chains
+- `/settings` – Set and view a per-chat funding-chain and slippage preference
+- Send a token address – Look up market information from DexScreener
+- Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`
+- Trades, signing, token approvals, and transfers are intentionally not implemented; settings are preferences only
 
 ## 📁 Project Structure
 

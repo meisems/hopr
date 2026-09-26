@@ -145,43 +145,41 @@ function OverviewSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Welcome to Hopr</h2>
         <p className="text-lg text-gray-400 leading-relaxed">
-          Hopr is a cross-chain trading system that enables one-tap buys and sells across 6 blockchains. 
-          Paste any token contract address, and the system automatically detects which chain it belongs to, 
-          routes the trade through LI.FI, and delivers the tokens to your wallet.
+          Hopr provides a cross-chain dashboard and Telegram bot. The bot can look up token market data, read native balances for public wallet addresses, and save personal preferences. Trade execution and wallet signing are not implemented.
         </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <InfoCard
           icon={<Zap className="w-5 h-5" />}
-          title="Zero-Config Chain Detection"
-          description="Paste any contract address – Solana, Arbitrum, Base, BSC, Robinhood Chain, or Arc Chain. The system auto-detects the chain instantly."
+          title="Token Market Lookup"
+          description="Send a supported token contract address to the Telegram bot to retrieve DexScreener market data and its listed chain."
         />
         <InfoCard
           icon={<Rocket className="w-5 h-5" />}
-          title="One-Tap Trading"
-          description="Buy tokens on any chain using native tokens from your funding chain. LI.FI handles cross-chain bridging and swapping in a single transaction."
+          title="Read-Only Balances"
+          description="Query native balances for a public EVM or Solana address. The bot never asks for seed phrases or private keys."
         />
         <InfoCard
           icon={<RefreshCw className="w-5 h-5" />}
-          title="Round-Trip Routing"
-          description="When you sell, proceeds automatically return to the exact chain and token you used to buy. No manual chain switching required."
+          title="Saved Preferences"
+          description="Save public addresses and select a preferred funding chain or slippage when the Telegram KV binding is configured."
         />
         <InfoCard
           icon={<Globe className="w-5 h-5" />}
-          title="Dual Interface"
-          description="Trade via Telegram bot or web dashboard. Both share the same wallet, positions, and settings."
+          title="No Bot Trading"
+          description="Telegram does not sign, approve, or submit transactions. Trade-related dashboard animations and bot previews are prototypes, not completed trades."
         />
       </div>
 
       <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
         <h3 className="text-lg font-semibold text-white mb-4">Quick Start</h3>
         <div className="space-y-3">
-          <Step number={1} text="Paste any token contract address in the search bar" />
-          <Step number={2} text="System auto-detects the chain and shows token info" />
-          <Step number={3} text="Click your desired buy amount – trade executes instantly" />
-          <Step number={4} text="Track your position in the Active Positions table" />
-          <Step number={5} text="Sell anytime – proceeds return to your funding chain" />
+          <Step number={1} text="Send /help to the Telegram bot to see commands" />
+          <Step number={2} text="Send a token contract address to get indexed market data" />
+          <Step number={3} text="Use /wallet <public-address> to read native balances" />
+          <Step number={4} text="Configure TELEGRAM_STATE to save addresses and preferences" />
+          <Step number={5} text="No trade, wallet signing, approval, or transfer is performed by this bot" />
         </div>
       </div>
     </div>
@@ -194,8 +192,7 @@ function ArchitectureSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Architecture</h2>
         <p className="text-gray-400 leading-relaxed">
-          Hopr uses a modern stack optimized for speed and security. The frontend is built with React and Vite, 
-          deployed on Cloudflare Pages. The backend runs on Cloudflare Workers with D1 database and KV cache.
+          Hopr uses React and Vite for the dashboard, with a Cloudflare Worker for token lookup, Telegram webhooks, and public-wallet balance reads. Configure a KV binding to persist Telegram addresses and preferences.
         </p>
       </div>
 
@@ -211,10 +208,10 @@ function ArchitectureSection() {
 ├──────────────────────┼───────────────────────────┤
 │      Cloudflare Workers (API)                    │
 │  ┌───────────────────┼───────────────────────┐  │
-│  │  /api/detect      │ Chain Detection       │  │
-│  │  /api/wallet      │ Balance Queries       │  │
-│  │  /api/trade/buy   │ LI.FI Integration     │  │
-│  │  /api/trade/sell  │ Round-trip Routing    │  │
+│  │  /api/detect      │ Market Lookup         │  │
+│  │  /api/wallet      │ Native Balances       │  │
+│  │  /api/trade/buy   │ MOCK / NOT EXECUTED   │  │
+│  │  /api/trade/sell  │ MOCK / NOT EXECUTED   │  │
 │  └───────────────────┼───────────────────────┘  │
 ├──────────────────────┼───────────────────────────┤
 │  ┌──────────┐  ┌────┴─────┐  ┌──────────────┐  │

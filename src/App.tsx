@@ -261,10 +261,10 @@ function AppContent() {
             <h3 className="text-lg font-semibold text-white mb-4">How It Works</h3>
             <div className="space-y-4">
               {[
-                { step: '1', title: 'Paste Any Address', desc: 'Paste a token contract address from any supported chain. Our engine auto-detects the chain instantly.', icon: Search },
-                { step: '2', title: 'One-Tap Buy', desc: 'Click your desired amount. The system routes through LI.FI to bridge and swap in a single transaction.', icon: Rocket },
-                { step: '3', title: 'Auto Track', desc: 'Your position is tracked with round-trip routing. Sell anytime and proceeds return to your original funding chain.', icon: BarChart3 },
-                { step: '4', title: 'Dual Interface', desc: 'Trade via Telegram bot or this web dashboard. Both share the same wallet and positions.', icon: RefreshCw },
+                { step: '1', title: 'Look Up a Token', desc: 'Send a token contract address to the Telegram bot for live indexed market information.', icon: Search },
+                { step: '2', title: 'Check Balances', desc: 'Use /wallet with a public address to read native balances across supported chains.', icon: BarChart3 },
+                { step: '3', title: 'Save Preferences', desc: 'Link public addresses and choose funding-chain/slippage preferences when TELEGRAM_STATE is configured.', icon: Wallet },
+                { step: '4', title: 'Read-Only Bot', desc: 'The Telegram bot does not accept keys, sign transactions, or submit trades. Dashboard and bot wallet state are separate.', icon: Shield },
               ].map((item) => {
                 const Icon = item.icon;
                 return (

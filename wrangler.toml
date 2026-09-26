@@ -25,3 +25,10 @@ ENVIRONMENT = "production"
 # [[kv_namespaces]]
 # binding = "CACHE"
 # id = "your-kv-namespace-id"
+
+# Telegram wallet addresses and settings require a separate KV namespace.
+# Create one with `npx wrangler kv namespace create TELEGRAM_STATE`, then
+# uncomment these lines and replace the ID with the returned namespace ID:
+# [[kv_namespaces]]
+# binding = "TELEGRAM_STATE"
+# id = "your-telegram-state-namespace-id"
