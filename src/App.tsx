@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import TradeCard from './components/TradeCard';
@@ -36,12 +36,14 @@ function BlackHoleSplash({ isExiting, onExitStart, onExitComplete }: { isExiting
 }
 
 function BlackHoleSettingsModal({ isOpen, onClose, onPreviewBlackHole }: { isOpen: boolean; onClose: () => void; onPreviewBlackHole: () => void }) {
-  if (!isOpen) return null;
-
   return (
-    <Suspense fallback={null}>
-      <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />
-    </Suspense>
+    <AnimatePresence>
+      {isOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />
+        </Suspense>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -99,7 +101,7 @@ function AppContent() {
       </div>
 
       {/* Header */}
-      <header className="relative z-10 border-b border-gray-800/50 bg-gray-900/30 backdrop-blur-xl">
+      <header className="navbar-dark relative z-10 border-b border-gray-800/50 bg-gray-900/30 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
@@ -139,9 +141,10 @@ function AppContent() {
               </div>
               <button
                 onClick={() => setSettingsOpen(true)}
-                className="p-2 hover:bg-gray-800 rounded-xl transition-colors"
+                className="settings-trigger p-2 rounded-xl transition-all duration-200 hover:bg-gray-800 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300/70"
+                aria-label="Open settings"
               >
-                <Settings className="w-5 h-5 text-gray-400" />
+                <Settings className="w-5 h-5 text-gray-400 transition-transform duration-300 group-hover:rotate-45" />
               </button>
               <a href="#" className="hidden sm:flex p-2 hover:bg-gray-800 rounded-xl transition-colors">
                 <MessageCircle className="w-5 h-5 text-gray-400" />
@@ -161,7 +164,7 @@ function AppContent() {
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="md:hidden border-t border-gray-800/50 bg-gray-900/90 backdrop-blur-xl"
+            className="subnav-dark md:hidden border-t border-gray-800/50 bg-gray-900/90 backdrop-blur-xl"
           >
             <div className="px-4 py-3 space-y-1">
               <button onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg">Dashboard</button>

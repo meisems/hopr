@@ -29,7 +29,7 @@ export default function DocsPage({ onBack }: DocsPageProps) {
   return (
     <div className="min-h-screen bg-[#0a0b0f] text-white">
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl safe-area-top">
+      <header className="navbar-dark sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl safe-area-top">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-2 sm:gap-4">
@@ -66,7 +66,7 @@ export default function DocsPage({ onBack }: DocsPageProps) {
 
         {/* Mobile navigation */}
         {mobileMenuOpen && (
-          <div className="lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
+          <div className="subnav-dark lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
             <nav className="px-4 py-3 space-y-1">
               {sections.map((section) => {
                 const Icon = section.icon;

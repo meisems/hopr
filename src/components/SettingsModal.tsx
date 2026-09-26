@@ -75,11 +75,29 @@ export default function SettingsModal({ isOpen, onClose, onPreviewBlackHole }: S
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+        role="presentation"
+        onClick={onClose}
+      >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.94, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 30, mass: 0.8 }}
+        className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl will-change-transform"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between p-5 border-b border-gray-800">
-          <div><h2 className="text-lg font-semibold text-white">Settings</h2><p className="text-xs text-gray-500 mt-0.5">Wallets are only needed when you buy.</p></div>
-          <button onClick={onClose} className="p-2 hover:bg-gray-800 rounded-lg transition-colors"><X className="w-5 h-5 text-gray-400" /></button>
+          <div><h2 id="settings-title" className="text-lg font-semibold text-white">Settings</h2><p className="text-xs text-gray-500 mt-0.5">Wallets are only needed when you buy.</p></div>
+          <button onClick={onClose} aria-label="Close settings" className="p-2 hover:bg-gray-800 rounded-lg transition-colors"><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
         <div className="p-5 space-y-6 max-h-[75vh] overflow-y-auto">
