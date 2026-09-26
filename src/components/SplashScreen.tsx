@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 interface SplashScreenProps {
   onComplete: () => void;
+  spin: number;
+  inclination: number;
 }
 
 interface Particle {
@@ -19,20 +21,24 @@ interface Particle {
 // hopr brand teal palette, sampled from the logo mark
 const COLORS = ['#3fb0aa', '#277577', '#72d2cb', '#1f6668', '#a8e6e1', '#185254', '#5ecfc7', '#0c2b2c'];
 
-export default function SplashScreen({ onComplete }: SplashScreenProps) {
+export default function SplashScreen({ onComplete, spin, inclination }: SplashScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const logoTransformRef = useRef<HTMLDivElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const animationRef = useRef<number>(0);
   const startTimeRef = useRef(Date.now());
+  const spinRef = useRef(spin);
+  const inclinationRef = useRef(inclination);
+  spinRef.current = spin;
+  inclinationRef.current = inclination;
   const phaseRef = useRef<'logo' | 'forming' | 'pulling' | 'consuming' | 'gone'>('logo');
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
-  const [phase, setPhase] = useState<'logo' | 'forming' | 'pulling' | 'consuming' | 'gone'>('logo');
-  const [logoScale, setLogoScale] = useState(1);
-  const [logoOpacity, setLogoOpacity] = useState(1);
+  const logoScaleRef = useRef(1);
+  const logoOpacityRef = useRef(1);
+  const logoRotationRef = useRef(0);
   const holeSizeRef = useRef(0);
-  const [holeSize, setHoleSize] = useState(0);
   const [shockwave, setShockwave] = useState(false);
 
   const createParticle = useCallback((w: number, h: number): Particle => {
@@ -93,15 +99,34 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       warmth: Math.random(),
     }));
 
+    const drawLensedImage = (star: typeof stars[number], centerX: number, centerY: number, imageRadius: number, imageAngle: number, alpha: number, sizeScale: number) => {
+      if (imageRadius < holeSizeRef.current * 0.76 || alpha <= 0.01) return;
+      const x = centerX + Math.cos(imageAngle) * imageRadius;
+      const y = centerY + Math.sin(imageAngle) * imageRadius;
+      const color = star.warmth > 0.82 ? '255, 225, 180' : '218, 242, 255';
+      ctx.beginPath();
+      ctx.arc(x, y, star.size * sizeScale, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${color}, ${Math.min(1, alpha)})`;
+      ctx.fill();
+      if (star.size > 1.1 && alpha > 0.35) {
+        ctx.beginPath();
+        ctx.arc(x, y, star.size * sizeScale * 2.8, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${color}, ${alpha * 0.12})`;
+        ctx.fill();
+      }
+    };
+
     // Orbiting "charge" ring shown while the mark is forming
     const chargeDots = Array.from({ length: 22 }, (_, i) => ({
       offset: (i / 14) * Math.PI * 2,
       radiusJitter: Math.random() * 0.15 + 0.9,
     }));
 
-    let shockwaveFired = false;
+    let previousFrameTime = performance.now();
 
-    const animate = () => {
+    const animate = (frameTime: number) => {
+      const frameScale = Math.min(2, Math.max(0, (frameTime - previousFrameTime) / (1000 / 60)));
+      previousFrameTime = frameTime;
       const elapsed = (Date.now() - startTimeRef.current) / 1000;
       const cx = w / 2;
       const cy = h / 2;
@@ -110,21 +135,16 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       // The logo gets a clean moment on its own before the black hole arrives.
       if (elapsed > 1.25 && phaseRef.current === 'logo') {
         phaseRef.current = 'forming';
-        setPhase('forming');
-        shockwaveFired = true;
         setShockwave(true);
       }
       if (elapsed > 1.5 && phaseRef.current === 'forming') {
         phaseRef.current = 'pulling';
-        setPhase('pulling');
       }
       if (elapsed > 1.72 && phaseRef.current === 'pulling') {
         phaseRef.current = 'consuming';
-        setPhase('consuming');
       }
       if (elapsed > 3.15 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
-        setPhase('gone');
         setTimeout(() => onCompleteRef.current(), 360);
         cancelAnimationFrame(animationRef.current);
         return;
@@ -140,19 +160,33 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       const holeEase = phaseRef.current === 'forming' ? 0.28 :
         phaseRef.current === 'pulling' ? 0.14 :
         phaseRef.current === 'consuming' ? 0.11 : 0.08;
-      holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * holeEase;
-      setHoleSize(holeSizeRef.current);
+      const holeFrameEase = 1 - Math.pow(1 - holeEase, frameScale);
+      holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * holeFrameEase;
 
       // Update logo transform
       if (phaseRef.current === 'pulling') {
-        setLogoScale(prev => Math.max(0.35, prev * 0.96));
-        setLogoOpacity(prev => Math.max(0.2, prev - 0.018));
+        logoScaleRef.current = Math.max(0.35, logoScaleRef.current * Math.pow(0.96, frameScale));
+        logoOpacityRef.current = Math.max(0.2, logoOpacityRef.current - 0.018 * frameScale);
       } else if (phaseRef.current === 'consuming') {
-        setLogoScale(prev => Math.max(0.01, prev * 0.97));
-        setLogoOpacity(prev => Math.max(0, prev - 0.012));
+        logoScaleRef.current = Math.max(0.008, logoScaleRef.current * Math.pow(0.935, frameScale));
+        logoOpacityRef.current = Math.max(0, logoOpacityRef.current - 0.018 * frameScale);
       } else if (phaseRef.current === 'gone') {
-        setLogoScale(0);
-        setLogoOpacity(0);
+        logoScaleRef.current = 0;
+        logoOpacityRef.current = 0;
+      }
+
+      const spin = spinRef.current;
+      const inclination = inclinationRef.current * Math.PI / 180;
+      const swallowProgress = Math.min(1, Math.max(0, (elapsed - 1.72) / 1.43));
+      logoRotationRef.current += (0.25 + spin * 1.6) * swallowProgress * frameScale;
+      const logo = logoTransformRef.current;
+      if (logo) {
+        const lensSquash = 1 - Math.sin(inclination) * swallowProgress * 0.22;
+        logo.style.transform = `scale(${logoScaleRef.current}) rotate(${logoRotationRef.current}deg) scaleY(${lensSquash})`;
+        logo.style.opacity = String(logoOpacityRef.current);
+        logo.style.filter = phaseRef.current === 'consuming'
+          ? `blur(${Math.min(12, (1 - logoScaleRef.current) * (8 + spin * 10))}px) brightness(${1 + swallowProgress * 0.35})`
+          : 'none';
       }
 
       // Gravity strength
@@ -167,9 +201,11 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       // Bend background light into the characteristic paired images around the shadow.
       const lensMix = Math.min(1, holeSizeRef.current / (minDim * 0.16));
       const einsteinRadius = Math.max(1, holeSizeRef.current * 1.1);
+      const shadowCx = cx + holeSizeRef.current * 0.045 * spin * Math.sin(inclination);
+      const shadowCy = cy;
       stars.forEach((star) => {
-        const dx = star.x - cx;
-        const dy = star.y - cy;
+        const dx = star.x - shadowCx;
+        const dy = star.y - shadowCy;
         const betaPixels = Math.sqrt(dx * dx + dy * dy);
         const beta = betaPixels / einsteinRadius;
         const root = Math.sqrt(beta * beta + 4);
@@ -178,35 +214,18 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         const magnification = Math.min(3.2, 0.5 + (beta * beta + 2) / (2 * Math.max(beta, 0.06) * root));
         const angle = betaPixels > 0 ? Math.atan2(dy, dx) : 0;
         const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
-        const color = star.warmth > 0.82 ? '255, 225, 180' : '218, 242, 255';
-        const drawImage = (imageRadius: number, imageAngle: number, alpha: number, sizeScale: number) => {
-          if (imageRadius < holeSizeRef.current * 0.76 || alpha <= 0.01) return;
-          const x = cx + Math.cos(imageAngle) * imageRadius;
-          const y = cy + Math.sin(imageAngle) * imageRadius;
-          ctx.beginPath();
-          ctx.arc(x, y, star.size * sizeScale, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${color}, ${Math.min(1, alpha)})`;
-          ctx.fill();
-          if (star.size > 1.1 && alpha > 0.35) {
-            ctx.beginPath();
-            ctx.arc(x, y, star.size * sizeScale * 2.8, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${color}, ${alpha * 0.12})`;
-            ctx.fill();
-          }
-        };
-
-        const primaryX = cx + Math.cos(angle) * primaryRadius;
-        const primaryY = cy + Math.sin(angle) * primaryRadius;
+        const primaryX = shadowCx + Math.cos(angle) * primaryRadius;
+        const primaryY = shadowCy + Math.sin(angle) * primaryRadius;
         const blendedX = star.x + (primaryX - star.x) * lensMix;
         const blendedY = star.y + (primaryY - star.y) * lensMix;
-        const blendedRadius = Math.sqrt((blendedX - cx) ** 2 + (blendedY - cy) ** 2);
-        const blendedAngle = Math.atan2(blendedY - cy, blendedX - cx);
-        drawImage(blendedRadius, blendedAngle, twinkle * (1 - lensMix * 0.18) * Math.sqrt(magnification), 1 + lensMix * (Math.sqrt(magnification) - 1));
+        const blendedRadius = Math.sqrt((blendedX - shadowCx) ** 2 + (blendedY - shadowCy) ** 2);
+        const blendedAngle = Math.atan2(blendedY - shadowCy, blendedX - shadowCx);
+        drawLensedImage(star, shadowCx, shadowCy, blendedRadius, blendedAngle, twinkle * (1 - lensMix * 0.18) * Math.sqrt(magnification), 1 + lensMix * (Math.sqrt(magnification) - 1));
 
         // The fainter, mirrored image makes close alignments resolve into luminous arcs.
         if (beta < 3.6 && lensMix > 0.04) {
           const secondaryMagnification = Math.max(0, magnification - 1);
-          drawImage(secondaryRadius, angle + Math.PI, twinkle * lensMix * Math.min(0.42, secondaryMagnification * 0.2), 0.8 + Math.sqrt(secondaryMagnification) * 0.2);
+          drawLensedImage(star, shadowCx, shadowCy, secondaryRadius, angle + Math.PI, twinkle * lensMix * Math.min(0.42, secondaryMagnification * 0.2), 0.8 + Math.sqrt(secondaryMagnification) * 0.2);
         }
       });
 
@@ -223,20 +242,21 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
         if (dist > 1) {
           const force = (gravity * 80) / (dist * dist + 200);
-          particle.vx += (dx / dist) * force;
-          particle.vy += (dy / dist) * force;
+          particle.vx += (dx / dist) * force * frameScale;
+          particle.vy += (dy / dist) * force * frameScale;
 
           // Orbital component
-          const orbForce = gravity * 0.15;
-          particle.vx += (-dy / dist) * orbForce * 0.08;
-          particle.vy += (dx / dist) * orbForce * 0.08;
+          const orbForce = gravity * (0.035 + spin * 0.2);
+          particle.vx += (-dy / dist) * orbForce * 0.08 * frameScale;
+          particle.vy += (dx / dist) * orbForce * 0.08 * frameScale;
         }
 
         // Velocity damping
-        particle.vx *= 0.985;
-        particle.vy *= 0.985;
-        particle.x += particle.vx;
-        particle.y += particle.vy;
+        const damping = Math.pow(0.985, frameScale);
+        particle.vx *= damping;
+        particle.vy *= damping;
+        particle.x += particle.vx * frameScale;
+        particle.y += particle.vy * frameScale;
 
         // Reset if consumed
         if (dist < holeSizeRef.current * 0.4) {
@@ -283,9 +303,12 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       // Realistic black-hole pass: a thin, asymmetric hot disk around a dark core.
       if (phaseRef.current !== 'logo') {
-        const diskRotation = elapsed * 0.32;
+        const diskRotation = elapsed * (0.2 + spin * 0.32);
         const radius = Math.max(2, holeSizeRef.current);
         const reveal = phaseRef.current === 'forming' ? 0.7 : 1;
+        const diskAspect = 0.12 + 0.88 * Math.cos(inclination);
+        const lensedArcHeight = 0.24 + 0.58 * Math.sin(inclination);
+        const dopplerContrast = Math.sin(inclination);
 
         ctx.save();
         ctx.translate(cx, cy);
@@ -294,15 +317,15 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
         // A fixed viewing angle keeps Doppler brightening on the approaching side.
         const diskGradient = ctx.createLinearGradient(-radius * 1.8, 0, radius * 1.8, 0);
-        diskGradient.addColorStop(0, `rgba(126, 194, 255, ${0.9 * reveal})`);
-        diskGradient.addColorStop(0.18, `rgba(255, 225, 178, ${0.72 * reveal})`);
-        diskGradient.addColorStop(0.42, `rgba(255, 155, 77, ${0.4 * reveal})`);
-        diskGradient.addColorStop(0.7, `rgba(255, 111, 51, ${0.2 * reveal})`);
-        diskGradient.addColorStop(1, `rgba(136, 48, 35, ${0.07 * reveal})`);
+        diskGradient.addColorStop(0, `rgba(126, 194, 255, ${(0.3 + 0.54 * dopplerContrast) * reveal})`);
+        diskGradient.addColorStop(0.18, `rgba(255, 225, 178, ${(0.34 + 0.32 * dopplerContrast) * reveal})`);
+        diskGradient.addColorStop(0.42, `rgba(255, 155, 77, ${0.32 * reveal})`);
+        diskGradient.addColorStop(0.7, `rgba(255, 111, 51, ${(0.32 - 0.16 * dopplerContrast) * reveal})`);
+        diskGradient.addColorStop(1, `rgba(136, 48, 35, ${(0.3 - 0.2 * dopplerContrast) * reveal})`);
 
         // A soft plasma envelope adds depth without washing out the central shadow.
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.58, radius * 0.4, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, radius * 1.58, radius * 1.58 * diskAspect, 0, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(255, 143, 62, ${0.09 * reveal})`;
         ctx.lineWidth = Math.max(2, radius * 0.14);
         ctx.shadowColor = 'rgba(255, 126, 49, 0.7)';
@@ -311,20 +334,20 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.shadowBlur = 0;
 
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.38, radius * 0.28, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, radius * 1.38, radius * 1.38 * diskAspect, 0, 0, Math.PI * 2);
         ctx.strokeStyle = diskGradient;
         ctx.lineWidth = Math.max(1.5, radius * 0.07);
         ctx.stroke();
 
         // Light from the far side of the disk is lensed into upper and lower humps.
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.28, radius * 0.82, 0, Math.PI * 1.08, Math.PI * 1.92);
-        ctx.strokeStyle = `rgba(255, 190, 137, ${0.32 * reveal})`;
+        ctx.ellipse(0, 0, radius * 1.28, radius * lensedArcHeight, 0, Math.PI * 1.08, Math.PI * 1.92);
+        ctx.strokeStyle = `rgba(255, 190, 137, ${0.32 * reveal * dopplerContrast})`;
         ctx.lineWidth = Math.max(0.8, radius * 0.018);
         ctx.stroke();
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.28, radius * 0.82, 0, Math.PI * 0.08, Math.PI * 0.92);
-        ctx.strokeStyle = `rgba(255, 166, 111, ${0.2 * reveal})`;
+        ctx.ellipse(0, 0, radius * 1.28, radius * lensedArcHeight, 0, Math.PI * 0.08, Math.PI * 0.92);
+        ctx.strokeStyle = `rgba(255, 166, 111, ${0.2 * reveal * dopplerContrast})`;
         ctx.lineWidth = Math.max(0.7, radius * 0.014);
         ctx.stroke();
 
@@ -332,10 +355,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         for (let knot = 0; knot < 6; knot++) {
           const orbitRadius = 1.12 + (knot % 3) * 0.12;
           const angularSpeed = 0.82 / Math.sqrt(orbitRadius);
-          const angle = elapsed * angularSpeed + knot * Math.PI / 3;
+          const angle = diskRotation * angularSpeed + knot * Math.PI / 3;
           const x = Math.cos(angle) * radius * orbitRadius;
-          const y = Math.sin(angle) * radius * orbitRadius * 0.28;
-          const dopplerBoost = 0.35 + 0.65 * (0.5 + 0.5 * Math.cos(angle - Math.PI));
+          const y = Math.sin(angle) * radius * orbitRadius * diskAspect;
+          const dopplerBoost = 1 - 0.5 * dopplerContrast + dopplerContrast * (0.5 + 0.5 * Math.cos(angle - Math.PI));
           const knotAlpha = reveal * (0.22 + 0.42 * dopplerBoost);
           ctx.beginPath();
           ctx.arc(x, y, Math.max(1, radius * 0.018), 0, Math.PI * 2);
@@ -349,19 +372,20 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.restore();
 
         // A restrained warm corona around the lensed shadow, not a solid teal halo.
-        const lensGrad = ctx.createRadialGradient(cx, cy, radius * 0.72, cx, cy, radius * 2.8);
+        const lensGrad = ctx.createRadialGradient(shadowCx, shadowCy, radius * 0.72, shadowCx, shadowCy, radius * 2.8);
         lensGrad.addColorStop(0, 'rgba(255, 190, 126, 0.1)');
         lensGrad.addColorStop(0.22, 'rgba(255, 125, 58, 0.08)');
         lensGrad.addColorStop(0.58, 'rgba(105, 55, 42, 0.025)');
         lensGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.beginPath();
-        ctx.arc(cx, cy, radius * 2.8, 0, Math.PI * 2);
+        ctx.arc(shadowCx, shadowCy, radius * 2.8, 0, Math.PI * 2);
         ctx.fillStyle = lensGrad;
         ctx.fill();
 
         // The observed shadow is larger than the event horizon and remains absolute black.
         ctx.beginPath();
-        ctx.arc(cx, cy, radius * 0.72, 0, Math.PI * 2);
+        const shadowFlattening = 1 - spin * Math.sin(inclination) * 0.035;
+        ctx.ellipse(shadowCx, shadowCy, radius * 0.72, radius * 0.72 * shadowFlattening, 0, 0, Math.PI * 2);
         ctx.fillStyle = '#000';
         ctx.fill();
 
@@ -372,7 +396,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           { radius: 0.91, alpha: photonAlpha * 0.1, width: 0.004, blur: 0.01 },
         ].forEach((ring) => {
           ctx.beginPath();
-          ctx.arc(cx, cy, radius * ring.radius, 0, Math.PI * 2);
+          ctx.ellipse(shadowCx, shadowCy, radius * ring.radius, radius * ring.radius * shadowFlattening, 0, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(255, 218, 170, ${ring.alpha})`;
           ctx.lineWidth = Math.max(0.55, radius * ring.width);
           ctx.shadowColor = 'rgba(255, 151, 74, 0.65)';
@@ -387,14 +411,14 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.globalCompositeOperation = 'lighter';
         ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 0.1, Math.PI * 0.9);
+        ctx.ellipse(0, 0, radius * 1.3, radius * 1.3 * diskAspect, 0, Math.PI * 0.1, Math.PI * 0.9);
         ctx.strokeStyle = `rgba(255, 177, 91, ${0.62 * reveal})`;
         ctx.lineWidth = Math.max(1.2, radius * 0.034);
         ctx.shadowColor = 'rgba(255, 173, 82, 0.85)';
         ctx.shadowBlur = radius * 0.08;
         ctx.stroke();
         ctx.beginPath();
-        ctx.ellipse(0, 0, radius * 1.3, radius * 0.34, 0, Math.PI * 0.18, Math.PI * 0.82);
+        ctx.ellipse(0, 0, radius * 1.3, radius * 1.3 * diskAspect, 0, Math.PI * 0.18, Math.PI * 0.82);
         ctx.strokeStyle = `rgba(255, 239, 190, ${0.68 * reveal})`;
         ctx.lineWidth = Math.max(0.7, radius * 0.012);
         ctx.shadowBlur = 0;
@@ -411,7 +435,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       animationRef.current = requestAnimationFrame(animate);
     };
 
-    animate();
+    animate(previousFrameTime);
 
     return () => {
       window.removeEventListener('resize', resize);
@@ -457,11 +481,12 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       {/* Logo appears first, then is consumed by the black hole */}
       <div
+        ref={logoTransformRef}
         className="absolute inset-0 flex items-center justify-center pointer-events-none"
         style={{
-          transform: `scale(${logoScale})`,
-          opacity: logoOpacity,
-          filter: phase === 'consuming' ? `blur(${(1 - logoScale) * 8}px)` : 'none',
+          transform: 'scale(1)',
+          opacity: 1,
+          willChange: 'transform, opacity, filter',
         }}
       >
         <motion.div

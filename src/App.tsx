@@ -16,8 +16,18 @@ import HistoryPage from './components/HistoryPage';
 import BridgePage from './components/BridgePage';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
+import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
+
+function BlackHoleSplash({ onComplete }: { onComplete: () => void }) {
+  const { settings } = useBlackHoleSettings();
+  return <SplashScreen onComplete={onComplete} spin={settings.spin} inclination={settings.inclination} />;
+}
+
+function BlackHoleSettingsModal({ isOpen, onClose, onPreviewBlackHole }: { isOpen: boolean; onClose: () => void; onPreviewBlackHole: () => void }) {
+  return <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />;
+}
 
 function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
@@ -25,10 +35,17 @@ function AppContent() {
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [splashRun, setSplashRun] = useState(0);
   const { isReady } = useWallet();
 
   const handleSplashComplete = () => {
     setShowSplash(false);
+  };
+
+  const previewBlackHole = () => {
+    setSettingsOpen(false);
+    setSplashRun((run) => run + 1);
+    setShowSplash(true);
   };
 
   // If on docs page, render it instead of dashboard
@@ -39,9 +56,9 @@ function AppContent() {
   if (!isReady) {
     return (
       <>
-        <AnimatePresence>{showSplash && <SplashScreen onComplete={handleSplashComplete} />}</AnimatePresence>
+        <AnimatePresence>{showSplash && <BlackHoleSplash key={splashRun} onComplete={handleSplashComplete} />}</AnimatePresence>
         <DashboardLocked showSplash={showSplash} onOpenSettings={() => setSettingsOpen(true)} />
-        <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
       </>
     );
   }
@@ -54,7 +71,7 @@ function AppContent() {
     <>
       {/* Splash Screen */}
       <AnimatePresence>
-        {showSplash && <SplashScreen onComplete={handleSplashComplete} />}
+        {showSplash && <BlackHoleSplash key={splashRun} onComplete={handleSplashComplete} />}
       </AnimatePresence>
 
       {/* Main App */}
@@ -294,7 +311,7 @@ function AppContent() {
       </footer>
 
       {/* Settings Modal */}
-      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
     </div>
     </>
   );
@@ -342,9 +359,11 @@ function StatCard({ icon, label, value, change, positive }: { icon: React.ReactN
 
 export default function App() {
   return (
-    <ThemeProvider>
+      <ThemeProvider>
       <WalletProvider>
+      <BlackHoleSettingsProvider>
         <AppContent />
+      </BlackHoleSettingsProvider>
       </WalletProvider>
     </ThemeProvider>
   );

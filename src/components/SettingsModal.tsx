@@ -4,17 +4,52 @@ import { SUPPORTED_CHAINS } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion } from 'framer-motion';
 import { useWallet } from '../context/WalletContext';
+import { useBlackHoleSettings } from '../context/BlackHoleContext';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onPreviewBlackHole: () => void;
 }
 
 function shortAddress(address: string | null) {
   return address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'Not connected';
 }
 
-export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+function BlackHoleControls({ onPreviewBlackHole }: { onPreviewBlackHole: () => void }) {
+  const { settings: { spin, inclination }, setSpin, setInclination } = useBlackHoleSettings();
+
+  return (
+    <section className="p-4 bg-gray-800/30 border border-gray-700/50 rounded-xl space-y-5" aria-labelledby="black-hole-settings-title">
+      <div>
+        <div className="flex items-center gap-2 mb-1"><Zap className="w-4 h-4 text-orange-300" /><h3 id="black-hole-settings-title" className="text-sm font-medium text-white">Black-hole visualization</h3></div>
+        <p className="text-xs text-gray-500">a* is the dimensionless spin; inclination is measured from the rotation axis. Changes save on this device.</p>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <label htmlFor="black-hole-spin" className="text-sm text-gray-200">Spin parameter (a*)</label>
+          <output htmlFor="black-hole-spin" className="text-xs font-mono text-orange-200">{spin.toFixed(2)}</output>
+        </div>
+        <input id="black-hole-spin" aria-label="Black hole spin parameter" type="range" min="0" max="0.998" step="0.001" value={spin} onChange={(event) => setSpin(Number(event.target.value))} className="w-full accent-orange-400" />
+        <div className="flex justify-between text-[10px] text-gray-500"><span>0 · non-rotating</span><span>0.998 · near maximum</span></div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <label htmlFor="black-hole-inclination" className="text-sm text-gray-200">Viewing inclination</label>
+          <output htmlFor="black-hole-inclination" className="text-xs font-mono text-orange-200">{inclination}°</output>
+        </div>
+        <input id="black-hole-inclination" aria-label="Black hole viewing inclination angle" type="range" min="0" max="90" step="1" value={inclination} onChange={(event) => setInclination(Number(event.target.value))} className="w-full accent-orange-400" />
+        <div className="flex justify-between text-[10px] text-gray-500"><span>0° · face-on</span><span>90° · edge-on</span></div>
+      </div>
+
+      <button onClick={onPreviewBlackHole} className="w-full px-3 py-2 rounded-lg bg-orange-500/15 border border-orange-400/30 text-sm font-medium text-orange-100 hover:bg-orange-500/25 transition-colors">Preview black-hole animation</button>
+    </section>
+  );
+}
+
+export default function SettingsModal({ isOpen, onClose, onPreviewBlackHole }: SettingsModalProps) {
   const { evmAddress, solanaAddress, isReady, connectEvm, connectSolana, disconnectEvm, disconnectSolana } = useWallet();
   const [defaultChain, setDefaultChain] = useState('sol');
   const [quickBuyAmounts, setQuickBuyAmounts] = useState(['0.1', '0.5', '1.0', '2.0']);
@@ -68,6 +103,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             {error && <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
             <p className="text-[11px] text-gray-500 mt-2">Connect one EVM wallet and one Solana wallet before using dashboard trading features.</p>
           </section>
+
+          <BlackHoleControls onPreviewBlackHole={onPreviewBlackHole} />
 
           <div>
             <div className="flex items-center gap-2 mb-3"><Globe className="w-4 h-4 text-purple-400" /><label className="text-sm font-medium text-white">Default Funding Chain</label></div>
