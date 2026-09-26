@@ -8,7 +8,23 @@
  * - Trade status polling (GET /api/trade/:id/status)
  * 
  * Deploy with: npx wrangler deploy
+ *
+ * CUSTODIAL TRADING: buy/sell now execute for real once a user creates a
+ * custodial wallet (see workers/trading.ts). Execution is gated behind an
+ * explicit "Confirm" tap on a live quote, not the initial preset tap, so a
+ * single accidental button press can never sign a transaction. Both the D1
+ * `user_wallets`/`user_trades` tables (migrations/0002_trade_history.sql)
+ * and the ENCRYPTION_KEY secret must be configured before this path works;
+ * it fails closed (with a clear message) if either is missing.
  */
+import {
+  getCustodialWallet,
+  createCustodialWallet,
+  prepareBuy,
+  prepareSell,
+  confirmTrade,
+} from './trading';
+import { getChainById, getChainByKey, SUPPORTED_CHAINS } from '../src/services/chainDetector';
 
 export interface Env {
   DB?: D1Database;
@@ -567,12 +583,53 @@ function telegramWalletLinkKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: 'Link EVM', callback_data: 'wallet:set:evm' },
-        { text: 'Link Solana', callback_data: 'wallet:set:solana' },
+        { text: 'Link EVM (read-only)', callback_data: 'wallet:set:evm' },
+        { text: 'Link Solana (read-only)', callback_data: 'wallet:set:solana' },
       ],
+      [{ text: 'Create trading wallet', callback_data: 'wallet:generate' }],
       [{ text: 'Help', callback_data: 'help' }],
     ],
   };
+}
+
+function telegramTradeConfirmKeyboard(tradeId: string) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '✅ Confirm & sign', callback_data: `trade:confirm:${tradeId}` },
+        { text: '× Cancel', callback_data: 'dismiss' },
+      ],
+    ],
+  };
+}
+
+async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<void> {
+  const userId = String(chatId);
+  if (!env.DB) {
+    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to configure the D1 database binding.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  if (!env.ENCRYPTION_KEY) {
+    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to set the ENCRYPTION_KEY secret.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  const existing = await getCustodialWallet(userId, env);
+  if (existing) {
+    await sendTelegramMessage(
+      chatId,
+      `You already have a trading wallet:\nEVM: ${shortenTelegramAddress(existing.evmAddress)}\nSolana: ${shortenTelegramAddress(existing.solanaAddress)}\n\nHopr holds the encrypted keys for this wallet and will only ever sign a transaction after you tap Confirm on a specific quote.`,
+      env,
+      TELEGRAM_ACTION_KEYBOARD,
+    );
+    return;
+  }
+  const wallet = await createCustodialWallet(userId, env);
+  await sendTelegramMessage(
+    chatId,
+    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Hopr stores your keys encrypted (AES-256-GCM) and only signs after you tap Confirm on a quote you've seen — it never signs unattended. Send /wallet anytime to see balances.`,
+    env,
+    TELEGRAM_ACTION_KEYBOARD,
+  );
 }
 
 async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
@@ -592,36 +649,103 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
     return;
   }
   const profile = await readTelegramProfile(chatId, env);
-  if (!profile?.lastTokenAddress || !profile.lastTokenChainId || profile.lastTokenChainType !== 'EVM') {
-    await sendTelegramMessage(chatId, 'Open a supported EVM token lookup first. A public EVM wallet and the D1/KV profile store are required for a LI.FI quote preview.', env, TELEGRAM_ACTION_KEYBOARD);
+  if (!profile?.lastTokenAddress || !profile.lastTokenChainId) {
+    await sendTelegramMessage(chatId, 'Open a token lookup first (paste a contract address), then use the buy/sell buttons on that result.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
-  if (!profile.evmAddress) {
-    await sendTelegramMessage(chatId, 'Link a public EVM wallet first with /setwallet evm <address>. The bot only requests a quote; it never asks for a private key or signs a transaction.', env, telegramWalletLinkKeyboard());
+
+  const userId = String(chatId);
+  const wallet = await getCustodialWallet(userId, env);
+  if (!wallet) {
+    await sendTelegramMessage(
+      chatId,
+      'Trading needs a Hopr trading wallet (Hopr holds the keys and signs only after you confirm a quote). Create one, or link a public address for read-only balance checks only.',
+      env,
+      telegramWalletLinkKeyboard(),
+    );
     return;
   }
+  if (!env.ENCRYPTION_KEY) {
+    await sendTelegramMessage(chatId, 'Trading is not available: the bot owner has not set ENCRYPTION_KEY.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+
   const buyMatch = data.match(/^trade:buy:(0\.1|0\.5|1\.0)$/);
   const sellMatch = data.match(/^trade:sell:(25|50|100)$/);
   if (!buyMatch && !sellMatch) return;
-  const amount = buyMatch?.[1] ?? '0.1';
-  const quote = await requestLifiQuote({
-    fromChain: profile.fundingChainId ?? 8453,
-    fromToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
-    fromAmount: decimalToUnits(amount, 18),
-    fromAddress: profile.evmAddress,
-    toChain: profile.lastTokenChainId,
-    toToken: profile.lastTokenAddress,
-    slippage: (profile.slippagePercent ?? 1) / 100,
-  }, env);
-  if (!quote.ok) {
-    await sendTelegramMessage(chatId, `LI.FI quote unavailable: ${quote.message}`, env, TELEGRAM_ACTION_KEYBOARD);
+
+  const targetChain = getChainById(profile.lastTokenChainId);
+  if (!targetChain) {
+    await sendTelegramMessage(chatId, 'That chain is not supported for trading yet.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
-  const estimate = quote.data.estimate as { toAmount?: string; executionDuration?: number; gasCosts?: Array<{ amountUSD?: string }> } | undefined;
-  const toAmount = estimate?.toAmount ?? 'unavailable';
-  const duration = typeof estimate?.executionDuration === 'number' ? `${Math.max(1, Math.round(estimate.executionDuration / 60))} min` : 'variable';
-  const gasUsd = estimate?.gasCosts?.find((cost) => cost.amountUSD)?.amountUSD;
-  await sendTelegramMessage(chatId, `LI.FI quote ready for ${profile.lastTokenSymbol ?? 'token'}:\nEstimated output: ${toAmount}\nEstimated time: ${duration}${gasUsd ? `\nEstimated gas: $${gasUsd}` : ''}\n\nThis is a read-only quote. Hopr has not signed, approved, submitted, or executed a transaction.`, env, TELEGRAM_ACTION_KEYBOARD);
+  const slippage = (profile.slippagePercent ?? 1) / 100;
+
+  try {
+    if (buyMatch) {
+      const amountDecimal = buyMatch[1];
+      const fundingChainId = profile.fundingChainId ?? 8453;
+      const fundingChain = getChainById(fundingChainId);
+      if (!fundingChain) throw new Error('Configured funding chain is not supported');
+      const trade = await prepareBuy(
+        {
+          userId,
+          wallet,
+          fundingChainKey: fundingChain.key,
+          fundingTokenAddress: 'native',
+          fundingAmountUnits: decimalToUnits(amountDecimal, fundingChain.type === 'EVM' ? 18 : 9),
+          targetChainId: targetChain.id,
+          targetTokenAddress: profile.lastTokenAddress,
+          slippage,
+        },
+        env,
+      );
+      const toAmount = trade.quote.estimate.toAmountMin;
+      await sendTelegramMessage(
+        chatId,
+        `Quote: ${amountDecimal} ${fundingChain.nativeSymbol} (${fundingChain.name}) → ~${toAmount} ${profile.lastTokenSymbol ?? 'tokens'} (${targetChain.name}).\nSlippage: ${(slippage * 100).toFixed(1)}%. This quote is only valid for 90 seconds — tap Confirm to sign and submit now.`,
+        env,
+        telegramTradeConfirmKeyboard(trade.id),
+      );
+      return;
+    }
+
+    if (sellMatch) {
+      await sendTelegramMessage(
+        chatId,
+        'Selling requires picking which open position to close — use /positions (dashboard) for now; Telegram sell-by-percent wiring to a specific position is not yet connected.',
+        env,
+        TELEGRAM_ACTION_KEYBOARD,
+      );
+      return;
+    }
+  } catch (error) {
+    await sendTelegramMessage(chatId, `Could not prepare that trade: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
+  }
+}
+
+async function handleTelegramTradeConfirm(chatId: number, tradeId: string, env: Env): Promise<void> {
+  const userId = String(chatId);
+  const rpcUrls = {
+    evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
+    solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
+  };
+  try {
+    const result = await confirmTrade(userId, tradeId, rpcUrls, env);
+    await sendTelegramMessage(
+      chatId,
+      `Submitted. Transaction: ${result.txHash}\n\nBridging/settlement can take a few minutes depending on the route.`,
+      env,
+      TELEGRAM_ACTION_KEYBOARD,
+    );
+  } catch (error) {
+    await sendTelegramMessage(
+      chatId,
+      `Trade not executed: ${error instanceof Error ? error.message : 'unknown error'}`,
+      env,
+      TELEGRAM_ACTION_KEYBOARD,
+    );
+  }
 }
 
 function decimalToUnits(amount: string, decimals: number): string {
@@ -670,8 +794,15 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'wallet') return showTelegramWallet(chatId, env);
   if (data === 'settings') return showTelegramSettings(chatId, env);
   if (data === 'dismiss') return;
+  const confirmMatch = data.match(/^trade:confirm:(.+)$/);
+  if (confirmMatch) {
+    return handleTelegramTradeConfirm(chatId, confirmMatch[1], env);
+  }
   if (data.startsWith('trade:')) {
     return handleTelegramTradeAction(chatId, data, env);
+  }
+  if (data === 'wallet:generate') {
+    return showTelegramWalletGenerate(chatId, env);
   }
   if (data === 'wallet:link') {
     if (!env.TELEGRAM_STATE && !env.DB) {
