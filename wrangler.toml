@@ -31,3 +31,14 @@ id = "c75340fc9e934d20bdf8437e4725541b"
 [[kv_namespaces]]
 binding = "TELEGRAM_STATE"
 id = "c75340fc9e934d20bdf8437e4725541b"
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
