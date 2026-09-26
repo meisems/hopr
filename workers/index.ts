@@ -11,12 +11,12 @@
  */
 
 export interface Env {
-  DB: D1Database;
-  CACHE: KVNamespace;
-  ENCRYPTION_KEY: string;
-  LIFI_API_KEY: string;
+  DB?: D1Database;
+  CACHE?: KVNamespace;
+  ENCRYPTION_KEY?: string;
+  LIFI_API_KEY?: string;
   ENVIRONMENT: string;
-  RATE_LIMIT: KVNamespace; // For rate limiting
+  RATE_LIMIT?: KVNamespace; // For rate limiting
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_STATE?: KVNamespace;
@@ -94,6 +94,10 @@ interface TelegramProfile {
   solanaAddress?: string;
   fundingChainId?: number;
   slippagePercent?: number;
+  lastTokenAddress?: string;
+  lastTokenChainId?: number;
+  lastTokenChainType?: 'EVM' | 'SVM';
+  lastTokenSymbol?: string;
 }
 
 interface TradeRequest {
@@ -102,6 +106,7 @@ interface TradeRequest {
   amount: string;
   fundingChain: string;
   slippage: number;
+  fromAddress?: string;
 }
 
 // Rate limiting middleware
@@ -381,23 +386,96 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env): P
   const name = typeof token.name === 'string' ? token.name : 'Unknown token';
   const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
   const result = `${symbol} — ${name}\nChain: ${chain}\nAddress: ${address}\nPrice: $${price.toPrecision(6)}\n24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\nLiquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\nFDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n\nMarket data from DexScreener. This bot does not execute trades.`;
+  if (env.DB || env.TELEGRAM_STATE) {
+    const profile = await readTelegramProfile(chatId, env) ?? {};
+    await writeTelegramProfile(chatId, {
+      ...profile,
+      lastTokenAddress: address,
+      lastTokenChainId: typeof token.chainId === 'number' ? token.chainId : undefined,
+      lastTokenChainType: token.chainType === 'SVM' ? 'SVM' : 'EVM',
+      lastTokenSymbol: symbol,
+    }, env);
+  }
   await sendTelegramMessage(chatId, result, env, telegramTokenKeyboard(address));
 }
 
+const telegramProfileKey = (chatId: number) => `telegram:${chatId}`;
+
 async function readTelegramProfile(chatId: number, env: Env): Promise<TelegramProfile | null> {
-  if (!env.TELEGRAM_STATE) return null;
-  const stored = await env.TELEGRAM_STATE.get(`telegram:${chatId}`);
-  if (!stored) return {};
-  try {
-    return JSON.parse(stored) as TelegramProfile;
-  } catch {
-    return {};
+  const key = telegramProfileKey(chatId);
+  if (env.TELEGRAM_STATE) {
+    const cached = await env.TELEGRAM_STATE.get(key);
+    if (cached) {
+      try {
+        return JSON.parse(cached) as TelegramProfile;
+      } catch {
+        // Remove malformed cache data by falling through to the durable store.
+      }
+    }
   }
+  if (!env.DB) return env.TELEGRAM_STATE ? {} : null;
+  const row = await env.DB.prepare(
+    `SELECT evm_address, solana_address, funding_chain_id, slippage_percent,
+            last_token_address, last_token_chain_id, last_token_chain_type, last_token_symbol
+       FROM telegram_profiles WHERE chat_id = ?1`,
+  ).bind(chatId).first<{
+    evm_address?: string;
+    solana_address?: string;
+    funding_chain_id?: number;
+    slippage_percent?: number;
+    last_token_address?: string;
+    last_token_chain_id?: number;
+    last_token_chain_type?: 'EVM' | 'SVM';
+    last_token_symbol?: string;
+  }>();
+  if (!row) return {};
+  const profile: TelegramProfile = {
+    evmAddress: row.evm_address,
+    solanaAddress: row.solana_address,
+    fundingChainId: row.funding_chain_id,
+    slippagePercent: row.slippage_percent,
+    lastTokenAddress: row.last_token_address,
+    lastTokenChainId: row.last_token_chain_id,
+    lastTokenChainType: row.last_token_chain_type,
+    lastTokenSymbol: row.last_token_symbol,
+  };
+  if (env.TELEGRAM_STATE) await env.TELEGRAM_STATE.put(key, JSON.stringify(profile), { expirationTtl: 86400 });
+  return profile;
 }
 
 async function writeTelegramProfile(chatId: number, profile: TelegramProfile, env: Env): Promise<boolean> {
-  if (!env.TELEGRAM_STATE) return false;
-  await env.TELEGRAM_STATE.put(`telegram:${chatId}`, JSON.stringify(profile));
+  if (!env.TELEGRAM_STATE && !env.DB) return false;
+  const now = Date.now();
+  if (env.DB) {
+    await env.DB.prepare(
+      `INSERT INTO telegram_profiles
+        (chat_id, evm_address, solana_address, funding_chain_id, slippage_percent,
+         last_token_address, last_token_chain_id, last_token_chain_type, last_token_symbol, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         evm_address = excluded.evm_address,
+         solana_address = excluded.solana_address,
+         funding_chain_id = excluded.funding_chain_id,
+         slippage_percent = excluded.slippage_percent,
+         last_token_address = excluded.last_token_address,
+         last_token_chain_id = excluded.last_token_chain_id,
+         last_token_chain_type = excluded.last_token_chain_type,
+         last_token_symbol = excluded.last_token_symbol,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      chatId,
+      profile.evmAddress ?? null,
+      profile.solanaAddress ?? null,
+      profile.fundingChainId ?? null,
+      profile.slippagePercent ?? 1,
+      profile.lastTokenAddress ?? null,
+      profile.lastTokenChainId ?? null,
+      profile.lastTokenChainType ?? null,
+      profile.lastTokenSymbol ?? null,
+      now,
+    ).run();
+  }
+  if (env.TELEGRAM_STATE) await env.TELEGRAM_STATE.put(telegramProfileKey(chatId), JSON.stringify(profile), { expirationTtl: 86400 });
   return true;
 }
 
@@ -406,8 +484,8 @@ function shortenTelegramAddress(address: string): string {
 }
 
 async function setTelegramWallet(chatId: number, args: string[], env: Env): Promise<void> {
-  if (!env.TELEGRAM_STATE) {
-    await sendTelegramMessage(chatId, 'Wallet linking needs a Cloudflare KV binding named TELEGRAM_STATE. Ask the bot owner to enable it, then retry.', env);
+  if (!env.TELEGRAM_STATE && !env.DB) {
+    await sendTelegramMessage(chatId, 'Wallet linking needs the TELEGRAM_STATE KV or DB binding. Ask the bot owner to enable persistence, then retry.', env);
     return;
   }
   const [network, suppliedAddress] = args;
@@ -432,7 +510,7 @@ async function setTelegramWallet(chatId: number, args: string[], env: Env): Prom
 async function showTelegramWallet(chatId: number, env: Env): Promise<void> {
   const profile = await readTelegramProfile(chatId, env);
   if (!profile) {
-    await sendTelegramMessage(chatId, 'To check a wallet now, use /wallet <public-address> or /balances <public-address>. To save an address for later, the bot owner must configure a Cloudflare KV binding named TELEGRAM_STATE. Never send a private key or seed phrase.', env);
+    await sendTelegramMessage(chatId, 'To check a wallet now, use /wallet <public-address> or /balances <public-address>. To save an address for later, the bot owner must configure the TELEGRAM_STATE KV or DB binding. Never send a private key or seed phrase.', env);
     return;
   }
   if (!profile.evmAddress && !profile.solanaAddress) {
@@ -500,12 +578,91 @@ function telegramWalletLinkKeyboard() {
 async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
   const profile = await readTelegramProfile(chatId, env);
   if (!profile) {
-    await sendTelegramMessage(chatId, 'Personal settings need a Cloudflare KV binding named TELEGRAM_STATE. Ask the bot owner to enable it.', env);
+    await sendTelegramMessage(chatId, 'Personal settings need the TELEGRAM_STATE KV or DB binding. Ask the bot owner to enable persistence.', env);
     return;
   }
   const chain = TELEGRAM_CHAINS.find((item) => item.id === profile.fundingChainId) ?? TELEGRAM_CHAINS[0];
   const slippage = profile.slippagePercent ?? 1;
   await sendTelegramMessage(chatId, `Your trade preferences (display only; Telegram trading is not enabled):\nFunding chain: ${chain.name}\nSlippage preference: ${slippage}%\n\nChoose a chain or slippage below.`, env, telegramSettingsKeyboard());
+}
+
+async function handleTelegramTradeAction(chatId: number, data: string, env: Env): Promise<void> {
+  if (data === 'trade:custom') {
+    await sendTelegramMessage(chatId, 'Custom trade amounts are not enabled yet. Use /settings to choose a funding chain and slippage.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  const profile = await readTelegramProfile(chatId, env);
+  if (!profile?.lastTokenAddress || !profile.lastTokenChainId || profile.lastTokenChainType !== 'EVM') {
+    await sendTelegramMessage(chatId, 'Open a supported EVM token lookup first. A public EVM wallet and the D1/KV profile store are required for a LI.FI quote preview.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  if (!profile.evmAddress) {
+    await sendTelegramMessage(chatId, 'Link a public EVM wallet first with /setwallet evm <address>. The bot only requests a quote; it never asks for a private key or signs a transaction.', env, telegramWalletLinkKeyboard());
+    return;
+  }
+  const buyMatch = data.match(/^trade:buy:(0\.1|0\.5|1\.0)$/);
+  const sellMatch = data.match(/^trade:sell:(25|50|100)$/);
+  if (!buyMatch && !sellMatch) return;
+  const amount = buyMatch?.[1] ?? '0.1';
+  const quote = await requestLifiQuote({
+    fromChain: profile.fundingChainId ?? 8453,
+    fromToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+    fromAmount: decimalToUnits(amount, 18),
+    fromAddress: profile.evmAddress,
+    toChain: profile.lastTokenChainId,
+    toToken: profile.lastTokenAddress,
+    slippage: (profile.slippagePercent ?? 1) / 100,
+  }, env);
+  if (!quote.ok) {
+    await sendTelegramMessage(chatId, `LI.FI quote unavailable: ${quote.message}`, env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  const estimate = quote.data.estimate as { toAmount?: string; executionDuration?: number; gasCosts?: Array<{ amountUSD?: string }> } | undefined;
+  const toAmount = estimate?.toAmount ?? 'unavailable';
+  const duration = typeof estimate?.executionDuration === 'number' ? `${Math.max(1, Math.round(estimate.executionDuration / 60))} min` : 'variable';
+  const gasUsd = estimate?.gasCosts?.find((cost) => cost.amountUSD)?.amountUSD;
+  await sendTelegramMessage(chatId, `LI.FI quote ready for ${profile.lastTokenSymbol ?? 'token'}:\nEstimated output: ${toAmount}\nEstimated time: ${duration}${gasUsd ? `\nEstimated gas: $${gasUsd}` : ''}\n\nThis is a read-only quote. Hopr has not signed, approved, submitted, or executed a transaction.`, env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+function decimalToUnits(amount: string, decimals: number): string {
+  const [whole, fraction = ''] = amount.split('.');
+  return `${BigInt(whole || '0') * (10n ** BigInt(decimals)) + BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals) || '0')}`;
+}
+
+async function requestLifiQuote(params: {
+  fromChain: number;
+  fromToken: string;
+  fromAmount: string;
+  fromAddress: string;
+  toChain: number;
+  toToken: string;
+  slippage: number;
+}, env: Env): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; message: string }> {
+  const query = new URLSearchParams({
+    fromChain: String(params.fromChain),
+    fromToken: params.fromToken,
+    fromAmount: params.fromAmount,
+    fromAddress: params.fromAddress,
+    toChain: String(params.toChain),
+    toToken: params.toToken,
+    slippage: String(params.slippage),
+  });
+  try {
+    const response = await fetch(`https://li.quest/v1/quote?${query}`, {
+      headers: {
+        Accept: 'application/json',
+        ...(env.LIFI_API_KEY ? { 'x-lifi-api-key': env.LIFI_API_KEY } : {}),
+      },
+    });
+    const data = await response.json() as Record<string, unknown>;
+    if (!response.ok) {
+      const message = typeof data.message === 'string' ? data.message : `HTTP ${response.status}`;
+      return { ok: false, message };
+    }
+    return { ok: true, data };
+  } catch {
+    return { ok: false, message: 'the quote service could not be reached' };
+  }
 }
 
 async function handleTelegramCallback(chatId: number, data: string, env: Env): Promise<void> {
@@ -514,19 +671,19 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'settings') return showTelegramSettings(chatId, env);
   if (data === 'dismiss') return;
   if (data.startsWith('trade:')) {
-    return sendTelegramMessage(chatId, 'Trading is not enabled yet. These controls mirror the dashboard; no wallet signing or transaction submission occurred.', env, TELEGRAM_ACTION_KEYBOARD);
+    return handleTelegramTradeAction(chatId, data, env);
   }
   if (data === 'wallet:link') {
-    if (!env.TELEGRAM_STATE) {
-      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
+    if (!env.TELEGRAM_STATE && !env.DB) {
+      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV or DB binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
     }
     return sendTelegramMessage(chatId, 'Choose which public wallet address to link. Never send a private key or seed phrase.', env, telegramWalletLinkKeyboard());
   }
 
   const walletNetworkMatch = data.match(/^wallet:set:(evm|solana)$/);
   if (walletNetworkMatch) {
-    if (!env.TELEGRAM_STATE) {
-      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
+    if (!env.TELEGRAM_STATE && !env.DB) {
+      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV or DB binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
     }
     const network = walletNetworkMatch[1] as 'evm' | 'solana';
     return sendTelegramMessage(chatId, TELEGRAM_WALLET_PROMPTS[network], env, {
@@ -616,6 +773,12 @@ async function handleApiRequest(
   if (path === '/api/trade/buy' && request.method === 'POST') {
     const body = await request.json() as TradeRequest;
     return handleTradeBuy(body, env, corsHeaders);
+  }
+
+  // POST /api/trade/quote - read-only LI.FI route quote
+  if (path === '/api/trade/quote' && request.method === 'POST') {
+    const body = await request.json() as TradeRequest & { toChainId?: number; toToken?: string };
+    return handleTradeQuote(body, env, corsHeaders);
   }
 
   // POST /api/trade/sell
@@ -812,6 +975,27 @@ async function handleTradeBuy(
     error: 'Trade execution is not implemented.',
     code: 'TRADE_EXECUTION_UNAVAILABLE',
   }, { status: 501, headers: corsHeaders });
+}
+
+async function handleTradeQuote(
+  body: TradeRequest & { toChainId?: number; toToken?: string },
+  env: Env,
+  corsHeaders: Record<string, string>,
+): Promise<Response> {
+  if (!body.fromAddress || !body.tokenAddress || !body.toChainId || !body.amount) {
+    return Response.json({ error: 'fromAddress, tokenAddress, amount, and toChainId are required.' }, { status: 400, headers: corsHeaders });
+  }
+  const quote = await requestLifiQuote({
+    fromChain: Number(body.fundingChain) || 8453,
+    fromToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+    fromAmount: decimalToUnits(body.amount, 18),
+    fromAddress: body.fromAddress,
+    toChain: body.toChainId,
+    toToken: body.toToken ?? body.tokenAddress,
+    slippage: Math.min(0.5, Math.max(0.0005, Number(body.slippage || 1) / 100)),
+  }, env);
+  if (!quote.ok) return Response.json({ error: quote.message, code: 'LIFI_QUOTE_UNAVAILABLE' }, { status: 502, headers: corsHeaders });
+  return Response.json({ quote: quote.data, readOnly: true, execution: 'unavailable' }, { headers: corsHeaders });
 }
 
 async function handleTradeSell(

@@ -20,6 +20,32 @@ function createKv() {
   };
 }
 
+function createD1() {
+  const rows = new Map();
+  return {
+    prepare() {
+      return {
+        bind(...params) {
+          return {
+            async first() {
+              const row = rows.get(params[0]);
+              return row ? { ...row } : null;
+            },
+            async run() {
+              rows.set(params[0], {
+                evm_address: params[1], solana_address: params[2], funding_chain_id: params[3], slippage_percent: params[4],
+                last_token_address: params[5], last_token_chain_id: params[6], last_token_chain_type: params[7], last_token_symbol: params[8],
+              });
+              return { success: true };
+            },
+          };
+        },
+      };
+    },
+    rows,
+  };
+}
+
 async function sendUpdate(update, { method = 'POST', secret = env.TELEGRAM_WEBHOOK_SECRET, extraEnv = {}, externalFetch } = {}) {
   const calls = [];
   const originalFetch = globalThis.fetch;
@@ -171,12 +197,43 @@ test('token address gets real market lookup details from DexScreener', async () 
   ]);
 });
 
-test('dashboard-style trade callbacks stay read-only until execution is implemented', async () => {
+test('dashboard-style trade callbacks require a stored token context before quoting', async () => {
   const { calls } = await sendUpdate({
     callback_query: { id: 'trade-preview', data: 'trade:buy:0.5', message: { chat: { id: 322, type: 'private' } } },
   });
-  assert.match(calls.at(-1).body.text, /Trading is not enabled yet/);
-  assert.match(calls.at(-1).body.text, /no wallet signing/);
+  assert.match(calls.at(-1).body.text, /Open a supported EVM token lookup first/);
+  assert.match(calls.at(-1).body.text, /D1\/KV profile store/);
+});
+
+test('D1-backed Telegram profiles persist when KV is absent', async () => {
+  const db = createD1();
+  const address = '0x1234567890abcdef1234567890abcdef12345678';
+  const { calls } = await sendUpdate({ message: { chat: { id: 900, type: 'private' }, text: `/setwallet evm ${address}` } }, {
+    extraEnv: { DB: db },
+  });
+  assert.equal(db.rows.get(900).evm_address, address);
+  assert.match(calls[0].body.text, /EVM public address linked/);
+});
+
+test('website/API quote path forwards requests to LI.FI with the server-side key', async () => {
+  let lifiRequest;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    lifiRequest = { url: String(url), headers: init.headers };
+    return Response.json({ estimate: { toAmount: '12345', executionDuration: 120 } });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://worker.example/api/trade/quote', {
+      method: 'POST',
+      body: JSON.stringify({ fromAddress: '0x1234567890abcdef1234567890abcdef12345678', tokenAddress: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', toChainId: 8453, amount: '0.1', fundingChain: '42161', slippage: 1 }),
+    }), { ...env, LIFI_API_KEY: 'server-key' }, {});
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).readOnly, true);
+    assert.match(lifiRequest.url, /fromAmount=100000000000000000/);
+    assert.equal(lifiRequest.headers['x-lifi-api-key'], 'server-key');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('settings buttons persist funding-chain and slippage preferences', async () => {

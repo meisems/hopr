@@ -1,6 +1,6 @@
 # Hopr – Hop Across Chains
 
-A cross-chain dashboard prototype with a **Telegram Bot** for token market lookup, public-wallet native-balance reads, and saved preferences. Telegram does not sign or submit trades; the existing trade endpoints and UI are prototypes.
+A cross-chain dashboard with a **Telegram Bot** for token market lookup, public-wallet native-balance reads, saved preferences, and server-side LI.FI quote previews. Telegram and the dashboard do not sign or submit trades; execution remains disabled until wallet custody and transaction submission are implemented.
 
 ## 🌐 Supported Chains
 
@@ -121,6 +121,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - `/settings` – Set and view a per-chat funding-chain and slippage preference
 - Send a token address – Look up market information from DexScreener
 - Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`
+- `/api/trade/quote` uses the server-side LI.FI key for read-only route quotes from the dashboard and Telegram
 - Trades, signing, token approvals, and transfers are intentionally not implemented; settings are preferences only
 
 ## 📁 Project Structure
@@ -165,6 +166,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 | POST | `/api/detect` | Auto-detect token chain |
 | GET | `/api/wallet/:address/balances` | Multi-chain balances |
 | POST | `/api/trade/buy` | Execute cross-chain buy |
+| POST | `/api/trade/quote` | Read-only LI.FI route quote |
 | POST | `/api/trade/sell` | Execute cross-chain sell |
 | GET | `/api/trade/:id/status` | Poll trade progress |
 | GET | `/health` | Health check |

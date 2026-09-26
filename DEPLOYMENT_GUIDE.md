@@ -8,7 +8,7 @@ This guide deploys the current Hopr dashboard and Cloudflare Worker, then connec
 
 | Component | Responsibility | Recommended deployment |
 | --- | --- | --- |
-| React/Vite frontend | Dashboard, charts, wallet UI, Telegram preview | Cloudflare Pages |
+| React/Vite frontend | Dashboard, charts, wallet UI, Telegram preview, LI.FI quote UI | Cloudflare Pages |
 | Cloudflare Worker | `/api/*`, `/health`, `/telegram/webhook` | Cloudflare Workers |
 | DexScreener | Token market lookup | Public API called by the Worker |
 | Public RPC endpoints | Native balance reads | Called by the Worker |
@@ -59,6 +59,14 @@ npm run test:telegram
 
 4. Deploy the site.
 5. Open the generated Pages URL and verify that the dashboard loads.
+
+If the Pages site and Worker use different hostnames, add this Pages environment variable before building:
+
+```text
+VITE_API_URL=https://hopr.<your-subdomain>.workers.dev
+```
+
+The dashboard uses this server-side Worker URL for `/api/trade/quote`; the LI.FI key is never shipped to the browser.
 
 Future pushes to `main` will create new Pages deployments when automatic deployments are enabled.
 
@@ -128,6 +136,7 @@ Set the secrets with Wrangler:
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler secret put LIFI_API_KEY
 ```
 
 Wrangler will prompt for each value. Do not put either value in `.env`, source control, screenshots, or shell history.
@@ -140,7 +149,7 @@ Wrangler will prompt for each value. Do not put either value in `.env`, source c
 | `TELEGRAM_STATE` | Saved public Telegram wallet addresses and preferences | KV binding; without it, one-time public balance reads and token lookup still work |
 | `RATE_LIMIT` | API rate-limit storage | KV binding; if absent, the Worker falls back to allowing requests |
 | `ENVIRONMENT` | Environment label | Already set to `production` in `wrangler.toml` |
-| `LIFI_API_KEY` | Reserved for future routing integrations | Current trade routes do not execute trades |
+| `LIFI_API_KEY` | Server-side LI.FI quote requests | Never expose this key to Pages/browser code; execution is still disabled |
 | `ENCRYPTION_KEY` | Reserved for future encrypted-wallet functionality | The current Telegram bot never accepts private keys or seed phrases |
 
 ## 6. Create and bind KV namespaces
@@ -180,6 +189,14 @@ npx wrangler deploy
 ```
 
 `TELEGRAM_STATE` stores only public wallet addresses and display preferences. The bot does not store or request private keys, seed phrases, signing approvals, or transaction credentials.
+
+Apply the Telegram profile migration to D1:
+
+```bash
+npx wrangler d1 migrations apply hopr-db --remote
+```
+
+This creates `telegram_profiles`, which stores public Telegram wallet addresses, preferences, and the most recent token context used by LI.FI quote previews. KV remains the fast profile cache; D1 is the durable source of truth.
 
 ### Rate-limit storage (optional)
 
@@ -256,6 +273,7 @@ curl -i https://hopr.<your-subdomain>.workers.dev/health
 - [ ] `POST /api/detect` returns token data for a known indexed token.
 - [ ] `GET /api/wallet/<public-address>/balances` returns balance data.
 - [ ] `POST /telegram/webhook` rejects requests with an incorrect webhook secret.
+- [ ] `POST /api/trade/quote` returns a read-only LI.FI quote for a connected EVM wallet.
 - [ ] Trade endpoints return the documented `501 TRADE_EXECUTION_UNAVAILABLE` response rather than claiming success.
 
 ### Telegram
@@ -268,6 +286,7 @@ In a private chat with the bot:
 4. Send a token contract address and confirm the token card plus premium inline action rows.
 5. Tap a Buy or Sell button and confirm the bot explains that trading is not enabled yet.
 6. If `TELEGRAM_STATE` is bound, test `/setwallet`, `/wallet`, and `/settings`.
+7. After looking up an EVM token and linking a public EVM wallet, tap a Telegram Buy button and confirm a read-only LI.FI quote is returned.
 
 ## 10. Rollback
 

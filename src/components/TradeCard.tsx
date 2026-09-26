@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { ArrowDownUp, Settings, AlertTriangle, Rocket, TrendingDown, Pencil, XCircle, BarChart3 } from 'lucide-react';
+import { ArrowDownUp, Settings, AlertTriangle, Rocket, TrendingDown, Pencil, XCircle, BarChart3, Loader2, CheckCircle2 } from 'lucide-react';
 import { DetectedToken, formatUsd, SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useWallet } from '../context/WalletContext';
+import { apiUrl } from '../services/api';
 
 interface TradeCardProps {
   token: DetectedToken | null;
@@ -23,17 +25,51 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [fundingChain, setFundingChain] = useState(SUPPORTED_CHAINS[0]);
   const [tradeStatus, setTradeStatus] = useState<TradeStatus>('idle');
   const [customAmount, setCustomAmount] = useState('');
+  const [quoteStatus, setQuoteStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [quoteMessage, setQuoteMessage] = useState('');
+  const { evmAddress } = useWallet();
 
   const userBalance = mockWalletBalances.find(b => b.chainId === fundingChain.id);
 
-  const handleBuy = (_presetAmount?: number) => {
+  const handleBuy = async (presetAmount?: number) => {
     if (!token) return;
-    setTradeStatus('unavailable');
+    const nextAmount = presetAmount?.toString() ?? customAmount;
+    setAmount(nextAmount);
+    if (!evmAddress) {
+      setQuoteStatus('error');
+      setQuoteMessage('Connect an EVM wallet to request a LI.FI quote. No transaction was signed.');
+      return;
+    }
+    if (token.chainType !== 'EVM') {
+      setQuoteStatus('error');
+      setQuoteMessage('LI.FI quote previews from this dashboard currently require an EVM destination token.');
+      return;
+    }
+    setQuoteStatus('loading');
+    setQuoteMessage('Requesting a fresh LI.FI route quote…');
+    try {
+      const response = await fetch(apiUrl('/api/trade/quote'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: evmAddress, fromAddress: evmAddress, tokenAddress: token.address, toChainId: token.chainId, amount: nextAmount, fundingChain: String(fundingChain.id), slippage }),
+      });
+      const data = await response.json() as { quote?: { estimate?: { toAmount?: string; executionDuration?: number } }; error?: string };
+      if (!response.ok || !data.quote) throw new Error(data.error ?? 'LI.FI could not return a quote.');
+      const estimate = data.quote.estimate;
+      const output = estimate?.toAmount ?? 'unavailable';
+      const duration = typeof estimate?.executionDuration === 'number' ? `${Math.max(1, Math.round(estimate.executionDuration / 60))} min` : 'variable';
+      setQuoteStatus('ready');
+      setQuoteMessage(`Quote ready: ~${output} ${token.symbol} · estimated ${duration}. Read-only preview; no transaction was signed.`);
+    } catch (error) {
+      setQuoteStatus('error');
+      setQuoteMessage(error instanceof Error ? error.message : 'Unable to request a LI.FI quote.');
+    }
   };
 
   const handleSell = (_percent: number) => {
     if (!token) return;
-    setTradeStatus('unavailable');
+    setQuoteStatus('error');
+    setQuoteMessage('No holdings are recorded for this dashboard, so a sell quote is unavailable. No transaction was sent.');
   };
 
   if (!token) {
@@ -144,16 +180,16 @@ export default function TradeCard({ token }: TradeCardProps) {
       <div className="p-4 space-y-4">
         {/* Trade status */}
         <AnimatePresence mode="wait">
-          {tradeStatus !== 'idle' && (
+          {(tradeStatus !== 'idle' || quoteStatus !== 'idle') && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
               className="space-y-2"
             >
-              <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                <XCircle className="w-5 h-5 text-amber-300 shrink-0" />
-                <span className="text-sm text-amber-100/90">Trading is not implemented. No wallet was signed and no transaction was sent.</span>
+              <div className={`flex items-start gap-2 p-3 rounded-xl ${quoteStatus === 'ready' ? 'bg-green-500/10 border border-green-500/20' : 'bg-amber-500/10 border border-amber-500/20'}`}>
+                {quoteStatus === 'loading' ? <Loader2 className="w-5 h-5 text-blue-300 shrink-0 animate-spin" /> : quoteStatus === 'ready' ? <CheckCircle2 className="w-5 h-5 text-green-300 shrink-0" /> : <XCircle className="w-5 h-5 text-amber-300 shrink-0" />}
+                <span className="text-sm text-gray-200">{quoteMessage || 'Trading is not implemented. No wallet was signed and no transaction was sent.'}</span>
               </div>
             </motion.div>
           )}
