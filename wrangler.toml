@@ -6,7 +6,7 @@ main = "workers/index.ts"
 bucket = "./dist"
 
 [env.production]
-route = "hopr.pages.dev/*"
+route = "hopr-432.pages.dev/*"
 
 [env.staging]
 route = "staging.hopr.pages.dev/*"
