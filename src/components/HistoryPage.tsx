@@ -110,9 +110,9 @@ export default function HistoryPage({ onBack }: HistoryPageProps) {
           </div>
         </div>
 
-        {/* Table */}
-        <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
-          <div className="overflow-x-auto -mx-4 sm:mx-0">
+        {/* Desktop table */}
+        <div className="hidden sm:block bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[700px]">
               <thead>
                 <tr className="text-xs text-gray-500 border-b border-gray-800/30">
@@ -175,6 +175,27 @@ export default function HistoryPage({ onBack }: HistoryPageProps) {
           {filtered.length === 0 && (
             <div className="p-10 text-center text-sm text-gray-500">No trades match this filter.</div>
           )}
+        </div>
+
+        {/* Mobile cards: keep token, amount, status, and transaction readable without horizontal scrolling. */}
+        <div className="sm:hidden bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden divide-y divide-gray-800/30">
+          {filtered.length === 0 ? <div className="p-10 text-center text-sm text-gray-500">No trades match this filter.</div> : filtered.map((t) => {
+            const status = STATUS_STYLES[t.status];
+            const StatusIcon = status.icon;
+            return (
+              <div key={t.id} className="p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2"><span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${t.type === 'BUY' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>{t.type}</span><span className="text-sm font-medium text-white">{t.symbol}</span></div>
+                    <div className="text-xs text-gray-500 font-mono mt-1">{formatAddress(t.token)}</div>
+                  </div>
+                  <span className={`inline-flex items-center gap-1 text-xs font-medium ${status.className}`}><StatusIcon className={`w-3.5 h-3.5 ${t.status === 'PENDING' ? 'animate-spin' : ''}`} />{t.status}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-xs"><div><div className="text-gray-500">Chain</div><div className="text-gray-300 mt-0.5">{t.chain}</div></div><div><div className="text-gray-500">Amount</div><div className="text-white mt-0.5">{t.amount}</div></div><div><div className="text-gray-500">Price</div><div className="text-gray-300 mt-0.5">{formatUsd(t.price)}</div></div><div><div className="text-gray-500">When</div><div className="text-gray-300 mt-0.5">{timeAgo(t.timestamp)}</div></div></div>
+                <a href="#" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 font-mono break-all">{t.txHash} <ExternalLink className="w-3 h-3 shrink-0" /></a>
+              </div>
+            );
+          })}
         </div>
       </main>
     </div>

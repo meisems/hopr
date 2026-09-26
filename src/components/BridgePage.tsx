@@ -1,10 +1,34 @@
-import { useMemo, useState } from 'react';
-import { ArrowLeft, ArrowDown, Zap, Clock, AlertTriangle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ArrowLeft, ArrowDown, Zap, Clock, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
 import ChainLogo from './ChainLogo';
 import ThemeToggle from './ThemeToggle';
+
+const EVM_NATIVE_TOKEN = '0x0000000000000000000000000000000000000000';
+const SOL_NATIVE_TOKEN = 'So11111111111111111111111111111111111111112';
+const EVM_QUOTE_ADDRESS = '0x1111111111111111111111111111111111111111';
+const SOL_QUOTE_ADDRESS = '11111111111111111111111111111111';
+
+type LiveQuote = {
+  estimate?: {
+    toAmount?: string;
+    toAmountMin?: string;
+    executionDuration?: number;
+    gasCosts?: Array<{ amountUSD?: string }>;
+  };
+};
+
+function formatTokenAmount(raw: string | undefined, decimals: number) {
+  if (!raw) return '—';
+  try {
+    const value = Number(raw) / (10 ** decimals);
+    return Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 8 }) : '—';
+  } catch {
+    return '—';
+  }
+}
 
 interface BridgePageProps {
   onBack: () => void;
@@ -14,12 +38,59 @@ export default function BridgePage({ onBack }: BridgePageProps) {
   const [fromChain, setFromChain] = useState(SUPPORTED_CHAINS[0]);
   const [toChain, setToChain] = useState(SUPPORTED_CHAINS[2]);
   const [amount, setAmount] = useState('1.0');
+  const [quote, setQuote] = useState<LiveQuote | null>(null);
+  const [quoteStatus, setQuoteStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [quoteError, setQuoteError] = useState('');
 
   const fromBalance = mockWalletBalances.find((b) => b.chainId === fromChain.id);
   const numericAmount = parseFloat(amount) || 0;
-  const estFee = useMemo(() => Math.max(0.15, numericAmount * 0.003), [numericAmount]);
-  const estReceive = Math.max(0, numericAmount - estFee);
-  const estTime = fromChain.type === 'SVM' || toChain.type === 'SVM' ? '~35s' : '~20s';
+
+  useEffect(() => {
+    if (numericAmount <= 0 || fromChain.id === toChain.id) {
+      setQuote(null);
+      setQuoteStatus('idle');
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setQuoteStatus('loading');
+      setQuoteError('');
+      try {
+        const decimals = fromChain.type === 'SVM' ? 9 : 18;
+        const fromAmount = BigInt(Math.round(numericAmount * (10 ** decimals))).toString();
+        const params = new URLSearchParams({
+          fromChain: String(fromChain.id),
+          toChain: String(toChain.id),
+          fromToken: fromChain.type === 'SVM' ? SOL_NATIVE_TOKEN : EVM_NATIVE_TOKEN,
+          toToken: toChain.type === 'SVM' ? SOL_NATIVE_TOKEN : EVM_NATIVE_TOKEN,
+          fromAmount,
+          fromAddress: fromChain.type === 'SVM' ? SOL_QUOTE_ADDRESS : EVM_QUOTE_ADDRESS,
+          toAddress: toChain.type === 'SVM' ? SOL_QUOTE_ADDRESS : EVM_QUOTE_ADDRESS,
+          slippage: '0.03',
+        });
+        const response = await fetch(`https://li.quest/v1/quote?${params.toString()}`, { signal: controller.signal });
+        const data = await response.json() as LiveQuote & { message?: string };
+        if (!response.ok || !data.estimate?.toAmount) throw new Error(data.message ?? 'LI.FI did not return a route.');
+        setQuote(data);
+        setQuoteStatus('ready');
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setQuote(null);
+        setQuoteStatus('error');
+        setQuoteError(error instanceof Error ? error.message : 'Unable to fetch a live bridge quote.');
+      }
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [fromChain.id, fromChain.type, numericAmount, toChain.id]);
+
+  const receiveAmount = formatTokenAmount(quote?.estimate?.toAmount, toChain.type === 'SVM' ? 9 : 18);
+  const minimumAmount = formatTokenAmount(quote?.estimate?.toAmountMin, toChain.type === 'SVM' ? 9 : 18);
+  const gasCost = quote?.estimate?.gasCosts?.reduce((sum, item) => sum + Number(item.amountUSD ?? 0), 0) ?? 0;
+  const executionTime = quote?.estimate?.executionDuration ? `${Math.max(1, Math.round(quote.estimate.executionDuration / 60))} min` : 'Variable';
 
   const swapDirection = () => {
     setFromChain(toChain);
@@ -54,8 +125,8 @@ export default function BridgePage({ onBack }: BridgePageProps) {
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
         <div className="max-w-md mx-auto bg-gray-900/60 rounded-2xl border border-gray-800/50 p-5 space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-white">Bridge preview</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Illustrative route only; no live quote or transfer is available.</p>
+            <h2 className="text-lg font-semibold text-white">Live bridge quote</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Read-only LI.FI route estimate. No wallet connection or transaction submission happens here.</p>
           </div>
 
           {/* From */}
@@ -109,7 +180,7 @@ export default function BridgePage({ onBack }: BridgePageProps) {
                 ))}
               </select>
               <div className="flex-1 text-right text-lg font-semibold text-gray-300">
-                ≈ {estReceive.toFixed(4)}
+                {quoteStatus === 'loading' ? <Loader2 className="w-5 h-5 ml-auto animate-spin text-brand-400" /> : `≈ ${receiveAmount}`}
               </div>
             </div>
           </div>
@@ -127,16 +198,18 @@ export default function BridgePage({ onBack }: BridgePageProps) {
             </div>
           </div>
 
-          {/* Illustrative fee / time placeholders */}
+          {/* Live route details */}
           <div className="space-y-1.5 text-xs text-gray-400 border-t border-gray-800/40 pt-3">
-            <div className="flex justify-between"><span>Illustrative fee (not quoted)</span><span className="text-gray-300">≈ {estFee.toFixed(4)}</span></div>
-            <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Placeholder time</span><span className="text-gray-300">{estTime}</span></div>
+            <div className="flex justify-between gap-3"><span>Minimum received</span><span className="text-gray-300">{minimumAmount} {toChain.nativeSymbol}</span></div>
+            <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Estimated time</span><span className="text-gray-300">{executionTime}</span></div>
+            <div className="flex justify-between"><span>Estimated gas</span><span className="text-gray-300">{gasCost > 0 ? `$${gasCost.toFixed(4)}` : 'Included in route'}</span></div>
           </div>
 
-          <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm text-amber-100/90" role="status">
+          <div className={`flex items-start gap-2 p-3 rounded-xl text-sm leading-relaxed ${quoteStatus === 'error' ? 'bg-red-500/10 border border-red-500/25 text-red-200' : 'bg-amber-500/10 border border-amber-500/25 text-amber-100'}`} role="status" aria-live="polite">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-300" />
-            <span>Bridge execution is not implemented. No wallet was signed and no transaction was sent.</span>
+            <span>{quoteStatus === 'error' ? quoteError : 'This is a live quote only. Hopr does not sign, submit, or move funds from the Bridge page.'}</span>
           </div>
+          {quoteStatus === 'ready' && <div className="flex items-center gap-2 text-xs text-green-300"><RefreshCw className="w-3.5 h-3.5" /> Quote refreshed from LI.FI for the current route.</div>}
         </div>
       </main>
     </div>

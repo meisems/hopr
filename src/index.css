@@ -209,6 +209,19 @@ html.light textarea {
   border-color: rgba(42, 45, 53, 0.9) !important;
 }
 
+.navbar-dark svg,
+.subnav-dark svg {
+  color: currentColor;
+  opacity: 1;
+  visibility: visible;
+  flex-shrink: 0;
+}
+
+.navbar-dark button,
+.subnav-dark button {
+  color: #f8fafc;
+}
+
 .navbar-dark .text-white,
 .subnav-dark .text-white {
   color: #f8fafc !important;

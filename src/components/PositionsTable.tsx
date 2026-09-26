@@ -57,8 +57,8 @@ export default function PositionsTable() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto -mx-4 sm:mx-0">
+      {/* Desktop table */}
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full min-w-[800px]">
           <thead>
             <tr className="text-xs text-gray-500 border-b border-gray-800/30">
@@ -147,6 +147,36 @@ export default function PositionsTable() {
             </AnimatePresence>
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile cards: keep the complete position readable without horizontal scrolling. */}
+      <div className="sm:hidden divide-y divide-gray-800/30">
+        {mockPositions.length === 0 ? (
+          <div className="px-4 py-12 text-center text-sm text-gray-500">No active positions yet.</div>
+        ) : mockPositions.map((position) => (
+          <motion.div key={position.id} initial={{ opacity: 1 }} exit={{ opacity: 0 }} className="p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <ChainLogo chainKey={getChainKey(position.token.chainId)} size={28} />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white truncate">{position.token.symbol}</div>
+                  <div className="text-xs text-gray-500 font-mono truncate">{formatAddress(position.token.address)}</div>
+                </div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full shrink-0" style={{ backgroundColor: position.token.chainColor + '22', color: position.token.chainColor }}>{position.token.chainName}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div><div className="text-gray-500">Holdings</div><div className="text-sm text-white mt-0.5">{position.amount.toLocaleString()}</div></div>
+              <div><div className="text-gray-500">Value</div><div className="text-sm text-white mt-0.5">{formatUsd(position.amount * position.currentPrice)}</div></div>
+              <div><div className="text-gray-500">Avg Buy</div><div className="text-sm text-gray-300 mt-0.5">{formatUsd(position.avgBuyPrice)}</div></div>
+              <div><div className="text-gray-500">PnL</div><div className={`text-sm mt-0.5 ${position.pnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>{position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%</div></div>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs text-gray-500">{position.fundingChain} → {position.fundingSymbol}</span>
+              {soldIds.has(position.id) ? <span className="text-xs text-green-400">Sold</span> : sellingId === position.id ? <span className="text-xs text-purple-400">Selling…</span> : <button onClick={() => handleSell(position.id)} className="px-3 py-1.5 bg-red-600/20 border border-red-500/30 text-red-400 text-xs font-medium rounded-lg">Sell & Return</button>}
+            </div>
+          </motion.div>
+        ))}
       </div>
 
       {/* Footer */}
