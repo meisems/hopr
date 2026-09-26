@@ -3,7 +3,7 @@ import { Bot, Command, Search, ShieldCheck, WalletCards } from 'lucide-react';
 const commands = [
   { command: '/start', description: 'Start the bot and open the command guide.' },
   { command: '/help', description: 'List commands and examples.' },
-  { command: '/wallet <address>', description: 'Read public native-token balances across supported chains.' },
+  { command: '/wallet <address>', description: 'Read public balances; the Wallet button can link an address for later.' },
   { command: '/setwallet evm <address>', description: 'Save a public EVM address for later balance checks.' },
   { command: '/setwallet solana <address>', description: 'Save a public Solana address for later balance checks.' },
   { command: '/balances [address]', description: 'Refresh saved balances or query a public address once.' },

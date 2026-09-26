@@ -62,7 +62,10 @@ test('help command lists working commands and shows navigation buttons', async (
       { text: 'Wallet', callback_data: 'wallet' },
       { text: 'Settings', callback_data: 'settings' },
     ],
-    [{ text: 'Help', callback_data: 'help' }],
+    [
+      { text: 'Link wallet', callback_data: 'wallet:link' },
+      { text: 'Help', callback_data: 'help' },
+    ],
   ]);
 });
 
@@ -74,6 +77,45 @@ test('private /setwallet stores an EVM address and confirms read-only use', asyn
   });
   assert.equal(JSON.parse(kv.values.get('telegram:456')).evmAddress, address);
   assert.match(calls[0].body.text, /Only native balances are read/);
+});
+
+test('Link wallet buttons prompt for a public address and save the private reply', async () => {
+  const kv = createKv();
+  const extraEnv = { TELEGRAM_STATE: kv };
+  const chooseNetwork = await sendUpdate({
+    callback_query: { id: 'link-1', data: 'wallet:link', message: { chat: { id: 812, type: 'private' } } },
+  }, { extraEnv });
+  assert.deepEqual(chooseNetwork.calls.at(-1).body.reply_markup.inline_keyboard, [
+    [
+      { text: 'Link EVM', callback_data: 'wallet:set:evm' },
+      { text: 'Link Solana', callback_data: 'wallet:set:solana' },
+    ],
+    [{ text: 'Help', callback_data: 'help' }],
+  ]);
+
+  const prompt = await sendUpdate({
+    callback_query: { id: 'link-2', data: 'wallet:set:evm', message: { chat: { id: 812, type: 'private' } } },
+  }, { extraEnv });
+  assert.equal(prompt.calls.at(-1).body.reply_markup.force_reply, true);
+  assert.equal(prompt.calls.at(-1).body.reply_markup.input_field_placeholder, 'Public EVM address only');
+
+  const address = '0x1234567890abcdef1234567890abcdef12345678';
+  const saved = await sendUpdate({
+    message: {
+      chat: { id: 812, type: 'private' },
+      text: address,
+      reply_to_message: { text: 'Reply to this message with a public EVM address only.', from: { is_bot: true } },
+    },
+  }, { extraEnv });
+  assert.equal(JSON.parse(kv.values.get('telegram:812')).evmAddress, address);
+  assert.match(saved.calls[0].body.text, /EVM public address linked/);
+});
+
+test('Link wallet explains that persistent setup is required when KV is absent', async () => {
+  const { calls } = await sendUpdate({
+    callback_query: { id: 'link-3', data: 'wallet:link', message: { chat: { id: 813, type: 'private' } } },
+  });
+  assert.match(calls.at(-1).body.text, /TELEGRAM_STATE/);
 });
 
 test('wallet command reads EVM and Solana native balances', async () => {
@@ -160,6 +202,14 @@ test('blocks wallet balance queries in group chats', async () => {
   });
   assert.equal(calls.length, 1);
   assert.match(calls[0].body.text, /check wallet balances in a private chat/);
+});
+
+test('blocks the inline Link wallet button in group chats', async () => {
+  const { calls } = await sendUpdate({
+    callback_query: { id: 'link-group', data: 'wallet:link', message: { chat: { id: -49, type: 'group' } } },
+  }, { extraEnv: { TELEGRAM_STATE: createKv() } });
+  assert.deepEqual(calls.map((call) => call.url.split('/').at(-1)), ['answerCallbackQuery', 'sendMessage']);
+  assert.match(calls.at(-1).body.text, /in a private chat/);
 });
 
 test('inline Settings button is answered and shows selectable options', async () => {

@@ -25,6 +25,7 @@ export interface Env {
 interface TelegramMessage {
   chat?: { id: number; type?: string };
   text?: string;
+  reply_to_message?: { text?: string; from?: { is_bot?: boolean } };
 }
 
 interface TelegramCallbackQuery {
@@ -44,8 +45,16 @@ const TELEGRAM_ACTION_KEYBOARD = {
       { text: 'Wallet', callback_data: 'wallet' },
       { text: 'Settings', callback_data: 'settings' },
     ],
-    [{ text: 'Help', callback_data: 'help' }],
+    [
+      { text: 'Link wallet', callback_data: 'wallet:link' },
+      { text: 'Help', callback_data: 'help' },
+    ],
   ],
+};
+
+const TELEGRAM_WALLET_PROMPTS = {
+  evm: 'Reply to this message with a public EVM address only.',
+  solana: 'Reply to this message with a public Solana address only.',
 };
 
 const TELEGRAM_CHAINS = [
@@ -216,6 +225,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     const data = callback.data ?? '';
     const chatType = callback.message?.chat?.type;
     const recognized = ['help', 'wallet', 'settings'].includes(data)
+      || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana'].includes(data)
       || /^settings:chain:\d+$/.test(data)
       || /^settings:slippage:(0\.5|1|3|5)$/.test(data);
     if (!recognized) {
@@ -227,7 +237,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       return Response.json({ ok: true });
     }
     await telegramApiCall('answerCallbackQuery', env, { callback_query_id: callback.id });
-    if ((data === 'wallet' || data === 'settings' || data.startsWith('settings:')) && chatType !== 'private') {
+    if ((data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:')) && chatType !== 'private') {
       await sendTelegramMessage(chatId, 'For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return Response.json({ ok: true });
     }
@@ -236,12 +246,30 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   }
 
   const text = message?.text?.trim() ?? '';
-  await handleTelegramMessage(chatId, message?.chat?.type, text, env);
+  await handleTelegramMessage(chatId, message?.chat?.type, text, env, message?.reply_to_message);
 
   return Response.json({ ok: true });
 }
 
-async function handleTelegramMessage(chatId: number, chatType: string | undefined, text: string, env: Env): Promise<void> {
+async function handleTelegramMessage(
+  chatId: number,
+  chatType: string | undefined,
+  text: string,
+  env: Env,
+  replyToMessage?: TelegramMessage['reply_to_message'],
+): Promise<void> {
+  const promptedNetwork = replyToMessage?.from?.is_bot
+    ? (replyToMessage.text === TELEGRAM_WALLET_PROMPTS.evm ? 'evm' : replyToMessage.text === TELEGRAM_WALLET_PROMPTS.solana ? 'solana' : undefined)
+    : undefined;
+  if (promptedNetwork) {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For privacy, link wallet addresses only in a private chat with this bot.', env);
+      return;
+    }
+    await setTelegramWallet(chatId, [promptedNetwork, text], env);
+    return;
+  }
+
   const [rawCommand = '', ...args] = text.split(/\s+/);
   const command = rawCommand.toLowerCase().split('@')[0];
 
@@ -380,7 +408,7 @@ async function showTelegramWallet(chatId: number, env: Env): Promise<void> {
     return;
   }
   if (!profile.evmAddress && !profile.solanaAddress) {
-    await sendTelegramMessage(chatId, 'No public wallet addresses are linked yet. Use /wallet <public-address> for a one-time balance check, or /setwallet evm <address> and/or /setwallet solana <address> to save addresses. Never send private keys or seed phrases.', env);
+    await sendTelegramMessage(chatId, 'No public wallet addresses are linked yet. Use /wallet <public-address> for a one-time balance check, or choose Link wallet below to save one. Never send private keys or seed phrases.', env, telegramWalletLinkKeyboard());
     return;
   }
 
@@ -429,6 +457,18 @@ function telegramSettingsKeyboard() {
   };
 }
 
+function telegramWalletLinkKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Link EVM', callback_data: 'wallet:set:evm' },
+        { text: 'Link Solana', callback_data: 'wallet:set:solana' },
+      ],
+      [{ text: 'Help', callback_data: 'help' }],
+    ],
+  };
+}
+
 async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
   const profile = await readTelegramProfile(chatId, env);
   if (!profile) {
@@ -444,6 +484,24 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'help') return handleTelegramMessage(chatId, 'private', '/help', env);
   if (data === 'wallet') return showTelegramWallet(chatId, env);
   if (data === 'settings') return showTelegramSettings(chatId, env);
+  if (data === 'wallet:link') {
+    if (!env.TELEGRAM_STATE) {
+      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
+    }
+    return sendTelegramMessage(chatId, 'Choose which public wallet address to link. Never send a private key or seed phrase.', env, telegramWalletLinkKeyboard());
+  }
+
+  const walletNetworkMatch = data.match(/^wallet:set:(evm|solana)$/);
+  if (walletNetworkMatch) {
+    if (!env.TELEGRAM_STATE) {
+      return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
+    }
+    const network = walletNetworkMatch[1] as 'evm' | 'solana';
+    return sendTelegramMessage(chatId, TELEGRAM_WALLET_PROMPTS[network], env, {
+      force_reply: true,
+      input_field_placeholder: network === 'evm' ? 'Public EVM address only' : 'Public Solana address only',
+    });
+  }
 
   const chainMatch = data.match(/^settings:chain:(\d+)$/);
   if (chainMatch) {

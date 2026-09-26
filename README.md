@@ -117,7 +117,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 ### Telegram Bot
 - `/start`, `/help` – Welcome and help, with inline navigation buttons
 - `/setwallet evm <address>` and `/setwallet solana <address>` – Store public addresses for read-only balance checks
-- `/wallet` and `/balances` – Read native balances on the supported chains
+- `/wallet` and `/balances` – Read native balances on the supported chains; the Wallet button also offers Link EVM and Link Solana prompts
 - `/settings` – Set and view a per-chat funding-chain and slippage preference
 - Send a token address – Look up market information from DexScreener
 - Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`
