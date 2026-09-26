@@ -15,20 +15,19 @@ route = "staging.hopr.pages.dev/*"
 [vars]
 ENVIRONMENT = "production"
 
-# D1 Database (for user data, trades, wallets)
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "hopr-db"
-# database_id = "your-database-id"
+[[d1_databases]]
+binding = "DB"
+database_name = "hopr-db"
+database_id = "2367cac7-781c-4b93-bb93-7743e1a03026"
 
-# KV Namespace (for caching chain detection results)
-# [[kv_namespaces]]
-# binding = "CACHE"
-# id = "your-kv-namespace-id"
+[[kv_namespaces]]
+binding = "CACHE"
+id = "973df0713fc746baa0ca71e63da25a4d"
 
-# Telegram wallet addresses and settings require a separate KV namespace.
-# Create one with `npx wrangler kv namespace create TELEGRAM_STATE`, then
-# uncomment these lines and replace the ID with the returned namespace ID:
-# [[kv_namespaces]]
-# binding = "TELEGRAM_STATE"
-# id = "your-telegram-state-namespace-id"
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "c75340fc9e934d20bdf8437e4725541b"
+
+[[kv_namespaces]]
+binding = "TELEGRAM_STATE"
+id = "c75340fc9e934d20bdf8437e4725541b"
