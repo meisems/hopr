@@ -1,32 +1,47 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
-import ChartPanel from './components/ChartPanel';
 import TradeCard from './components/TradeCard';
 import PositionsTable from './components/PositionsTable';
 import WalletPanel from './components/WalletPanel';
-import SettingsModal from './components/SettingsModal';
 import TelegramPreview from './components/TelegramPreview';
-import SplashScreen from './components/SplashScreen';
 import ChainLogo from './components/ChainLogo';
-import DocsPage from './components/DocsPage';
-import PositionsPage from './components/PositionsPage';
-import HistoryPage from './components/HistoryPage';
-import BridgePage from './components/BridgePage';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
 
+const SplashScreen = lazy(() => import('./components/SplashScreen'));
+const ChartPanel = lazy(() => import('./components/ChartPanel'));
+const SettingsModal = lazy(() => import('./components/SettingsModal'));
+const DocsPage = lazy(() => import('./components/DocsPage'));
+const PositionsPage = lazy(() => import('./components/PositionsPage'));
+const HistoryPage = lazy(() => import('./components/HistoryPage'));
+const BridgePage = lazy(() => import('./components/BridgePage'));
+
 function BlackHoleSplash({ onComplete }: { onComplete: () => void }) {
   const { settings } = useBlackHoleSettings();
-  return <SplashScreen onComplete={onComplete} spin={settings.spin} inclination={settings.inclination} />;
+  return (
+    <Suspense fallback={<div className="fixed inset-0 z-[100] bg-black" aria-label="Loading black-hole animation" />}>
+      <SplashScreen onComplete={onComplete} spin={settings.spin} inclination={settings.inclination} />
+    </Suspense>
+  );
 }
 
 function BlackHoleSettingsModal({ isOpen, onClose, onPreviewBlackHole }: { isOpen: boolean; onClose: () => void; onPreviewBlackHole: () => void }) {
-  return <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />;
+  if (!isOpen) return null;
+
+  return (
+    <Suspense fallback={null}>
+      <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />
+    </Suspense>
+  );
+}
+
+function PageLoading() {
+  return <div className="min-h-[45vh] flex items-center justify-center text-sm text-gray-500" role="status">Loading page…</div>;
 }
 
 function AppContent() {
@@ -50,7 +65,7 @@ function AppContent() {
 
   // If on docs page, render it instead of dashboard
   if (currentPage === 'docs') {
-    return <DocsPage onBack={() => setCurrentPage('dashboard')} />;
+    return <Suspense fallback={<PageLoading />}><DocsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
   }
 
   if (!isReady) {
@@ -63,9 +78,9 @@ function AppContent() {
     );
   }
 
-  if (currentPage === 'positions') return <PositionsPage onBack={() => setCurrentPage('dashboard')} />;
-  if (currentPage === 'history') return <HistoryPage onBack={() => setCurrentPage('dashboard')} />;
-  if (currentPage === 'bridge') return <BridgePage onBack={() => setCurrentPage('dashboard')} />;
+  if (currentPage === 'positions') return <Suspense fallback={<PageLoading />}><PositionsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
+  if (currentPage === 'history') return <Suspense fallback={<PageLoading />}><HistoryPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
+  if (currentPage === 'bridge') return <Suspense fallback={<PageLoading />}><BridgePage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
 
   return (
     <>
@@ -197,7 +212,9 @@ function AppContent() {
         >
           {/* Chart - takes 2 columns */}
           <div className="lg:col-span-2 min-h-[500px]">
-            <ChartPanel token={selectedToken} />
+            <Suspense fallback={<div className="h-full min-h-[500px] rounded-2xl border border-gray-800/50 bg-gray-900/40" aria-label="Loading chart" />}>
+              <ChartPanel token={selectedToken} />
+            </Suspense>
           </div>
 
           {/* Trade card + Wallet */}
