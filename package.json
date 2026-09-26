@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "telegram:configure": "node scripts/configure-telegram.mjs",
+    "test:telegram": "node --test tests/telegram-*.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

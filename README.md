@@ -79,13 +79,22 @@ Set these in Cloudflare Dashboard → Workers → Settings → Variables:
 - `TELEGRAM_WEBHOOK_SECRET` – random secret used to authenticate Telegram webhook requests
 - `ENVIRONMENT` – `production` or `staging`
 
-After deploying the Worker, register the Telegram webhook at:
+After deploying the Worker, set its two Telegram secrets and register its webhook, slash-command suggestions, and command menu:
 
-```text
-https://your-worker.workers.dev/telegram/webhook
+```bash
+# Enter the token without echoing it or storing it in shell history.
+read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; echo; export TELEGRAM_BOT_TOKEN
+# Generate a secret and store both values as Cloudflare Worker secrets.
+export TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+printf '%s' "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+printf '%s' "$TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+
+# Use the same secret for the local registration script and Cloudflare Worker.
+export TELEGRAM_WEBHOOK_URL='https://your-worker.workers.dev/telegram/webhook'
+npm run telegram:configure
 ```
 
-The Worker accepts `/start`, `/help`, `/wallet`, and `/settings` and replies to ordinary messages. Wallet trading actions remain disabled until the Telegram wallet and trade flow is connected.
+The setup script calls Telegram's Bot API to register the webhook for messages and button callbacks, publish `/start`, `/help`, `/wallet`, and `/settings` as command suggestions, and set the menu button to open the command list. It is safe to rerun after deploying. Keep the token and webhook secret out of source control and logs.
 
 ## 🎯 Features
 
@@ -105,10 +114,10 @@ The Worker accepts `/start`, `/help`, `/wallet`, and `/settings` and replies to 
 - AES-256-GCM encrypted storage, decrypted only during signing
 
 ### Telegram Bot
-- `/wallet` – View balances across all 6 chains
-- `/settings` – Configure funding chain, quick-buy presets
-- Paste address → instant token info + buy/sell buttons
-- Real-time trade progress updates in chat
+- `/start` and `/help` – Welcome and command guide, with Wallet, Settings, and Help inline buttons
+- `/wallet` and `/settings` – Availability notices until those integrations are implemented
+- Telegram's native slash-command suggestions and menu button are configured by `npm run telegram:configure`
+- Wallet balances, token analysis, trading, and trade progress are not yet connected to the bot
 
 ## 📁 Project Structure
 

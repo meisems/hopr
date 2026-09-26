@@ -37,6 +37,16 @@ interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
 }
 
+const TELEGRAM_ACTION_KEYBOARD = {
+  inline_keyboard: [
+    [
+      { text: 'Wallet', callback_data: 'wallet' },
+      { text: 'Settings', callback_data: 'settings' },
+    ],
+    [{ text: 'Help', callback_data: 'help' }],
+  ],
+};
+
 interface TradeRequest {
   userId: string;
   tokenAddress: string;
@@ -186,31 +196,55 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (!chatId) return Response.json({ ok: true });
 
   if (callback) {
+    const callbackCommand = callback.data;
+    if (!callbackCommand || !['help', 'wallet', 'settings'].includes(callbackCommand)) {
+      await telegramApiCall('answerCallbackQuery', env, {
+        callback_query_id: callback.id,
+        text: 'This button is no longer available.',
+        show_alert: true,
+      });
+      return Response.json({ ok: true });
+    }
+
     await telegramApiCall('answerCallbackQuery', env, { callback_query_id: callback.id });
-    await sendTelegramMessage(chatId, 'Trading actions will be available after wallet setup is connected.', env);
+    await replyToTelegramCommand(chatId, `/${callbackCommand}`, env);
     return Response.json({ ok: true });
   }
 
   const text = message?.text?.trim() ?? '';
-  const command = text.split(/\s+/)[0].toLowerCase().split('@')[0];
-  const reply = command === '/start'
-    ? 'Welcome to Hopr. Send /help to see available commands.'
-    : command === '/help'
-      ? 'Hopr commands:\n/start - Start the bot\n/wallet - View bot wallet status\n/settings - View trading settings\n\nSend a token address to begin.'
-      : command === '/wallet'
-        ? 'No Telegram wallet is connected yet. Wallet management will be enabled in the next bot update.'
-        : command === '/settings'
-          ? 'Trading settings are not configured yet. Use the Hopr dashboard to connect your wallets.'
-          : text
-            ? 'I received your message. Send /help for commands, or send a token address to inspect it.'
-            : 'Send /help to get started.';
+  const command = text.split(/\s+/)[0]?.toLowerCase().split('@')[0] ?? '';
+  await replyToTelegramCommand(chatId, command, env, text);
 
-  await sendTelegramMessage(chatId, reply, env);
   return Response.json({ ok: true });
 }
 
-async function sendTelegramMessage(chatId: number, text: string, env: Env): Promise<void> {
-  await telegramApiCall('sendMessage', env, { chat_id: chatId, text });
+async function replyToTelegramCommand(chatId: number, command: string, env: Env, messageText = ''): Promise<void> {
+  const reply = command === '/start'
+    ? 'Welcome to Hopr. Use the command menu or the buttons below to navigate.'
+    : command === '/help'
+      ? 'Hopr commands:\n/start - Open the bot\n/help - Show available commands\n/wallet - View wallet status\n/settings - View trading settings\n\nWallet balances, trading settings, token analysis, and trades are not connected to this Telegram bot yet.'
+      : command === '/wallet'
+        ? 'Telegram wallet status is not connected yet. No wallet actions are available in this bot build.'
+        : command === '/settings'
+          ? 'Telegram trading settings are not connected yet. No trading actions are available in this bot build.'
+          : messageText
+            ? 'This bot currently supports its command menu only. Use /help to see the available commands.'
+            : 'Use /help to see the available commands.';
+
+  await sendTelegramMessage(chatId, reply, env, TELEGRAM_ACTION_KEYBOARD);
+}
+
+async function sendTelegramMessage(
+  chatId: number,
+  text: string,
+  env: Env,
+  replyMarkup?: Record<string, unknown>,
+): Promise<void> {
+  await telegramApiCall('sendMessage', env, {
+    chat_id: chatId,
+    text,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
 }
 
 async function telegramApiCall(method: string, env: Env, body: Record<string, unknown>): Promise<void> {
