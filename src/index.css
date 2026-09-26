@@ -222,6 +222,40 @@ html.light textarea {
   color: #f8fafc;
 }
 
+.navbar-drawer {
+  position: relative;
+  z-index: 30;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+}
+
+html.light .docs-drawer {
+  color: #111827;
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+}
+
+html.light .docs-drawer button {
+  color: #475569;
+}
+
+html.light .docs-drawer button:hover {
+  color: #0f172a;
+  background-color: #f1f5f9 !important;
+}
+
+html.light .docs-drawer button.text-purple-400 {
+  color: #0f766e !important;
+}
+
+html.light .docs-drawer .bg-purple-500\/10 {
+  background-color: #ccfbf1 !important;
+}
+
+html.light .docs-drawer .border-purple-500\/20 {
+  border-color: #99f6e4 !important;
+}
+
 .navbar-dark .text-white,
 .subnav-dark .text-white {
   color: #f8fafc !important;

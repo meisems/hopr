@@ -66,7 +66,7 @@ export default function DocsPage({ onBack }: DocsPageProps) {
 
         {/* Mobile navigation */}
         {mobileMenuOpen && (
-          <div className="subnav-dark lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
+          <div className="docs-drawer subnav-dark lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
             <nav className="px-4 py-3 space-y-1">
               {sections.map((section) => {
                 const Icon = section.icon;

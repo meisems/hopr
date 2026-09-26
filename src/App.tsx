@@ -188,7 +188,7 @@ function AppContent() {
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="subnav-dark md:hidden border-t border-gray-800/50 bg-gray-900/90 backdrop-blur-xl"
+            className="navbar-drawer subnav-dark md:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl"
           >
             <div className="px-4 py-3 space-y-1">
               <button onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg">Dashboard</button>
