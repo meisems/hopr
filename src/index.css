@@ -7,6 +7,18 @@
   --color-gray-900: #111318;
   --color-gray-800: #1a1d25;
   --color-gray-700: #2a2d35;
+
+  /* hopr brand teal, sampled from the logo mark */
+  --color-brand-50: #eefbfa;
+  --color-brand-100: #d3f3f0;
+  --color-brand-200: #a8e6e1;
+  --color-brand-300: #72d2cb;
+  --color-brand-400: #3fb0aa;
+  --color-brand-500: #277577;
+  --color-brand-600: #1f6668;
+  --color-brand-700: #185254;
+  --color-brand-800: #123e40;
+  --color-brand-900: #0c2b2c;
 }
 
 /* Theme transitions */
@@ -142,7 +154,7 @@ input[type="number"] {
 
 /* Gradient text helper */
 .gradient-text {
-  background: linear-gradient(135deg, #a855f7, #3b82f6);
+  background: linear-gradient(135deg, #3fb0aa, #277577);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -150,7 +162,11 @@ input[type="number"] {
 
 /* Glow effects */
 .glow-purple {
-  box-shadow: 0 0 20px rgba(168, 85, 247, 0.15);
+  box-shadow: 0 0 20px rgba(39, 117, 119, 0.2);
+}
+
+.glow-brand {
+  box-shadow: 0 0 20px rgba(63, 176, 170, 0.25);
 }
 
 .glow-green {

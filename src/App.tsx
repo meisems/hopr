@@ -42,9 +42,9 @@ function AppContent() {
       <div className={`min-h-screen bg-[#0a0b0f] text-white transition-opacity duration-700 ${showSplash ? 'opacity-0' : 'opacity-100'}`}>
       {/* Background gradient */}
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-600/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-blue-600/5 rounded-full blur-3xl" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-600/3 rounded-full blur-3xl" />
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-brand-500/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-brand-400/5 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-brand-600/3 rounded-full blur-3xl" />
       </div>
 
       {/* Header */}
@@ -52,13 +52,13 @@ function AppContent() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl flex items-center justify-center">
-                <Zap className="w-5 h-5 text-white" />
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 flex items-center justify-center">
+                <img src="/brand/logo-icon.png" alt="Hopr" className="w-full h-full object-contain drop-shadow-[0_0_10px_rgba(63,176,170,0.45)]" />
               </div>
               <div>
-                <h1 className="text-lg font-bold bg-gradient-to-r from-purple-400 to-blue-400 bg-clip-text text-transparent">
-                  Hopr
+                <h1 className="text-lg font-bold gradient-text">
+                  hopr
                 </h1>
                 <p className="text-[10px] text-gray-500 -mt-0.5">Hop Across Chains</p>
               </div>
@@ -202,8 +202,8 @@ function AppContent() {
                 const Icon = item.icon;
                 return (
                   <div key={item.step} className="flex gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/20 rounded-xl flex items-center justify-center">
-                      <Icon className="w-5 h-5 text-purple-400" />
+                    <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-brand-500/20 to-brand-400/20 border border-brand-500/20 rounded-xl flex items-center justify-center">
+                      <Icon className="w-5 h-5 text-brand-400" />
                     </div>
                     <div>
                       <div className="text-sm font-medium text-white">{item.title}</div>
@@ -217,7 +217,7 @@ function AppContent() {
             {/* Architecture note */}
             <div className="mt-6 p-3 bg-gray-800/40 rounded-xl border border-gray-700/30">
               <div className="text-xs text-gray-400 leading-relaxed">
-                <span className="text-purple-400 font-medium">Architecture:</span> Powered by LI.FI cross-chain API with automatic chain resolution via DexScreener + multi-chain RPC probing. Supports Solana (SVM) and 5 EVM chains including Robinhood Chain and Arc Chain.
+                <span className="text-brand-400 font-medium">Architecture:</span> Powered by LI.FI cross-chain API with automatic chain resolution via DexScreener + multi-chain RPC probing. Supports Solana (SVM) and 5 EVM chains including Robinhood Chain and Arc Chain.
               </div>
             </div>
           </div>
@@ -257,8 +257,8 @@ function AppContent() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-purple-400" />
-              <span className="text-sm text-gray-400">Hopr – Powered by LI.FI</span>
+              <img src="/brand/logo-icon.png" alt="Hopr" className="w-4 h-4 object-contain" />
+              <span className="text-sm text-gray-400">hopr – Powered by LI.FI</span>
             </div>
             <div className="flex items-center gap-4">
               <button onClick={() => setCurrentPage('docs')} className="text-xs text-gray-500 hover:text-white transition-colors">Docs</button>
@@ -285,7 +285,7 @@ function StatCard({ icon, label, value, change, positive }: { icon: React.ReactN
   return (
     <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-purple-400">{icon}</span>
+        <span className="text-brand-400">{icon}</span>
         <span className="text-xs text-gray-500">{label}</span>
       </div>
       <div className="flex items-end justify-between">

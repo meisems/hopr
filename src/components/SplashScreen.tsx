@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zap } from 'lucide-react';
 
 interface SplashScreenProps {
   onComplete: () => void;
@@ -17,7 +16,8 @@ interface Particle {
   trail: { x: number; y: number }[];
 }
 
-const COLORS = ['#a855f7', '#6366f1', '#3b82f6', '#8b5cf6', '#7c3aed', '#4f46e5', '#2563eb', '#c084fc'];
+// hopr brand teal palette, sampled from the logo mark
+const COLORS = ['#3fb0aa', '#277577', '#72d2cb', '#1f6668', '#a8e6e1', '#185254', '#5ecfc7', '#0c2b2c'];
 
 export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -33,6 +33,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const [logoOpacity, setLogoOpacity] = useState(1);
   const holeSizeRef = useRef(0);
   const [holeSize, setHoleSize] = useState(0);
+  const [shockwave, setShockwave] = useState(false);
 
   const createParticle = useCallback((w: number, h: number): Particle => {
     const angle = Math.random() * Math.PI * 2;
@@ -91,6 +92,14 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       twinkle: Math.random() * Math.PI * 2,
     }));
 
+    // Orbiting "charge" ring shown while the mark is forming
+    const chargeDots = Array.from({ length: 14 }, (_, i) => ({
+      offset: (i / 14) * Math.PI * 2,
+      radiusJitter: Math.random() * 0.15 + 0.9,
+    }));
+
+    let shockwaveFired = false;
+
     const animate = () => {
       const elapsed = (Date.now() - startTimeRef.current) / 1000;
       const cx = w / 2;
@@ -105,6 +114,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       if (elapsed > 2.8 && phaseRef.current === 'pulling') {
         phaseRef.current = 'consuming';
         setPhase('consuming');
+        if (!shockwaveFired) {
+          shockwaveFired = true;
+          setShockwave(true);
+        }
       }
       if (elapsed > 4.5 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
@@ -207,20 +220,35 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.fill();
       });
 
-      // Accretion disk
+      // Orbiting charge ring while the mark first forms — a subtle "powering up" cue
+      if (phaseRef.current === 'forming') {
+        const chargeProgress = Math.min(1, elapsed / 0.8);
+        chargeDots.forEach((dot) => {
+          const angle = dot.offset + elapsed * 3.2;
+          const radius = minDim * 0.09 * dot.radiusJitter;
+          const x = cx + Math.cos(angle) * radius;
+          const y = cy + Math.sin(angle) * radius;
+          ctx.beginPath();
+          ctx.arc(x, y, 1.6, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(114, 210, 203, ${0.7 * chargeProgress})`;
+          ctx.fill();
+        });
+      }
+
+      // Accretion disk — teal-to-aqua gradient rings
       const diskRotation = elapsed * 0.4;
       for (let ring = 0; ring < 6; ring++) {
         const ringRadius = holeSizeRef.current * (1.15 + ring * 0.25);
-        const ringOpacity = (0.2 - ring * 0.03) * (phaseRef.current === 'forming' ? 0.5 : 1);
-        
+        const ringOpacity = (0.22 - ring * 0.03) * (phaseRef.current === 'forming' ? 0.5 : 1);
+
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(diskRotation + ring * 0.4);
         ctx.scale(1, 0.25 + Math.sin(elapsed + ring) * 0.05);
-        
+
         ctx.beginPath();
         ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(${140 + ring * 15}, ${70 + ring * 10}, ${220 - ring * 10}, ${ringOpacity})`;
+        ctx.strokeStyle = `rgba(${45 + ring * 10}, ${150 + ring * 12}, ${150 + ring * 10}, ${ringOpacity})`;
         ctx.lineWidth = 2 + ring * 0.5;
         ctx.stroke();
         ctx.restore();
@@ -228,11 +256,11 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       // Gravitational lensing glow
       const lensGrad = ctx.createRadialGradient(cx, cy, holeSizeRef.current * 0.85, cx, cy, holeSizeRef.current * 1.6);
-      lensGrad.addColorStop(0, 'rgba(168, 85, 247, 0.25)');
-      lensGrad.addColorStop(0.4, 'rgba(99, 102, 241, 0.1)');
-      lensGrad.addColorStop(0.7, 'rgba(59, 130, 246, 0.03)');
+      lensGrad.addColorStop(0, 'rgba(63, 176, 170, 0.28)');
+      lensGrad.addColorStop(0.4, 'rgba(39, 117, 119, 0.12)');
+      lensGrad.addColorStop(0.7, 'rgba(114, 210, 203, 0.04)');
       lensGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      
+
       ctx.beginPath();
       ctx.arc(cx, cy, holeSizeRef.current * 1.6, 0, Math.PI * 2);
       ctx.fillStyle = lensGrad;
@@ -244,7 +272,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       holeGrad.addColorStop(0.75, 'rgba(0, 0, 0, 1)');
       holeGrad.addColorStop(0.92, 'rgba(0, 0, 0, 0.98)');
       holeGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      
+
       ctx.beginPath();
       ctx.arc(cx, cy, holeSizeRef.current * 1.1, 0, Math.PI * 2);
       ctx.fillStyle = holeGrad;
@@ -254,14 +282,14 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       ctx.beginPath();
       ctx.arc(cx, cy, holeSizeRef.current * 0.98, 0, Math.PI * 2);
       const ringAlpha = 0.4 + Math.sin(elapsed * 4) * 0.15;
-      ctx.strokeStyle = `rgba(200, 150, 255, ${ringAlpha})`;
+      ctx.strokeStyle = `rgba(170, 235, 228, ${ringAlpha})`;
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
       // Secondary photon ring
       ctx.beginPath();
       ctx.arc(cx, cy, holeSizeRef.current * 1.05, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(130, 100, 220, ${ringAlpha * 0.5})`;
+      ctx.strokeStyle = `rgba(100, 190, 185, ${ringAlpha * 0.5})`;
       ctx.lineWidth = 1;
       ctx.stroke();
 
@@ -289,6 +317,29 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         className="absolute inset-0 w-full h-full"
       />
 
+      {/* Shockwave pulse fired the moment the mark starts consuming */}
+      <AnimatePresence>
+        {shockwave && (
+          <motion.div
+            initial={{ opacity: 0.6, scale: 0.3 }}
+            animate={{ opacity: 0, scale: 2.6 }}
+            transition={{ duration: 1.1, ease: 'easeOut' }}
+            onAnimationComplete={() => setShockwave(false)}
+            className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          >
+            <div
+              className="rounded-full border"
+              style={{
+                width: '40vmin',
+                height: '40vmin',
+                borderColor: 'rgba(114, 210, 203, 0.5)',
+                borderWidth: 1.5,
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Logo being consumed by the black hole */}
       <div
         className="absolute inset-0 flex items-center justify-center pointer-events-none"
@@ -301,17 +352,25 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         <div className="flex flex-col items-center gap-3 sm:gap-5">
           {/* Logo icon */}
           <div className="relative">
-            <div className="w-16 h-16 sm:w-24 sm:h-24 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl sm:rounded-3xl flex items-center justify-center shadow-2xl shadow-purple-500/40">
-              <Zap className="w-8 h-8 sm:w-12 sm:h-12 text-white" />
-            </div>
+            <motion.div
+              className="w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center"
+              animate={{ scale: [1, 1.04, 1] }}
+              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              <img
+                src="/brand/logo-icon.png"
+                alt="Hopr"
+                className="w-full h-full object-contain drop-shadow-[0_0_18px_rgba(63,176,170,0.55)]"
+              />
+            </motion.div>
             {/* Glow */}
-            <div className="absolute inset-0 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl sm:rounded-3xl blur-2xl opacity-60" />
+            <div className="absolute inset-0 bg-brand-500/40 rounded-full blur-2xl opacity-70 -z-10" />
           </div>
-          
+
           {/* Logo text */}
           <div className="text-center">
-            <h1 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-purple-400 bg-clip-text text-transparent">
-              Hopr
+            <h1 className="text-2xl sm:text-4xl font-bold gradient-text">
+              hopr
             </h1>
             <p className="text-xs sm:text-base text-gray-400 mt-1 tracking-widest uppercase">
               Hop Across Chains
@@ -334,7 +393,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
               {[0, 1, 2, 3, 4].map((i) => (
                 <motion.div
                   key={i}
-                  className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-purple-400 rounded-full"
+                  className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-brand-400 rounded-full"
                   animate={{
                     scale: [1, 1.8, 1],
                     opacity: [0.3, 1, 0.3],
