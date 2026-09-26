@@ -1,0 +1,236 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-gray-950: #0a0b0f;
+  --color-gray-900: #111318;
+  --color-gray-800: #1a1d25;
+  --color-gray-700: #2a2d35;
+
+  /* hopr brand teal, sampled from the logo mark */
+  --color-brand-50: #eefbfa;
+  --color-brand-100: #d3f3f0;
+  --color-brand-200: #a8e6e1;
+  --color-brand-300: #72d2cb;
+  --color-brand-400: #3fb0aa;
+  --color-brand-500: #277577;
+  --color-brand-600: #1f6668;
+  --color-brand-700: #185254;
+  --color-brand-800: #123e40;
+  --color-brand-900: #0c2b2c;
+}
+
+/* Theme transitions */
+* {
+  transition-property: background-color, border-color, color, box-shadow, fill, stroke;
+  transition-duration: 280ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Disable transitions on page load */
+.no-transitions * {
+  transition: none !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Smooth theme switch — View Transitions API circular reveal.         */
+/* ThemeContext.toggleThemeAt() sets --theme-reveal-x/y to the click    */
+/* point, then Web-Animates a growing circle clip-path on the "new"    */
+/* snapshot so the theme change ripples outward instead of popping.    */
+/* ------------------------------------------------------------------ */
+@supports (view-transition-name: root) {
+  ::view-transition-old(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+
+  ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+    z-index: 9999;
+  }
+
+  ::view-transition-old(root) {
+    z-index: 1;
+  }
+}
+
+html {
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+}
+
+body {
+  background-color: #0a0b0f;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html.light body {
+  background-color: #ffffff;
+  color: #0a0b0f;
+}
+
+/* Light theme overrides */
+html.light .bg-\[\#0a0b0f\] {
+  background-color: #ffffff !important;
+}
+
+html.light .bg-gray-900\/60,
+html.light .bg-gray-900\/40,
+html.light .bg-gray-900\/30,
+html.light .bg-gray-900\/80 {
+  background-color: rgba(243, 244, 246, 0.9) !important;
+}
+
+html.light .bg-gray-800\/60,
+html.light .bg-gray-800\/50,
+html.light .bg-gray-800\/40,
+html.light .bg-gray-800\/30 {
+  background-color: rgba(229, 231, 235, 0.8) !important;
+}
+
+html.light .border-gray-800\/50,
+html.light .border-gray-800\/30 {
+  border-color: rgba(209, 213, 219, 0.8) !important;
+}
+
+html.light .border-gray-700\/50,
+html.light .border-gray-700\/30 {
+  border-color: rgba(209, 213, 219, 0.6) !important;
+}
+
+html.light .text-white {
+  color: #111827 !important;
+}
+
+html.light .text-gray-400 {
+  color: #6b7280 !important;
+}
+
+html.light .text-gray-500 {
+  color: #9ca3af !important;
+}
+
+html.light .text-gray-300 {
+  color: #374151 !important;
+}
+
+html.light .placeholder-gray-500::placeholder {
+  color: #9ca3af !important;
+}
+
+html.light input,
+html.light textarea {
+  background-color: rgba(243, 244, 246, 0.9) !important;
+  color: #111827 !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2d35;
+  border-radius: 3px;
+}
+
+html.light ::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3d45;
+}
+
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* Input number arrows removal */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Smooth transitions */
+* {
+  scroll-behavior: smooth;
+}
+
+/* Gradient text helper */
+.gradient-text {
+  background: linear-gradient(135deg, #3fb0aa, #277577);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Glow effects */
+.glow-purple {
+  box-shadow: 0 0 20px rgba(39, 117, 119, 0.2);
+}
+
+.glow-brand {
+  box-shadow: 0 0 20px rgba(63, 176, 170, 0.25);
+}
+
+.glow-green {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+}
+
+/* Animation for pulse dots */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+  .hide-on-mobile {
+    display: none !important;
+  }
+}
+
+@media (min-width: 641px) {
+  .show-on-mobile-only {
+    display: none !important;
+  }
+}
+
+/* Prevent text selection on interactive elements */
+button, a {
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* Safe area for mobile devices */
+@supports (padding: max(0px)) {
+  .safe-area-top {
+    padding-top: max(0px, env(safe-area-inset-top));
+  }
+  .safe-area-bottom {
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+}
