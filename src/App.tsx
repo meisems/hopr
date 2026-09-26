@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins } from 'lucide-react';
+import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ChartPanel from './components/ChartPanel';
 import TradeCard from './components/TradeCard';
@@ -10,10 +10,12 @@ import SettingsModal from './components/SettingsModal';
 import TelegramPreview from './components/TelegramPreview';
 import SplashScreen from './components/SplashScreen';
 import ChainLogo from './components/ChainLogo';
+import DocsPage from './components/DocsPage';
 import { DetectedToken } from './services/chainDetector';
 
 function App() {
   const [showSplash, setShowSplash] = useState(true);
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'docs'>('dashboard');
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -21,6 +23,11 @@ function App() {
   const handleSplashComplete = () => {
     setShowSplash(false);
   };
+
+  // If on docs page, render it instead of dashboard
+  if (currentPage === 'docs') {
+    return <DocsPage onBack={() => setCurrentPage('dashboard')} />;
+  }
 
   return (
     <>
@@ -61,6 +68,13 @@ function App() {
               <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Positions</a>
               <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">History</a>
               <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Bridge</a>
+              <button
+                onClick={() => setCurrentPage('docs')}
+                className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all flex items-center gap-1.5"
+              >
+                <BookOpen className="w-4 h-4" />
+                Docs
+              </button>
             </nav>
 
             {/* Right actions */}
@@ -100,6 +114,12 @@ function App() {
               <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">Positions</a>
               <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">History</a>
               <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">Bridge</a>
+              <button
+                onClick={() => { setCurrentPage('docs'); setMobileMenuOpen(false); }}
+                className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800/30"
+              >
+                Docs
+              </button>
             </div>
           </motion.div>
         )}
@@ -238,7 +258,7 @@ function App() {
               <span className="text-sm text-gray-400">Hopr – Powered by LI.FI</span>
             </div>
             <div className="flex items-center gap-4">
-              <a href="#" className="text-xs text-gray-500 hover:text-white transition-colors">Docs</a>
+              <button onClick={() => setCurrentPage('docs')} className="text-xs text-gray-500 hover:text-white transition-colors">Docs</button>
               <a href="#" className="text-xs text-gray-500 hover:text-white transition-colors">API</a>
               <a href="#" className="flex items-center gap-1 text-xs text-gray-500 hover:text-white transition-colors">
                 <Github className="w-3 h-3" /> GitHub
