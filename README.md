@@ -135,7 +135,6 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 │   │   ├── TradeCard.tsx       # Buy/sell interface
 │   │   ├── PositionsTable.tsx  # Active positions + PnL
 │   │   ├── WalletPanel.tsx     # Multi-chain balances
-│   │   ├── TelegramPreview.tsx # Bot UI preview
 │   │   └── SettingsModal.tsx   # User configuration
 │   ├── services/
 │   │   └── chainDetector.ts    # Auto chain resolution engine

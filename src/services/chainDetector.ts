@@ -26,8 +26,8 @@ export const SUPPORTED_CHAINS: ChainInfo[] = [
   { id: 42161, name: 'Arbitrum One', key: 'arb', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#28A0F0', rpcUrl: 'https://arb1.arbitrum.io/rpc' },
   { id: 8453, name: 'Base', key: 'bas', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#0052FF', rpcUrl: 'https://mainnet.base.org' },
   { id: 56, name: 'BNB Chain', key: 'bsc', type: 'EVM', nativeToken: 'BNB', nativeSymbol: 'BNB', color: '#F0B90B', rpcUrl: 'https://bsc-dataseed.binance.org' },
-  { id: 4663, name: 'Robinhood Chain', key: 'rhc', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#00C853', rpcUrl: 'https://rpc.robinhood-chain.example' },
-  { id: 5042, name: 'Arc Chain', key: 'arc', type: 'EVM', nativeToken: 'USDC', nativeSymbol: 'USDC', color: '#FF6D00', rpcUrl: 'https://rpc.arc-chain.example' },
+  { id: 4663, name: 'Robinhood Chain', key: 'rhc', type: 'EVM', nativeToken: 'ETH', nativeSymbol: 'ETH', color: '#00C853', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com' },
+  { id: 5042, name: 'Arc Chain', key: 'arc', type: 'EVM', nativeToken: 'USDC', nativeSymbol: 'USDC', color: '#FF6D00', rpcUrl: 'https://rpc.mainnet.arc.io' },
 ];
 
 export interface DetectedToken {
@@ -80,6 +80,8 @@ const DEXSCREENER_CHAIN_SLUGS: Record<string, number> = {
   arbitrum: 42161,
   base: 8453,
   bsc: 56,
+  robinhood: 4663,
+  arc: 5042,
 };
 
 function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo): DetectedToken {
@@ -236,9 +238,9 @@ export async function detectChain(address: string): Promise<DetectedToken | null
 
   if (isEvmAddress(address)) {
     const pairs = await fetchDexScreener(address);
-    const indexedPair = pairs.find((p) => p.chainId in DEXSCREENER_CHAIN_SLUGS && p.chainId !== 'solana');
+    const indexedPair = pairs.find((p) => p.chainId.toLowerCase() in DEXSCREENER_CHAIN_SLUGS && p.chainId.toLowerCase() !== 'solana');
     if (indexedPair) {
-      const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId];
+      const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId.toLowerCase()];
       const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
       if (chainInfo) return pairToDetectedToken(indexedPair, chainId, chainInfo);
     }

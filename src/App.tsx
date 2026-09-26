@@ -5,7 +5,6 @@ import SearchBar from './components/SearchBar';
 import TradeCard from './components/TradeCard';
 import PositionsTable from './components/PositionsTable';
 import WalletPanel from './components/WalletPanel';
-import TelegramPreview from './components/TelegramPreview';
 import ChainLogo from './components/ChainLogo';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
@@ -234,24 +233,21 @@ function AppContent() {
           <PositionsTable />
         </motion.section>
 
-        {/* Telegram Bot Preview + How it works */}
+        {/* How it works */}
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5 }}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-6"
+          className="grid grid-cols-1 gap-6"
         >
-          <TelegramPreview />
-          
-          {/* How it works */}
           <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
             <h3 className="text-lg font-semibold text-white mb-4">How It Works</h3>
             <div className="space-y-4">
               {[
-                { step: '1', title: 'Look Up a Token', desc: 'Send a token contract address to the Telegram bot for live indexed market information.', icon: Search },
-                { step: '2', title: 'Check Balances', desc: 'Use /wallet with a public address to read native balances across supported chains.', icon: BarChart3 },
-                { step: '3', title: 'Save Preferences', desc: 'Link public addresses and choose funding-chain/slippage preferences when TELEGRAM_STATE is configured.', icon: Wallet },
-                { step: '4', title: 'Connect Only to Buy', desc: 'Browse scans and charts without a wallet. Connect an EVM wallet only when you are ready to request a buy quote.', icon: Shield },
+                { step: '1', title: 'Scan a Token', desc: 'Paste any supported EVM or Solana token address to resolve its chain and market data.', icon: Search },
+                { step: '2', title: 'Review the Market', desc: 'Inspect the live chart, liquidity, FDV, volume, and price movement without connecting a wallet.', icon: BarChart3 },
+                { step: '3', title: 'Connect Only to Buy', desc: 'Connect an EVM wallet only when you are ready to request a buy quote and confirm a transaction.', icon: Wallet },
+                { step: '4', title: 'Confirm in Wallet', desc: 'Review the fresh LI.FI route, then approve the transaction in your browser wallet.', icon: Shield },
               ].map((item) => {
                 const Icon = item.icon;
                 return (

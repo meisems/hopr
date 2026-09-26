@@ -92,15 +92,6 @@ export const PUBLIC_DOC_FILES: DocFile[] = [
     public: true,
   },
   {
-    id: 'telegram-preview',
-    name: 'TelegramPreview.tsx',
-    path: 'src/components/TelegramPreview.tsx',
-    description: 'Telegram bot command guide, read-only wallet features, and setup notes',
-    category: 'components',
-    language: 'typescript',
-    public: true,
-  },
-  {
     id: 'settings-modal',
     name: 'SettingsModal.tsx',
     path: 'src/components/SettingsModal.tsx',
