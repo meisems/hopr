@@ -27,7 +27,8 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [customAmount, setCustomAmount] = useState('');
   const [quoteStatus, setQuoteStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [quoteMessage, setQuoteMessage] = useState('');
-  const { evmAddress } = useWallet();
+  const { evmAddress, connectEvm } = useWallet();
+  const [connectingWallet, setConnectingWallet] = useState(false);
 
   const userBalance = mockWalletBalances.find(b => b.chainId === fundingChain.id);
 
@@ -37,7 +38,7 @@ export default function TradeCard({ token }: TradeCardProps) {
     setAmount(nextAmount);
     if (!evmAddress) {
       setQuoteStatus('error');
-      setQuoteMessage('Connect an EVM wallet to request a LI.FI quote. No transaction was signed.');
+      setQuoteMessage('Connect an EVM wallet to buy this token. You can keep browsing and scanning without connecting.');
       return;
     }
     if (token.chainType !== 'EVM') {
@@ -70,6 +71,22 @@ export default function TradeCard({ token }: TradeCardProps) {
     if (!token) return;
     setQuoteStatus('error');
     setQuoteMessage('No holdings are recorded for this dashboard, so a sell quote is unavailable. No transaction was sent.');
+  };
+
+  const handleConnectEvm = async () => {
+    setConnectingWallet(true);
+    setQuoteStatus('loading');
+    setQuoteMessage('Opening your EVM wallet…');
+    try {
+      await connectEvm();
+      setQuoteStatus('ready');
+      setQuoteMessage('Wallet connected. Choose a buy amount to request a fresh quote.');
+    } catch (error) {
+      setQuoteStatus('error');
+      setQuoteMessage(error instanceof Error ? error.message : 'Wallet connection was rejected.');
+    } finally {
+      setConnectingWallet(false);
+    }
   };
 
   if (!token) {
@@ -189,7 +206,18 @@ export default function TradeCard({ token }: TradeCardProps) {
             >
               <div className={`flex items-start gap-2 p-3 rounded-xl ${quoteStatus === 'ready' ? 'bg-green-500/10 border border-green-500/20' : 'bg-amber-500/10 border border-amber-500/20'}`}>
                 {quoteStatus === 'loading' ? <Loader2 className="w-5 h-5 text-blue-300 shrink-0 animate-spin" /> : quoteStatus === 'ready' ? <CheckCircle2 className="w-5 h-5 text-green-300 shrink-0" /> : <XCircle className="w-5 h-5 text-amber-300 shrink-0" />}
-                <span className="text-sm text-gray-200">{quoteMessage || 'Trading is not implemented. No wallet was signed and no transaction was sent.'}</span>
+                <div className="flex-1 space-y-2">
+                  <span className="block text-sm text-gray-200">{quoteMessage || 'Choose a buy amount to request a fresh quote.'}</span>
+                  {quoteStatus === 'error' && !evmAddress && (
+                    <button
+                      onClick={handleConnectEvm}
+                      disabled={connectingWallet}
+                      className="px-3 py-1.5 rounded-lg bg-brand-500/20 border border-brand-400/30 text-xs font-medium text-brand-200 hover:bg-brand-500/30 disabled:opacity-50"
+                    >
+                      {connectingWallet ? 'Connecting…' : 'Connect EVM wallet'}
+                    </button>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}

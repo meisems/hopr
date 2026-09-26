@@ -10,7 +10,7 @@ import ChainLogo from './components/ChainLogo';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
-import { useWallet, WalletProvider } from './context/WalletContext';
+import { WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
 
 const SplashScreen = lazy(() => import('./components/SplashScreen'));
@@ -57,7 +57,6 @@ function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [splashRun, setSplashRun] = useState(0);
-  const { isReady } = useWallet();
 
   const previewBlackHole = () => {
     setSettingsOpen(false);
@@ -81,18 +80,6 @@ function AppContent() {
   // If on docs page, render it instead of dashboard
   if (currentPage === 'docs') {
     return <Suspense fallback={<PageLoading />}><DocsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
-  }
-
-  if (!isReady) {
-    return (
-      <>
-        {preloader}
-        <div className={dashboardClassName}>
-          <DashboardLocked showSplash={false} onOpenSettings={() => setSettingsOpen(true)} />
-        </div>
-        <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
-      </>
-    );
   }
 
   if (currentPage === 'positions') return <Suspense fallback={<PageLoading />}><PositionsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
@@ -149,7 +136,7 @@ function AppContent() {
               <ThemeToggle />
               <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                <span className="text-xs text-green-400 font-medium">Connected</span>
+                <span className="text-xs text-green-400 font-medium">Dashboard online</span>
               </div>
               <button
                 onClick={() => setSettingsOpen(true)}
@@ -264,7 +251,7 @@ function AppContent() {
                 { step: '1', title: 'Look Up a Token', desc: 'Send a token contract address to the Telegram bot for live indexed market information.', icon: Search },
                 { step: '2', title: 'Check Balances', desc: 'Use /wallet with a public address to read native balances across supported chains.', icon: BarChart3 },
                 { step: '3', title: 'Save Preferences', desc: 'Link public addresses and choose funding-chain/slippage preferences when TELEGRAM_STATE is configured.', icon: Wallet },
-                { step: '4', title: 'Read-Only Bot', desc: 'The Telegram bot does not accept keys, sign transactions, or submit trades. Dashboard and bot wallet state are separate.', icon: Shield },
+                { step: '4', title: 'Connect Only to Buy', desc: 'Browse scans and charts without a wallet. Connect an EVM wallet only when you are ready to request a buy quote.', icon: Shield },
               ].map((item) => {
                 const Icon = item.icon;
                 return (
@@ -345,31 +332,6 @@ function AppContent() {
       <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
     </div>
     </>
-  );
-}
-
-function DashboardLocked({ showSplash, onOpenSettings }: { showSplash: boolean; onOpenSettings: () => void }) {
-  const { evmAddress, solanaAddress } = useWallet();
-  const shortAddress = (address: string | null) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'Not connected';
-
-  return (
-    <div className={`min-h-screen bg-[#0a0b0f] text-white transition-opacity duration-700 ${showSplash ? 'opacity-0' : 'opacity-100'}`}>
-      <header className="relative z-10 border-b border-gray-800/50 bg-gray-900/30 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5"><img src="/brand/logo-icon.png" alt="Hopr" className="w-9 h-9 object-contain" /><div><h1 className="text-lg font-bold gradient-text">hopr</h1><p className="text-[10px] text-gray-500 -mt-0.5">Hop Across Chains</p></div></div>
-          <div className="flex items-center gap-2"><ThemeToggle /><button onClick={onOpenSettings} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-brand-500/20 border border-brand-400/30 text-sm text-brand-200 hover:bg-brand-500/30"><Settings className="w-4 h-4" /> Wallet settings</button></div>
-        </div>
-      </header>
-      <main className="relative z-10 min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
-        <div className="w-full max-w-xl text-center bg-gray-900/60 border border-gray-800/60 rounded-3xl p-8 sm:p-12 shadow-2xl">
-          <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-brand-500/10 border border-brand-400/20 flex items-center justify-center"><Wallet className="w-8 h-8 text-brand-300" /></div>
-          <h2 className="text-2xl font-semibold text-white">Connect both wallets to continue</h2>
-          <p className="mt-3 text-sm leading-relaxed text-gray-400">The web dashboard requires one EVM wallet and one Solana wallet connected in Settings. Your Telegram bot wallets remain managed separately.</p>
-          <button onClick={onOpenSettings} className="mt-7 px-5 py-3 rounded-xl bg-brand-500 hover:bg-brand-400 text-white font-medium transition-colors">Open wallet settings</button>
-          <div className="mt-6 grid grid-cols-2 gap-3 text-left"><div className="p-3 rounded-xl bg-gray-800/40 border border-gray-700/40"><div className="text-xs text-gray-500">EVM wallet</div><div className={`mt-1 text-sm ${evmAddress ? 'text-green-300' : 'text-yellow-300'}`}>{shortAddress(evmAddress)}</div></div><div className="p-3 rounded-xl bg-gray-800/40 border border-gray-700/40"><div className="text-xs text-gray-500">Solana wallet</div><div className={`mt-1 text-sm ${solanaAddress ? 'text-green-300' : 'text-yellow-300'}`}>{shortAddress(solanaAddress)}</div></div></div>
-        </div>
-      </main>
-    </div>
   );
 }
 

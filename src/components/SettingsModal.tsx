@@ -78,7 +78,7 @@ export default function SettingsModal({ isOpen, onClose, onPreviewBlackHole }: S
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b border-gray-800">
-          <div><h2 className="text-lg font-semibold text-white">Settings</h2><p className="text-xs text-gray-500 mt-0.5">Dashboard access requires both wallets.</p></div>
+          <div><h2 className="text-lg font-semibold text-white">Settings</h2><p className="text-xs text-gray-500 mt-0.5">Wallets are only needed when you buy.</p></div>
           <button onClick={onClose} className="p-2 hover:bg-gray-800 rounded-lg transition-colors"><X className="w-5 h-5 text-gray-400" /></button>
         </div>
 
@@ -86,7 +86,7 @@ export default function SettingsModal({ isOpen, onClose, onPreviewBlackHole }: S
           <section>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2"><Wallet className="w-4 h-4 text-brand-400" /><label className="text-sm font-medium text-white">Connected wallets</label></div>
-              {isReady ? <span className="inline-flex items-center gap-1 text-xs text-green-400"><CheckCircle2 className="w-3.5 h-3.5" /> Dashboard unlocked</span> : <span className="text-xs text-yellow-400">Both required</span>}
+              {isReady ? <span className="inline-flex items-center gap-1 text-xs text-green-400"><CheckCircle2 className="w-3.5 h-3.5" /> Ready to trade</span> : <span className="text-xs text-gray-400">Optional for browsing</span>}
             </div>
             <div className="space-y-2">
               {[
@@ -101,7 +101,7 @@ export default function SettingsModal({ isOpen, onClose, onPreviewBlackHole }: S
               ))}
             </div>
             {error && <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
-            <p className="text-[11px] text-gray-500 mt-2">Connect one EVM wallet and one Solana wallet before using dashboard trading features.</p>
+            <p className="text-[11px] text-gray-500 mt-2">Browse and scan without a wallet. Connect an EVM wallet when you are ready to request a buy quote.</p>
           </section>
 
           <BlackHoleControls onPreviewBlackHole={onPreviewBlackHole} />
