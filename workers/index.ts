@@ -24,7 +24,15 @@ import {
   prepareSell,
   confirmTrade,
 } from './trading';
-import { getChainById, getChainByKey, SUPPORTED_CHAINS } from '../src/services/chainDetector';
+import { getChainById, SUPPORTED_CHAINS } from '../src/services/chainDetector';
+import {
+  decryptPrivateKey,
+  encryptPrivateKey,
+  packEncryptedSecret,
+  unpackEncryptedSecret,
+  importEvmKey,
+  importSolanaKey,
+} from '../src/services/walletService';
 
 export interface Env {
   DB?: D1Database;
@@ -327,7 +335,7 @@ async function handleTelegramMessage(
     return;
   }
   if (command === '/help' || !text) {
-    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for /wallet and /balances\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain and slippage preferences\n\nSend a token contract address by itself for a live DexScreener lookup. Wallet reads are public/read-only. This bot does not sign or submit trades.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons execute immediately once you have a trading wallet — there is no confirmation step.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
   if (command === '/wallet' || command === '/balances') {
@@ -358,6 +366,27 @@ async function handleTelegramMessage(
       return;
     }
     await setTelegramWallet(chatId, args, env);
+    return;
+  }
+  if (command === '/importkey') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For your safety, only send private keys in a private chat with this bot — never in a group.', env);
+      return;
+    }
+    await handleTelegramImportKey(chatId, args, env);
+    return;
+  }
+  if (command === '/exportkeys') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, 'For your safety, export keys only in a private chat with this bot.', env);
+      return;
+    }
+    await sendTelegramMessage(
+      chatId,
+      'This reveals your raw private keys in chat. Only continue if you understand anyone who sees this message controls your funds.',
+      env,
+      telegramExportWarningKeyboard(),
+    );
     return;
   }
   if (command === '/settings') {
@@ -587,19 +616,90 @@ function telegramWalletLinkKeyboard() {
         { text: 'Link Solana (read-only)', callback_data: 'wallet:set:solana' },
       ],
       [{ text: 'Create trading wallet', callback_data: 'wallet:generate' }],
+      [{ text: 'Import private key', callback_data: 'wallet:import' }],
       [{ text: 'Help', callback_data: 'help' }],
     ],
   };
 }
 
-function telegramTradeConfirmKeyboard(tradeId: string) {
+function telegramExportWarningKeyboard() {
   return {
-    inline_keyboard: [
-      [
-        { text: '✅ Confirm & sign', callback_data: `trade:confirm:${tradeId}` },
-        { text: '× Cancel', callback_data: 'dismiss' },
-      ],
-    ],
+    inline_keyboard: [[{ text: '⚠️ Reveal private keys', callback_data: 'wallet:export' }]],
+  };
+}
+
+/**
+ * Decrypts and sends the user's raw private keys, once, as a DM. Telegram
+ * chat history is not a safe place to store a key long-term, so the message
+ * is deleted automatically ~60 seconds after sending — the caller should
+ * still tell the user to move funds to self-custody if they export.
+ */
+async function showTelegramWalletExport(chatId: number, env: Env): Promise<void> {
+  const userId = String(chatId);
+  if (!env.DB || !env.ENCRYPTION_KEY) {
+    await sendTelegramMessage(chatId, 'Exporting keys requires the bot owner to configure DB and ENCRYPTION_KEY.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  const row = await env.DB.prepare(
+    `SELECT evm_address, evm_encrypted_key, solana_address, solana_encrypted_key FROM user_wallets WHERE user_id = ?1`
+  )
+    .bind(userId)
+    .first<{ evm_address: string; evm_encrypted_key: string; solana_address: string; solana_encrypted_key: string }>();
+  if (!row) {
+    await sendTelegramMessage(chatId, 'No trading wallet on file yet. Use Create trading wallet first.', env, telegramWalletLinkKeyboard());
+    return;
+  }
+  const evmKey = await decryptPrivateKey(unpackEncryptedSecret(row.evm_encrypted_key), env.ENCRYPTION_KEY);
+  const solKey = await decryptPrivateKey(unpackEncryptedSecret(row.solana_encrypted_key), env.ENCRYPTION_KEY);
+  const text = `⚠️ Anyone with these keys has full control of these wallets. This message self-deletes in ~60s — save the keys somewhere safe now and never share them.\n\nEVM (${shortenTelegramAddress(row.evm_address)}):\n\`${evmKey}\`\n\nSolana (${shortenTelegramAddress(row.solana_address)}):\n\`${solKey}\``;
+  const sent = await telegramApiCall('sendMessage', env, { chat_id: chatId, text, parse_mode: 'Markdown' });
+  const messageId = (sent.result as { message_id?: number } | undefined)?.message_id;
+  if (messageId) {
+    // Best-effort auto-delete; if it fails the user still saw the warning above.
+    setTimeout(() => {
+      telegramApiCall('deleteMessage', env, { chat_id: chatId, message_id: messageId }).catch(() => {});
+    }, 60_000);
+  }
+}
+
+/** /importkey evm <key> or /importkey solana <key> — stores an existing wallet instead of generating one. */
+async function handleTelegramImportKey(chatId: number, args: string[], env: Env): Promise<void> {
+  if (!env.DB || !env.ENCRYPTION_KEY) {
+    await sendTelegramMessage(chatId, 'Importing a key requires the bot owner to configure DB and ENCRYPTION_KEY.', env);
+    return;
+  }
+  const [network, rawKey] = args;
+  const userId = String(chatId);
+  try {
+    if (network?.toLowerCase() === 'evm') {
+      const { address, privateKey } = importEvmKey(rawKey ?? '');
+      const encrypted = packEncryptedSecret(await encryptPrivateKey(privateKey, env.ENCRYPTION_KEY));
+      await env.DB.prepare(
+        `INSERT INTO user_wallets (user_id, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key)
+         VALUES (?1, ?2, ?3, COALESCE((SELECT solana_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT solana_encrypted_key FROM user_wallets WHERE user_id = ?1), ''))
+         ON CONFLICT(user_id) DO UPDATE SET evm_address = excluded.evm_address, evm_encrypted_key = excluded.evm_encrypted_key`
+      ).bind(userId, address, encrypted).run();
+      await sendTelegramMessage(chatId, `EVM key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, TELEGRAM_ACTION_KEYBOARD);
+    } else if (network?.toLowerCase() === 'solana') {
+      const { address, privateKey } = importSolanaKey(rawKey ?? '');
+      const encrypted = packEncryptedSecret(await encryptPrivateKey(privateKey, env.ENCRYPTION_KEY));
+      await env.DB.prepare(
+        `INSERT INTO user_wallets (user_id, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key)
+         VALUES (?1, COALESCE((SELECT evm_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT evm_encrypted_key FROM user_wallets WHERE user_id = ?1), ''), ?2, ?3)
+         ON CONFLICT(user_id) DO UPDATE SET solana_address = excluded.solana_address, solana_encrypted_key = excluded.solana_encrypted_key`
+      ).bind(userId, address, encrypted).run();
+      await sendTelegramMessage(chatId, `Solana key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, TELEGRAM_ACTION_KEYBOARD);
+    } else {
+      await sendTelegramMessage(chatId, 'Usage: /importkey evm <private-key> or /importkey solana <base58-secret-key>', env);
+    }
+  } catch {
+    await sendTelegramMessage(chatId, 'That key could not be parsed. Double-check the format and try again — and delete the bad message either way.', env);
+  }
+}
+
+function telegramExportWarningKeyboard() {
+  return {
+    inline_keyboard: [[{ text: '⚠️ Reveal private keys', callback_data: 'wallet:export' }]],
   };
 }
 
@@ -617,7 +717,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
   if (existing) {
     await sendTelegramMessage(
       chatId,
-      `You already have a trading wallet:\nEVM: ${shortenTelegramAddress(existing.evmAddress)}\nSolana: ${shortenTelegramAddress(existing.solanaAddress)}\n\nHopr holds the encrypted keys for this wallet and will only ever sign a transaction after you tap Confirm on a specific quote.`,
+      `You already have a trading wallet:\nEVM: ${shortenTelegramAddress(existing.evmAddress)}\nSolana: ${shortenTelegramAddress(existing.solanaAddress)}\n\nHopr holds your encrypted keys and executes Buy/Sell taps immediately — there's no second confirmation step, so only tap presets you're sure about. Use /exportkeys to reveal the raw keys, or /importkey to replace this wallet with one you already control.`,
       env,
       TELEGRAM_ACTION_KEYBOARD,
     );
@@ -626,7 +726,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
   const wallet = await createCustodialWallet(userId, env);
   await sendTelegramMessage(
     chatId,
-    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Hopr stores your keys encrypted (AES-256-GCM) and only signs after you tap Confirm on a quote you've seen — it never signs unattended. Send /wallet anytime to see balances.`,
+    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Buy/Sell buttons execute immediately on tap — there is no confirmation step, so double-check the preset amount and chain before tapping. Keys are encrypted at rest (AES-256-GCM); use /exportkeys anytime to see the raw keys, or /importkey to bring your own.`,
     env,
     TELEGRAM_ACTION_KEYBOARD,
   );
@@ -687,6 +787,10 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
       const fundingChainId = profile.fundingChainId ?? 8453;
       const fundingChain = getChainById(fundingChainId);
       if (!fundingChain) throw new Error('Configured funding chain is not supported');
+      const rpcUrls = {
+        evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
+        solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
+      };
       const trade = await prepareBuy(
         {
           userId,
@@ -700,51 +804,52 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
         },
         env,
       );
-      const toAmount = trade.quote.estimate.toAmountMin;
+      // Preset amounts are chosen in advance via /settings, so the tap itself
+      // is the user's confirmation — execute immediately, no second tap.
+      const result = await confirmTrade(userId, trade.id, rpcUrls, env);
       await sendTelegramMessage(
         chatId,
-        `Quote: ${amountDecimal} ${fundingChain.nativeSymbol} (${fundingChain.name}) → ~${toAmount} ${profile.lastTokenSymbol ?? 'tokens'} (${targetChain.name}).\nSlippage: ${(slippage * 100).toFixed(1)}%. This quote is only valid for 90 seconds — tap Confirm to sign and submit now.`,
+        `⏳ Step 1/3: Swapping ${amountDecimal} ${fundingChain.nativeSymbol} on ${fundingChain.name} -> Step 2/3: Bridging via LI.FI -> Step 3/3: Delivering ${profile.lastTokenSymbol ?? 'tokens'} on ${targetChain.name}.\nTx: ${result.txHash}`,
         env,
-        telegramTradeConfirmKeyboard(trade.id),
+        TELEGRAM_ACTION_KEYBOARD,
       );
       return;
     }
 
     if (sellMatch) {
+      const percent = Number(sellMatch[1]);
+      if (!env.DB) throw new Error('DB binding required to look up open positions');
+      const openTrade = await env.DB.prepare(
+        `SELECT id, purchased_amount FROM user_trades
+           WHERE user_id = ?1 AND target_token_address = ?2 AND status IN ('SUBMITTED','CONFIRMED')
+           ORDER BY created_at DESC LIMIT 1`
+      )
+        .bind(userId, profile.lastTokenAddress)
+        .first<{ id: string; purchased_amount: string }>();
+      if (!openTrade) {
+        await sendTelegramMessage(chatId, `No open ${profile.lastTokenSymbol ?? 'token'} position found for this wallet to sell.`, env, TELEGRAM_ACTION_KEYBOARD);
+        return;
+      }
+      const sellUnits = (BigInt(openTrade.purchased_amount) * BigInt(percent)) / 100n;
+      const rpcUrls = {
+        evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
+        solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
+      };
+      const trade = await prepareSell(
+        { userId, wallet, originalTradeDbId: openTrade.id, sellAmountUnits: sellUnits.toString(), slippage },
+        env,
+      );
+      const result = await confirmTrade(userId, trade.id, rpcUrls, env);
       await sendTelegramMessage(
         chatId,
-        'Selling requires picking which open position to close — use /positions (dashboard) for now; Telegram sell-by-percent wiring to a specific position is not yet connected.',
+        `⏳ Selling ${percent}% of ${profile.lastTokenSymbol ?? 'tokens'} -> Step 2/3: Bridging via LI.FI -> Step 3/3: Delivering proceeds to your original funding chain.\nTx: ${result.txHash}`,
         env,
         TELEGRAM_ACTION_KEYBOARD,
       );
       return;
     }
   } catch (error) {
-    await sendTelegramMessage(chatId, `Could not prepare that trade: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
-  }
-}
-
-async function handleTelegramTradeConfirm(chatId: number, tradeId: string, env: Env): Promise<void> {
-  const userId = String(chatId);
-  const rpcUrls = {
-    evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
-    solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
-  };
-  try {
-    const result = await confirmTrade(userId, tradeId, rpcUrls, env);
-    await sendTelegramMessage(
-      chatId,
-      `Submitted. Transaction: ${result.txHash}\n\nBridging/settlement can take a few minutes depending on the route.`,
-      env,
-      TELEGRAM_ACTION_KEYBOARD,
-    );
-  } catch (error) {
-    await sendTelegramMessage(
-      chatId,
-      `Trade not executed: ${error instanceof Error ? error.message : 'unknown error'}`,
-      env,
-      TELEGRAM_ACTION_KEYBOARD,
-    );
+    await sendTelegramMessage(chatId, `Trade failed: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
   }
 }
 
@@ -794,15 +899,22 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'wallet') return showTelegramWallet(chatId, env);
   if (data === 'settings') return showTelegramSettings(chatId, env);
   if (data === 'dismiss') return;
-  const confirmMatch = data.match(/^trade:confirm:(.+)$/);
-  if (confirmMatch) {
-    return handleTelegramTradeConfirm(chatId, confirmMatch[1], env);
-  }
   if (data.startsWith('trade:')) {
     return handleTelegramTradeAction(chatId, data, env);
   }
   if (data === 'wallet:generate') {
     return showTelegramWalletGenerate(chatId, env);
+  }
+  if (data === 'wallet:export') {
+    return showTelegramWalletExport(chatId, env);
+  }
+  if (data === 'wallet:import') {
+    return sendTelegramMessage(
+      chatId,
+      'Send /importkey evm <private-key> or /importkey solana <base58-secret-key> as a direct message (not in a group). Delete your message right after sending it.',
+      env,
+      TELEGRAM_ACTION_KEYBOARD,
+    );
   }
   if (data === 'wallet:link') {
     if (!env.TELEGRAM_STATE && !env.DB) {
@@ -860,15 +972,15 @@ async function sendTelegramMessage(
   });
 }
 
-async function telegramApiCall(method: string, env: Env, body: Record<string, unknown>): Promise<void> {
+async function telegramApiCall(method: string, env: Env, body: Record<string, unknown>): Promise<{ ok?: boolean; description?: string; result?: unknown }> {
   const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  let result: { ok?: boolean; description?: string };
+  let result: { ok?: boolean; description?: string; result?: unknown };
   try {
-    result = await response.json() as { ok?: boolean; description?: string };
+    result = await response.json() as { ok?: boolean; description?: string; result?: unknown };
   } catch {
     console.error(`Telegram API ${method} returned an invalid response (HTTP ${response.status})`);
     throw new Error(`Telegram API request failed (${method})`);
@@ -877,6 +989,7 @@ async function telegramApiCall(method: string, env: Env, body: Record<string, un
     console.error(`Telegram API ${method} failed with HTTP ${response.status}${result.description ? `: ${result.description}` : ''}`);
     throw new Error(`Telegram API request failed (${method})`);
   }
+  return result;
 }
 
 async function handleApiRequest(
