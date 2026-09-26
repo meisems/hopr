@@ -24,11 +24,11 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const particlesRef = useRef<Particle[]>([]);
   const animationRef = useRef<number>(0);
   const startTimeRef = useRef(Date.now());
-  const phaseRef = useRef<'forming' | 'pulling' | 'consuming' | 'gone'>('forming');
+  const phaseRef = useRef<'logo' | 'forming' | 'pulling' | 'consuming' | 'gone'>('logo');
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
-  const [phase, setPhase] = useState<'forming' | 'pulling' | 'consuming' | 'gone'>('forming');
+  const [phase, setPhase] = useState<'logo' | 'forming' | 'pulling' | 'consuming' | 'gone'>('logo');
   const [logoScale, setLogoScale] = useState(1);
   const [logoOpacity, setLogoOpacity] = useState(1);
   const holeSizeRef = useRef(0);
@@ -107,20 +107,22 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       const cy = h / 2;
       const minDim = Math.min(w, h);
 
-      // Phase transitions
-      if (elapsed > 0.55 && phaseRef.current === 'forming') {
+      // The logo gets a clean moment on its own before the black hole arrives.
+      if (elapsed > 1.25 && phaseRef.current === 'logo') {
+        phaseRef.current = 'forming';
+        setPhase('forming');
+        shockwaveFired = true;
+        setShockwave(true);
+      }
+      if (elapsed > 1.8 && phaseRef.current === 'forming') {
         phaseRef.current = 'pulling';
         setPhase('pulling');
       }
-      if (elapsed > 1.9 && phaseRef.current === 'pulling') {
+      if (elapsed > 2.35 && phaseRef.current === 'pulling') {
         phaseRef.current = 'consuming';
         setPhase('consuming');
-        if (!shockwaveFired) {
-          shockwaveFired = true;
-          setShockwave(true);
-        }
       }
-      if (elapsed > 3.25 && phaseRef.current === 'consuming') {
+      if (elapsed > 3.45 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
         setPhase('gone');
         setTimeout(() => onCompleteRef.current(), 360);
@@ -129,11 +131,13 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       }
 
       // Update hole size
-      const targetHoleSize = phaseRef.current === 'forming' ? minDim * 0.035 :
-        phaseRef.current === 'pulling' ? minDim * 0.16 :
-        phaseRef.current === 'consuming' ? minDim * 0.42 :
-        minDim * 0.55;
-      holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * 0.04;
+      const targetHoleSize = phaseRef.current === 'logo' ? 0 :
+        phaseRef.current === 'forming' ? minDim * 0.14 :
+        phaseRef.current === 'pulling' ? minDim * 0.26 :
+        phaseRef.current === 'consuming' ? minDim * 0.46 :
+        minDim * 0.6;
+      const holeEase = phaseRef.current === 'forming' ? 0.28 : 0.08;
+      holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * holeEase;
       setHoleSize(holeSizeRef.current);
 
       // Update logo transform
@@ -146,7 +150,8 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       }
 
       // Gravity strength
-      const gravity = phaseRef.current === 'forming' ? 0.4 :
+      const gravity = phaseRef.current === 'logo' ? 0 :
+        phaseRef.current === 'forming' ? 0.8 :
         phaseRef.current === 'pulling' ? 2.0 :
         phaseRef.current === 'consuming' ? 5.0 : 10.0;
 
@@ -223,9 +228,9 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         ctx.fill();
       });
 
-      // Orbiting charge ring while the mark first forms — a subtle "powering up" cue
+      // Orbiting charge ring appears only after the black hole's sudden reveal.
       if (phaseRef.current === 'forming') {
-        const chargeProgress = Math.min(1, elapsed / 0.55);
+        const chargeProgress = Math.min(1, Math.max(0, (elapsed - 1.25) / 0.2));
         chargeDots.forEach((dot) => {
           const angle = dot.offset + elapsed * 3.2;
           const radius = minDim * 0.09 * dot.radiusJitter;
@@ -238,7 +243,8 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         });
       }
 
-      // Accretion disk — teal-to-aqua gradient rings
+      // Accretion disk — hidden during the logo beat, then revealed as a dramatic event horizon.
+      if (phaseRef.current !== 'logo') {
       const diskRotation = elapsed * 0.4;
       for (let ring = 0; ring < 6; ring++) {
         const ringRadius = holeSizeRef.current * (1.15 + ring * 0.25);
@@ -302,6 +308,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       ctx.strokeStyle = `rgba(100, 190, 185, ${ringAlpha * 0.5})`;
       ctx.lineWidth = 1;
       ctx.stroke();
+      }
 
       animationRef.current = requestAnimationFrame(animate);
     };
@@ -327,7 +334,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         className="absolute inset-0 w-full h-full"
       />
 
-      {/* Shockwave pulse fired the moment the mark starts consuming */}
+      {/* Shockwave fires the moment the black hole appears */}
       <AnimatePresence>
         {shockwave && (
           <motion.div
@@ -350,7 +357,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         )}
       </AnimatePresence>
 
-      {/* Logo being consumed by the black hole */}
+      {/* Logo appears first, then is consumed by the black hole */}
       <div
         className="absolute inset-0 flex items-center justify-center pointer-events-none"
         style={{
@@ -365,7 +372,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
             <motion.div
               className="w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center"
               animate={{ scale: [1, 1.04, 1] }}
-              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+              transition={{ opacity: { duration: 0.55, ease: 'easeOut' }, scale: { duration: 2.4, repeat: Infinity, ease: 'easeInOut' } }}
             >
               <img
                 src="/brand/logo-icon.png"
@@ -417,9 +424,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
               ))}
             </div>
             <p className="text-[10px] sm:text-sm text-gray-500 tracking-wide text-center px-4">
-              {phase === 'forming' && 'Initializing cross-chain engine...'}
-              {phase === 'pulling' && 'Connecting to LI.FI protocol...'}
-              {phase === 'consuming' && 'Loading trading interface...'}
+              {phase === 'logo' && 'HOPR online...'}
+              {phase === 'forming' && 'Event horizon detected...'}
+              {phase === 'pulling' && 'Cross-chain gravity engaged...'}
+              {phase === 'consuming' && 'Entering the event horizon...'}
             </p>
           </motion.div>
         )}
