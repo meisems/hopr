@@ -246,72 +246,72 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         });
       }
 
-      // Keep the reveal clean: one flash ring first, then the full disk only while pulling/consuming.
+      // Realistic black-hole pass: a thin, asymmetric hot disk around a dark core.
       if (phaseRef.current !== 'logo') {
-      const diskRotation = elapsed * 0.4;
-      const ringCount = phaseRef.current === 'forming' ? 1 : phaseRef.current === 'pulling' ? 2 : 6;
-      for (let ring = 0; ring < ringCount; ring++) {
-        const ringRadius = holeSizeRef.current * (1.15 + ring * 0.25);
-        const ringOpacity = (0.26 - ring * 0.03) * (phaseRef.current === 'forming' ? 0.9 : 1);
+        const diskRotation = elapsed * 0.18;
+        const radius = Math.max(2, holeSizeRef.current);
+        const reveal = phaseRef.current === 'forming' ? 0.7 : 1;
 
         ctx.save();
         ctx.translate(cx, cy);
-        ctx.rotate(diskRotation + ring * 0.4);
-        ctx.scale(1, 0.25 + Math.sin(elapsed + ring) * 0.05);
+        ctx.rotate(diskRotation);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.filter = 'blur(0.35px)';
+
+        // The disk is flattened by perspective instead of drawn as stacked circles.
+        const diskGradient = ctx.createLinearGradient(-radius * 1.8, 0, radius * 1.8, 0);
+        diskGradient.addColorStop(0, `rgba(47, 126, 132, ${0.16 * reveal})`);
+        diskGradient.addColorStop(0.28, `rgba(255, 171, 78, ${0.5 * reveal})`);
+        diskGradient.addColorStop(0.5, `rgba(255, 244, 196, ${0.95 * reveal})`);
+        diskGradient.addColorStop(0.72, `rgba(255, 130, 49, ${0.52 * reveal})`);
+        diskGradient.addColorStop(1, `rgba(39, 101, 111, ${0.14 * reveal})`);
 
         ctx.beginPath();
-        ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(${45 + ring * 10}, ${150 + ring * 12}, ${150 + ring * 10}, ${ringOpacity})`;
-        ctx.lineWidth = 2 + ring * 0.5;
+        ctx.ellipse(0, 0, radius * 1.38, radius * 0.28, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = diskGradient;
+        ctx.lineWidth = Math.max(1.5, radius * 0.07);
         ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.62, radius * 0.42, 0, Math.PI * 0.08, Math.PI * 0.92);
+        ctx.strokeStyle = `rgba(244, 150, 71, ${0.22 * reveal})`;
+        ctx.lineWidth = Math.max(1, radius * 0.035);
+        ctx.stroke();
+
         ctx.restore();
-      }
 
-      // Gravitational lensing glow
-      const nebulaGrad = ctx.createRadialGradient(cx, cy, minDim * 0.12, cx, cy, minDim * 0.75);
-      nebulaGrad.addColorStop(0, 'rgba(20, 70, 78, 0.10)');
-      nebulaGrad.addColorStop(0.55, 'rgba(15, 33, 54, 0.08)');
-      nebulaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = nebulaGrad;
-      ctx.fillRect(0, 0, w, h);
+        // Broad lensing glow fades smoothly into the star field.
+        const lensGrad = ctx.createRadialGradient(cx, cy, radius * 0.72, cx, cy, radius * 2.8);
+        lensGrad.addColorStop(0, 'rgba(255, 206, 126, 0.12)');
+        lensGrad.addColorStop(0.22, 'rgba(63, 176, 170, 0.16)');
+        lensGrad.addColorStop(0.58, 'rgba(24, 70, 78, 0.07)');
+        lensGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * 2.8, 0, Math.PI * 2);
+        ctx.fillStyle = lensGrad;
+        ctx.fill();
 
-      const lensGrad = ctx.createRadialGradient(cx, cy, holeSizeRef.current * 0.85, cx, cy, holeSizeRef.current * 1.6);
-      lensGrad.addColorStop(0, 'rgba(63, 176, 170, 0.28)');
-      lensGrad.addColorStop(0.4, 'rgba(39, 117, 119, 0.12)');
-      lensGrad.addColorStop(0.7, 'rgba(114, 210, 203, 0.04)');
-      lensGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        // Event horizon: perfectly dark, with a narrow photon ring just outside it.
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * 0.72, 0, Math.PI * 2);
+        ctx.fillStyle = '#000';
+        ctx.fill();
 
-      ctx.beginPath();
-      ctx.arc(cx, cy, holeSizeRef.current * 1.6, 0, Math.PI * 2);
-      ctx.fillStyle = lensGrad;
-      ctx.fill();
+        const photonAlpha = phaseRef.current === 'forming' ? 0.7 : 0.92;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * 0.86, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 224, 160, ${photonAlpha})`;
+        ctx.lineWidth = Math.max(1, radius * 0.045);
+        ctx.shadowColor = 'rgba(255, 160, 67, 0.8)';
+        ctx.shadowBlur = Math.max(3, radius * 0.12);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
 
-      // Event horizon
-      const holeGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, holeSizeRef.current * 1.1);
-      holeGrad.addColorStop(0, 'rgba(0, 0, 0, 1)');
-      holeGrad.addColorStop(0.75, 'rgba(0, 0, 0, 1)');
-      holeGrad.addColorStop(0.92, 'rgba(0, 0, 0, 0.98)');
-      holeGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, holeSizeRef.current * 1.1, 0, Math.PI * 2);
-      ctx.fillStyle = holeGrad;
-      ctx.fill();
-
-      // Photon ring
-      ctx.beginPath();
-      ctx.arc(cx, cy, holeSizeRef.current * 0.98, 0, Math.PI * 2);
-      const ringAlpha = 0.4 + Math.sin(elapsed * 4) * 0.15;
-      ctx.strokeStyle = `rgba(170, 235, 228, ${ringAlpha})`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      // Secondary photon ring
-      ctx.beginPath();
-      ctx.arc(cx, cy, holeSizeRef.current * 1.05, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(100, 190, 185, ${ringAlpha * 0.5})`;
-      ctx.lineWidth = 1;
-      ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * 0.96, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(108, 203, 198, 0.28)';
+        ctx.lineWidth = Math.max(0.5, radius * 0.018);
+        ctx.stroke();
       }
 
       animationRef.current = requestAnimationFrame(animate);
