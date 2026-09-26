@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { ArrowLeft, BookOpen, Code2, Shield, Server, Layers, FileCode, ExternalLink, Lock, CheckCircle2, Zap, Globe, Link2, DollarSign, CreditCard, Target, Rocket, TrendingDown, Settings, BarChart3, Search, RefreshCw, MapPin } from 'lucide-react';
+import { ArrowLeft, BookOpen, Code2, Shield, Server, Layers, FileCode, ExternalLink, Lock, CheckCircle2, Zap, Globe, Link2, DollarSign, CreditCard, Target, Rocket, TrendingDown, Settings, BarChart3, Search, RefreshCw, MapPin, Menu, X } from 'lucide-react';
 import { PUBLIC_DOC_FILES, PRIVATE_DOC_FILES } from '../data/docFiles';
 import ChainLogo from './ChainLogo';
+import DeploymentGuide from './DeploymentGuide';
+import ThemeToggle from './ThemeToggle';
 
 interface DocsPageProps {
   onBack: () => void;
@@ -12,6 +14,7 @@ type Section = 'overview' | 'architecture' | 'chains' | 'api' | 'security' | 'de
 export default function DocsPage({ onBack }: DocsPageProps) {
   const [activeSection, setActiveSection] = useState<Section>('overview');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const sections = [
     { id: 'overview' as Section, label: 'Overview', icon: BookOpen },
@@ -26,37 +29,73 @@ export default function DocsPage({ onBack }: DocsPageProps) {
   return (
     <div className="min-h-screen bg-[#0a0b0f] text-white">
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl safe-area-top">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
               <button
                 onClick={onBack}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/50 rounded-lg transition-all"
+                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-xs sm:text-sm text-gray-400 hover:text-white hover:bg-gray-800/50 rounded-lg transition-all"
               >
                 <ArrowLeft className="w-4 h-4" />
-                Back to Dashboard
+                <span className="hidden sm:inline">Back to Dashboard</span>
               </button>
-              <div className="h-6 w-px bg-gray-800" />
+              <div className="h-6 w-px bg-gray-800 hidden sm:block" />
               <div className="flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-purple-400" />
-                <h1 className="text-lg font-semibold text-white">Documentation</h1>
+                <BookOpen className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400" />
+                <h1 className="text-base sm:text-lg font-semibold text-white">Documentation</h1>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">v1.0.0</span>
-              <div className="flex items-center gap-1 px-2 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
+              <ThemeToggle />
+              <span className="text-xs text-gray-500 hidden sm:inline">v1.0.0</span>
+              <div className="hidden sm:flex items-center gap-1 px-2 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
                 <div className="w-1.5 h-1.5 bg-green-400 rounded-full" />
                 <span className="text-xs text-green-400">Public</span>
               </div>
+              {/* Mobile menu button */}
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="lg:hidden p-2 hover:bg-gray-800 rounded-lg transition-colors"
+              >
+                {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              </button>
             </div>
           </div>
         </div>
+
+        {/* Mobile navigation */}
+        {mobileMenuOpen && (
+          <div className="lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
+            <nav className="px-4 py-3 space-y-1">
+              {sections.map((section) => {
+                const Icon = section.icon;
+                return (
+                  <button
+                    key={section.id}
+                    onClick={() => {
+                      setActiveSection(section.id);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      activeSection === section.id
+                        ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {section.label}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        )}
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <div className="flex gap-8">
-          {/* Sidebar */}
+          {/* Sidebar - Desktop only */}
           <aside className="hidden lg:block w-64 flex-shrink-0">
             <nav className="sticky top-24 space-y-1">
               {sections.map((section) => {
@@ -86,7 +125,7 @@ export default function DocsPage({ onBack }: DocsPageProps) {
             {activeSection === 'chains' && <ChainsSection />}
             {activeSection === 'api' && <ApiSection />}
             {activeSection === 'security' && <SecuritySection />}
-            {activeSection === 'deployment' && <DeploymentSection />}
+            {activeSection === 'deployment' && <DeploymentGuide />}
             {activeSection === 'files' && (
               <FilesSection
                 selectedFile={selectedFile}
@@ -445,77 +484,7 @@ function SecuritySection() {
   );
 }
 
-function DeploymentSection() {
-  return (
-    <div className="space-y-8">
-      <div>
-        <h2 className="text-3xl font-bold text-white mb-4">Deployment</h2>
-        <p className="text-gray-400 leading-relaxed">
-          Hopr is deployed on Cloudflare Pages (frontend) and Cloudflare Workers (backend). 
-          This provides global edge delivery with low latency.
-        </p>
-      </div>
 
-      <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Prerequisites</h3>
-        <ul className="space-y-2 text-sm text-gray-300">
-          <li className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400" />
-            Node.js 18+
-          </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400" />
-            Cloudflare account with Pages & Workers enabled
-          </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400" />
-            Wrangler CLI: <code className="text-purple-400">npm install -g wrangler</code>
-          </li>
-        </ul>
-      </div>
-
-      <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Deploy Frontend</h3>
-        <pre className="text-xs text-gray-300 overflow-x-auto font-mono leading-relaxed">
-{`# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Deploy to Cloudflare Pages
-npx wrangler pages deploy dist --project-name=hopr`}
-        </pre>
-      </div>
-
-      <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Deploy Backend</h3>
-        <pre className="text-xs text-gray-300 overflow-x-auto font-mono leading-relaxed">
-{`# Deploy worker
-npx wrangler deploy
-
-# Create D1 database
-npx wrangler d1 create hopr-db
-
-# Create KV namespace
-npx wrangler kv:namespace create CACHE`}
-        </pre>
-      </div>
-
-      <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Environment Variables</h3>
-        <p className="text-sm text-gray-400 mb-4">
-          Set these in Cloudflare Dashboard → Workers → Settings → Variables:
-        </p>
-        <div className="space-y-2">
-          <EnvVar name="ENCRYPTION_KEY" description="AES-256-GCM key for wallet encryption" />
-          <EnvVar name="LIFI_API_KEY" description="LI.FI API key for cross-chain routing" />
-          <EnvVar name="ENVIRONMENT" description="production or staging" />
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function FilesSection({ selectedFile, onSelectFile }: { selectedFile: string | null; onSelectFile: (id: string | null) => void }) {
   const publicFiles = PUBLIC_DOC_FILES;

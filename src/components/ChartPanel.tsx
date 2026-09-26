@@ -48,25 +48,25 @@ export default function ChartPanel({ token }: ChartPanelProps) {
   return (
     <div className="h-full flex flex-col bg-gray-900/40 rounded-2xl border border-gray-800/50 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-gray-800/50">
-        <div className="flex items-center justify-between">
+      <div className="p-3 sm:p-4 border-b border-gray-800/50">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full flex items-center justify-center">
+            <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0">
               <ChainLogo chainKey={getChainKey(token.chainId)} size={32} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-white">{token.symbol}/USD</span>
                 <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>
                   {token.chainName}
                 </span>
               </div>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-lg font-bold text-white">
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                <span className="text-base sm:text-lg font-bold text-white">
                   {token.priceUsd < 0.01 ? `$${token.priceUsd.toFixed(8)}` : `$${token.priceUsd.toFixed(4)}`}
                 </span>
-                <span className={`flex items-center gap-0.5 text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                  {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                <span className={`flex items-center gap-0.5 text-xs sm:text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                  {isPositive ? <TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <TrendingDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}
                   {isPositive ? '+' : ''}{priceChange.toFixed(2)}%
                 </span>
               </div>
@@ -74,12 +74,12 @@ export default function ChartPanel({ token }: ChartPanelProps) {
           </div>
           
           {/* Time range selector */}
-          <div className="flex items-center gap-1 bg-gray-800/60 rounded-lg p-1">
+          <div className="flex items-center gap-0.5 sm:gap-1 bg-gray-800/60 rounded-lg p-1 overflow-x-auto">
             {TIME_RANGES.map((range) => (
               <button
                 key={range}
                 onClick={() => setTimeRange(range)}
-                className={`px-2.5 py-1 text-xs rounded-md font-medium transition-all ${
+                className={`px-2 sm:px-2.5 py-1 text-xs rounded-md font-medium transition-all whitespace-nowrap ${
                   timeRange === range
                     ? 'bg-purple-600 text-white'
                     : 'text-gray-400 hover:text-white hover:bg-gray-700/60'
@@ -131,22 +131,22 @@ export default function ChartPanel({ token }: ChartPanelProps) {
       </div>
 
       {/* Stats */}
-      <div className="px-4 pb-4 grid grid-cols-4 gap-3">
-        <div className="bg-gray-800/40 rounded-xl p-3">
+      <div className="px-3 sm:px-4 pb-3 sm:pb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3">
           <div className="text-xs text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> 24h Vol</div>
-          <div className="text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity * 0.3)}</div>
+          <div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity * 0.3)}</div>
         </div>
-        <div className="bg-gray-800/40 rounded-xl p-3">
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3">
           <div className="text-xs text-gray-500">Liquidity</div>
-          <div className="text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity)}</div>
+          <div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity)}</div>
         </div>
-        <div className="bg-gray-800/40 rounded-xl p-3">
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3">
           <div className="text-xs text-gray-500">MCap/FDV</div>
-          <div className="text-sm font-semibold text-white mt-1">{formatUsd(token.fdv)}</div>
+          <div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.fdv)}</div>
         </div>
-        <div className="bg-gray-800/40 rounded-xl p-3">
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3">
           <div className="text-xs text-gray-500">Decimals</div>
-          <div className="text-sm font-semibold text-white mt-1">{token.decimals}</div>
+          <div className="text-xs sm:text-sm font-semibold text-white mt-1">{token.decimals}</div>
         </div>
       </div>
     </div>

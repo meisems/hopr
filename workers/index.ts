@@ -16,6 +16,7 @@ export interface Env {
   ENCRYPTION_KEY: string;
   LIFI_API_KEY: string;
   ENVIRONMENT: string;
+  RATE_LIMIT: KVNamespace; // For rate limiting
 }
 
 interface TradeRequest {
@@ -24,6 +25,45 @@ interface TradeRequest {
   amount: string;
   fundingChain: string;
   slippage: number;
+}
+
+// Rate limiting middleware
+async function checkRateLimit(
+  request: Request,
+  env: Env,
+  maxRequests: number = 10,
+  windowMs: number = 60000
+): Promise<{ allowed: boolean; remaining: number; resetTime: number }> {
+  if (!env.RATE_LIMIT) {
+    return { allowed: true, remaining: maxRequests, resetTime: 0 };
+  }
+
+  // Get client IP (Cloudflare adds this header)
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const key = `rate-limit:${ip}`;
+
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  // Get current requests
+  const data = await env.RATE_LIMIT.get(key);
+  let requests: number[] = data ? JSON.parse(data) : [];
+
+  // Remove old requests outside the window
+  requests = requests.filter(time => time > windowStart);
+
+  // Check if limit reached
+  if (requests.length >= maxRequests) {
+    const oldestRequest = requests[0];
+    const resetTime = oldestRequest + windowMs;
+    return { allowed: false, remaining: 0, resetTime };
+  }
+
+  // Add this request
+  requests.push(now);
+  await env.RATE_LIMIT.put(key, JSON.stringify(requests), { expirationTtl: Math.ceil(windowMs / 1000) });
+
+  return { allowed: true, remaining: maxRequests - requests.length, resetTime: 0 };
 }
 
 export default {
@@ -44,9 +84,42 @@ export default {
     }
 
     try {
-      // API Routes
+      // API Routes - apply rate limiting
       if (path.startsWith('/api/')) {
-        return await handleApiRequest(request, env, ctx, corsHeaders);
+        // Check rate limit (10 requests per minute)
+        const rateLimit = await checkRateLimit(request, env, 10, 60000);
+        
+        if (!rateLimit.allowed) {
+          return Response.json(
+            { 
+              error: 'Rate limit exceeded',
+              message: `Too many requests. Try again in ${Math.ceil((rateLimit.resetTime - Date.now()) / 1000)} seconds.`,
+              retryAfter: Math.ceil((rateLimit.resetTime - Date.now()) / 1000)
+            },
+            { 
+              status: 429, 
+              headers: { 
+                ...corsHeaders,
+                'Retry-After': String(Math.ceil((rateLimit.resetTime - Date.now()) / 1000)),
+                'X-RateLimit-Limit': '10',
+                'X-RateLimit-Remaining': '0',
+              }
+            }
+          );
+        }
+
+        const response = await handleApiRequest(request, env, ctx, corsHeaders);
+        
+        // Add rate limit headers to response
+        const headers = new Headers(response.headers);
+        headers.set('X-RateLimit-Limit', '10');
+        headers.set('X-RateLimit-Remaining', String(rateLimit.remaining));
+        
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
       }
 
       // Health check

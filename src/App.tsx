@@ -11,9 +11,11 @@ import TelegramPreview from './components/TelegramPreview';
 import SplashScreen from './components/SplashScreen';
 import ChainLogo from './components/ChainLogo';
 import DocsPage from './components/DocsPage';
+import ThemeToggle from './components/ThemeToggle';
+import { ThemeProvider } from './context/ThemeContext';
 import { DetectedToken } from './services/chainDetector';
 
-function App() {
+function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
   const [currentPage, setCurrentPage] = useState<'dashboard' | 'docs'>('dashboard');
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
@@ -79,6 +81,7 @@ function App() {
 
             {/* Right actions */}
             <div className="flex items-center gap-2">
+              <ThemeToggle />
               <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                 <span className="text-xs text-green-400 font-medium">Connected</span>
@@ -293,4 +296,10 @@ function StatCard({ icon, label, value, change, positive }: { icon: React.ReactN
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
+  );
+}
