@@ -192,7 +192,7 @@ function ArchitectureSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Architecture</h2>
         <p className="text-gray-400 leading-relaxed">
-          Hopr uses React and Vite for the dashboard, with a Cloudflare Worker for token lookup, Telegram webhooks, and public-wallet balance reads. Configure a KV binding to persist Telegram addresses and preferences.
+          Hopr uses React and Vite for the dashboard, with a Cloudflare Worker for token lookup, LI.FI quote preparation, Telegram wallet generation, and public-wallet balance reads. The website is the trading platform; Telegram is the wallet-management entry point.
         </p>
       </div>
 
@@ -210,8 +210,8 @@ function ArchitectureSection() {
 │  ┌───────────────────┼───────────────────────┐  │
 │  │  /api/detect      │ Market Lookup         │  │
 │  │  /api/wallet      │ Native Balances       │  │
-│  │  /api/trade/buy   │ MOCK / NOT EXECUTED   │  │
-│  │  /api/trade/sell  │ MOCK / NOT EXECUTED   │  │
+│  │  /api/trade/quote │ LI.FI route + fee     │  │
+│  │  Browser wallet   │ Confirm + submit      │  │
 │  └───────────────────┼───────────────────────┘  │
 ├──────────────────────┼───────────────────────────┤
 │  ┌──────────┐  ┌────┴─────┐  ┌──────────────┐  │

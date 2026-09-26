@@ -39,6 +39,7 @@ export interface Env {
   CACHE?: KVNamespace;
   ENCRYPTION_KEY?: string;
   LIFI_API_KEY?: string;
+  LIFI_INTEGRATOR?: string;
   ENVIRONMENT: string;
   RATE_LIMIT?: KVNamespace; // For rate limiting
   TELEGRAM_BOT_TOKEN: string;
@@ -837,7 +838,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
       );
       await sendTelegramMessage(
         chatId,
-        `QUOTE READY\n\nBUY ${amountDecimal} ${fundingChain.nativeSymbol} -> ${profile.lastTokenSymbol ?? 'token'}\nRoute: ${fundingChain.name} -> ${targetChain.name}\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
+        `QUOTE READY\n\nBUY ${amountDecimal} ${fundingChain.nativeSymbol} -> ${profile.lastTokenSymbol ?? 'token'}\nRoute: ${fundingChain.name} -> ${targetChain.name}\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\nPlatform fee: 0.5% included\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
         env,
         telegramTradeConfirmationKeyboard(trade.id),
       );
@@ -865,7 +866,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
       );
       await sendTelegramMessage(
         chatId,
-        `QUOTE READY\n\nSELL ${percent}% of ${profile.lastTokenSymbol ?? 'tokens'}\nRoute: ${targetChain.name} -> original funding asset\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
+        `QUOTE READY\n\nSELL ${percent}% of ${profile.lastTokenSymbol ?? 'tokens'}\nRoute: ${targetChain.name} -> original funding asset\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\nPlatform fee: 0.5% included\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
         env,
         telegramTradeConfirmationKeyboard(trade.id),
       );
@@ -889,6 +890,8 @@ async function requestLifiQuote(params: {
   toChain: number;
   toToken: string;
   slippage: number;
+  integrator: string;
+  fee: number;
 }, env: Env): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; message: string }> {
   const query = new URLSearchParams({
     fromChain: String(params.fromChain),
@@ -898,6 +901,8 @@ async function requestLifiQuote(params: {
     toChain: String(params.toChain),
     toToken: params.toToken,
     slippage: String(params.slippage),
+    integrator: params.integrator,
+    fee: String(params.fee),
   });
   try {
     const response = await fetch(`https://li.quest/v1/quote?${query}`, {
@@ -1274,9 +1279,11 @@ async function handleTradeQuote(
     toChain: body.toChainId,
     toToken: body.toToken ?? body.tokenAddress,
     slippage: Math.min(0.5, Math.max(0.0005, Number(body.slippage || 1) / 100)),
+    integrator: env.LIFI_INTEGRATOR ?? 'hopr',
+    fee: 0.005,
   }, env);
   if (!quote.ok) return Response.json({ error: quote.message, code: 'LIFI_QUOTE_UNAVAILABLE' }, { status: 502, headers: corsHeaders });
-  return Response.json({ quote: quote.data, readOnly: false, execution: 'wallet_confirmation' }, { headers: corsHeaders });
+  return Response.json({ quote: quote.data, readOnly: false, execution: 'wallet_confirmation', platformFeePercent: 0.5 }, { headers: corsHeaders });
 }
 
 async function handleTradeSell(

@@ -68,7 +68,7 @@ export default function TradeCard({ token }: TradeCardProps) {
       if (!data.quote.transactionRequest) throw new Error('LI.FI returned no executable transaction for this route.');
       setPendingQuote(data.quote);
       setQuoteStatus('ready');
-      setQuoteMessage(`Quote ready: ~${output} ${token.symbol} · estimated ${duration}. Review the route, then confirm to submit from your wallet.`);
+      setQuoteMessage(`Quote ready: ~${output} ${token.symbol} · estimated ${duration}. Platform fee: 0.5% included. Review the route, then confirm to submit from your wallet.`);
     } catch (error) {
       setQuoteStatus('error');
       setQuoteMessage(error instanceof Error ? error.message : 'Unable to request a LI.FI quote.');
