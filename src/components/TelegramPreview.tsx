@@ -1,63 +1,28 @@
-import { Bot, Command, Search, ShieldCheck, WalletCards } from 'lucide-react';
+import { useState } from 'react';
+import { BarChart3, Bot, Check, ChevronDown, HelpCircle, Copy, ExternalLink, Link2, MapPin, Pencil, RefreshCw, Rocket, Send, Settings, Sparkles, Target, TrendingDown, WalletCards, X } from 'lucide-react';
 
-const commands = [
-  { command: '/start', description: 'Start the bot and open the command guide.' },
-  { command: '/help', description: 'List commands and examples.' },
-  { command: '/wallet <address>', description: 'Read public balances; the Wallet button can link an address for later.' },
-  { command: '/setwallet evm <address>', description: 'Save a public EVM address for later balance checks.' },
-  { command: '/setwallet solana <address>', description: 'Save a public Solana address for later balance checks.' },
-  { command: '/balances [address]', description: 'Refresh saved balances or query a public address once.' },
-  { command: '/settings', description: 'View and save funding-chain and slippage preferences.' },
-];
-
+const token = { address: '0x946102eA7Df8c2652a1B3a96e23B8b0a703410a5', symbol: 'MPEPE', name: 'Moon Pepe', chain: 'Base', chainId: '8453', price: '$0.0000123', liquidity: '$890K', marketCap: '$1.23M' };
+const commands = ['/start', '/menu', '/help', '/wallet', '/settings'];
+type ActionTone = 'buy' | 'sell' | 'neutral';
+function ActionButton({ children, tone = 'neutral', onClick }: { children: React.ReactNode; tone?: ActionTone; onClick?: () => void }) {
+  const tones = { buy: 'border-blue-400/20 bg-blue-500/15 text-blue-200 hover:bg-blue-500/25', sell: 'border-rose-400/20 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25', neutral: 'border-slate-600/60 bg-slate-800/70 text-slate-200 hover:border-slate-500 hover:bg-slate-700/80' };
+  return <button onClick={onClick} className={`inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold transition-all active:scale-[.98] ${tones[tone]}`}>{children}</button>;
+}
 export default function TelegramPreview() {
-  return (
-    <section className="bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden" aria-label="Telegram bot commands">
-      <header className="px-4 py-3 border-b border-gray-800/50 flex items-center gap-3">
-        <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center">
-          <Bot className="w-4 h-4 text-white" />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold text-white">Telegram Bot Commands</h3>
-          <p className="text-[10px] text-gray-400">Read-only wallet and token tools</p>
-        </div>
-      </header>
-
-      <div className="p-4 space-y-4">
-        <div className="rounded-xl bg-[#0e1621]/70 border border-gray-800/70 p-3">
-          <div className="flex items-center gap-2 text-xs text-blue-300 font-medium mb-2">
-            <Command className="w-3.5 h-3.5" /> Commands
-          </div>
-          <div className="space-y-2.5">
-            {commands.map(({ command, description }) => (
-              <div key={command} className="flex items-start gap-2">
-                <code className="shrink-0 text-[11px] text-blue-300 font-mono">{command}</code>
-                <span className="text-[11px] leading-relaxed text-gray-400">{description}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <div className="rounded-xl bg-gray-800/40 border border-gray-700/40 p-3">
-            <div className="flex items-center gap-2 text-xs text-brand-300 font-medium">
-              <Search className="w-3.5 h-3.5" /> Token lookup
-            </div>
-            <p className="mt-1.5 text-[11px] text-gray-400">Send an EVM or Solana token address to see indexed price, 24h change, liquidity, and FDV.</p>
-          </div>
-          <div className="rounded-xl bg-gray-800/40 border border-gray-700/40 p-3">
-            <div className="flex items-center gap-2 text-xs text-green-300 font-medium">
-              <WalletCards className="w-3.5 h-3.5" /> Persistent setup
-            </div>
-            <p className="mt-1.5 text-[11px] text-gray-400">Saved addresses and preferences require the Worker’s <code>TELEGRAM_STATE</code> KV binding.</p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-          <ShieldCheck className="w-4 h-4 shrink-0 text-amber-300 mt-0.5" />
-          <p className="text-[11px] leading-relaxed text-amber-100/80">Never send a seed phrase or private key. The bot only reads public data; signing, approvals, transfers, and trades are not enabled.</p>
-        </div>
-      </div>
-    </section>
-  );
+  const [copied, setCopied] = useState(false);
+  const [notice, setNotice] = useState('');
+  const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 2600); };
+  const copyAddress = async () => { try { await navigator.clipboard.writeText(token.address); setCopied(true); window.setTimeout(() => setCopied(false), 1800); } catch { notify('Copy is unavailable in this preview'); } };
+  return <section className="overflow-hidden rounded-2xl border border-slate-700/60 bg-[#0c1018] shadow-[0_24px_70px_rgba(0,0,0,.24)]" aria-label="Premium Telegram bot preview">
+    <header className="flex items-center justify-between border-b border-slate-800/80 bg-[#0d111a]/90 px-4 py-3.5">
+      <div className="flex items-center gap-3"><div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-400 to-blue-700 shadow-[0_0_22px_rgba(59,130,246,.35)]"><Bot className="h-5 w-5 text-white" /><span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[#0d111a] bg-emerald-400" /></div><div><div className="flex items-center gap-2 text-sm font-bold text-white">@HoprBot <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300">BOT</span></div><div className="mt-0.5 flex items-center gap-1 text-[10px] text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> online · instant routing</div></div></div>
+      <button onClick={copyAddress} className="inline-flex items-center gap-1.5 rounded-lg border border-blue-400/20 bg-blue-500/10 px-2.5 py-2 text-[10px] font-semibold text-blue-300 hover:bg-blue-500/20">{copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy link'}</button>
+    </header>
+    <div className="border-b border-slate-800/70 bg-[#090d14] px-3 py-2"><div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium text-slate-500"><Sparkles className="h-3 w-3 text-blue-400" /> Command menu</div><div className="flex gap-1.5 overflow-x-auto pb-0.5">{commands.map((command) => <button key={command} onClick={() => notify(`${command} is ready in Telegram`)} className="shrink-0 rounded-md border border-slate-700/70 bg-slate-800/70 px-2 py-1 text-[10px] font-mono text-blue-300 hover:border-blue-400/40 hover:text-blue-200">{command}</button>)}<button onClick={() => notify('Open the Telegram command menu')} className="shrink-0 rounded-md border border-slate-700/70 px-2 py-1 text-slate-400 hover:text-white" aria-label="Open command menu"><ChevronDown className="h-3 w-3" /></button></div></div>
+    <div className="space-y-3 bg-[#0e1621]/80 p-4 sm:p-5"><div className="flex justify-end"><div className="max-w-[88%] rounded-xl rounded-br-sm bg-[#285379] px-3 py-2 text-right text-xs font-mono text-white shadow-sm">{token.address}</div></div><div className="flex gap-2"><div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-500/20"><Bot className="h-3.5 w-3.5 text-blue-300" /></div><div className="min-w-0 max-w-[94%] space-y-2.5">
+      <div className="rounded-xl rounded-bl-sm border border-slate-700/70 bg-[#182533] p-3 shadow-lg"><div className="mb-2 flex items-center gap-2"><span className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-500/20 text-[10px] font-bold text-blue-200">◎</span><span className="font-semibold text-white">{token.symbol}</span><span className="text-xs text-slate-400">| {token.name}</span><span className="ml-auto rounded-full bg-blue-500/15 px-1.5 py-0.5 text-[9px] text-blue-300">LIVE</span></div><div className="space-y-1.5 text-[11px] text-slate-300"><div className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5 text-blue-400" /> Chain: {token.chain} ({token.chainId})</div><button onClick={copyAddress} className="flex max-w-full items-center gap-2 text-left hover:text-white"><Link2 className="h-3.5 w-3.5 shrink-0 text-blue-400" /><span className="truncate font-mono">Address: {token.address.slice(0, 8)}…{token.address.slice(-6)}</span></button><div className="flex items-center gap-2"><span className="text-emerald-400">$</span> Price: {token.price} <span className="text-slate-500">|</span> Liq: {token.liquidity} <span className="hidden sm:inline text-slate-500">| MC: {token.marketCap}</span></div><div className="my-2 border-t border-slate-700/70" /><div className="flex items-center gap-2"><WalletCards className="h-3.5 w-3.5 text-purple-300" /> Paid via: Solana <span className="text-slate-500">(Bal: 45.82 SOL)</span></div><div className="flex items-center gap-2"><Target className="h-3.5 w-3.5 text-yellow-300" /> Recipient: <span className="font-mono">0x7a3B…9f2E</span></div></div></div>
+      <div className="grid grid-cols-3 gap-1.5"><ActionButton tone="buy" onClick={() => notify('Trade execution is not enabled yet')}><Rocket className="h-3 w-3" /> Buy 0.1</ActionButton><ActionButton tone="buy" onClick={() => notify('Trade execution is not enabled yet')}><Rocket className="h-3 w-3" /> Buy 0.5</ActionButton><ActionButton tone="buy" onClick={() => notify('Trade execution is not enabled yet')}><Rocket className="h-3 w-3" /> Buy 1.0</ActionButton></div><div className="grid grid-cols-2 gap-1.5"><ActionButton onClick={() => notify('Custom amount opens in Telegram')}><Pencil className="h-3 w-3" /> Custom</ActionButton><ActionButton onClick={() => notify('Choose a funding chain in /settings')}><RefreshCw className="h-3 w-3" /> Change chain</ActionButton></div><div className="grid grid-cols-3 gap-1.5"><ActionButton tone="sell" onClick={() => notify('Trade execution is not enabled yet')}><TrendingDown className="h-3 w-3" /> Sell 25%</ActionButton><ActionButton tone="sell" onClick={() => notify('Trade execution is not enabled yet')}><TrendingDown className="h-3 w-3" /> Sell 50%</ActionButton><ActionButton tone="sell" onClick={() => notify('Trade execution is not enabled yet')}><TrendingDown className="h-3 w-3" /> Sell 100%</ActionButton></div><div className="grid grid-cols-3 gap-1.5"><ActionButton onClick={() => notify('Use /settings in Telegram')}><Settings className="h-3 w-3" /> Settings</ActionButton><ActionButton onClick={() => window.open(`https://dexscreener.com/search?q=${token.address}`, '_blank')}><BarChart3 className="h-3 w-3" /> DexScreener</ActionButton><ActionButton onClick={() => notify('Message dismissed')}><X className="h-3 w-3" /> Dismiss</ActionButton></div>{notice && <div className="flex items-center gap-2 rounded-lg border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-[10px] text-blue-200"><HelpCircle className="h-3.5 w-3.5 shrink-0" /> {notice}</div>}
+    </div></div></div>
+    <div className="flex items-center gap-2 border-t border-slate-800/70 bg-[#0d111a] p-3"><div className="flex flex-1 items-center gap-2 rounded-xl border border-slate-700/70 bg-[#182533] px-3 py-2.5 text-xs text-slate-500"><span>Paste token address…</span><span className="ml-auto text-[10px] text-slate-600">/ for commands</span></div><button onClick={() => notify('Send a token address to the bot')} className="rounded-xl bg-blue-500 p-2.5 text-white shadow-[0_0_18px_rgba(59,130,246,.28)] hover:bg-blue-400"><Send className="h-4 w-4" /></button></div><footer className="flex items-center justify-between bg-[#0b0f17] px-4 py-2 text-[10px] text-slate-500"><span className="flex items-center gap-1.5"><span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-emerald-400/30 text-[8px] text-emerald-300">✓</span> Read-only bot · no keys requested</span><a href="#" className="inline-flex items-center gap-1 text-blue-300 hover:text-blue-200">Open bot <ExternalLink className="h-3 w-3" /></a></footer>
+  </section>;
 }

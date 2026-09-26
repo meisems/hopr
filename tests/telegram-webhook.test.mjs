@@ -164,6 +164,19 @@ test('token address gets real market lookup details from DexScreener', async () 
   assert.match(calls[0].body.text, /Base/);
   assert.match(calls[0].body.text, /24h: \+3\.50%/);
   assert.match(calls[0].body.text, /does not execute trades/);
+  assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[0], [
+    { text: '🚀 Buy 0.1', callback_data: 'trade:buy:0.1' },
+    { text: '🚀 Buy 0.5', callback_data: 'trade:buy:0.5' },
+    { text: '🚀 Buy 1.0', callback_data: 'trade:buy:1.0' },
+  ]);
+});
+
+test('dashboard-style trade callbacks stay read-only until execution is implemented', async () => {
+  const { calls } = await sendUpdate({
+    callback_query: { id: 'trade-preview', data: 'trade:buy:0.5', message: { chat: { id: 322, type: 'private' } } },
+  });
+  assert.match(calls.at(-1).body.text, /Trading is not enabled yet/);
+  assert.match(calls.at(-1).body.text, /no wallet signing/);
 });
 
 test('settings buttons persist funding-chain and slippage preferences', async () => {

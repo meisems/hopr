@@ -31,7 +31,7 @@ test('registers webhook, command suggestions, then the native command menu', asy
   });
   assert.deepEqual(calls[1].body, TELEGRAM_COMMANDS);
   assert.deepEqual(calls[2].body, { menu_button: { type: 'commands' } });
-  assert.deepEqual(result.commands, ['start', 'help', 'wallet', 'setwallet', 'balances', 'settings']);
+  assert.deepEqual(result.commands, ['start', 'menu', 'help', 'wallet', 'setwallet', 'balances', 'settings']);
   assert.equal(calls[0].url.includes(config.token), true);
 });
 

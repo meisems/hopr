@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 
 export const TELEGRAM_COMMANDS = [
   { command: 'start', description: 'Start the Hopr bot' },
+  { command: 'menu', description: 'Open the Hopr action menu' },
   { command: 'help', description: 'Show available commands and bot status' },
   { command: 'wallet', description: 'Check a public wallet balance' },
   { command: 'setwallet', description: 'Link a public wallet address' },

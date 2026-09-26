@@ -52,6 +52,29 @@ const TELEGRAM_ACTION_KEYBOARD = {
   ],
 };
 
+function telegramTokenKeyboard(address: string) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🚀 Buy 0.1', callback_data: 'trade:buy:0.1' },
+        { text: '🚀 Buy 0.5', callback_data: 'trade:buy:0.5' },
+        { text: '🚀 Buy 1.0', callback_data: 'trade:buy:1.0' },
+      ],
+      [{ text: '✎ Custom', callback_data: 'trade:custom' }, { text: '↻ Change chain', callback_data: 'settings' }],
+      [
+        { text: '⌁ Sell 25%', callback_data: 'trade:sell:25' },
+        { text: '⌁ Sell 50%', callback_data: 'trade:sell:50' },
+        { text: '⌁ Sell 100%', callback_data: 'trade:sell:100' },
+      ],
+      [
+        { text: '⚙ Settings', callback_data: 'settings' },
+        { text: '▥ DexScreener', url: `https://dexscreener.com/search?q=${encodeURIComponent(address)}` },
+        { text: '× Dismiss', callback_data: 'dismiss' },
+      ],
+    ],
+  };
+}
+
 const TELEGRAM_WALLET_PROMPTS = {
   evm: 'Reply to this message with a public EVM address only.',
   solana: 'Reply to this message with a public Solana address only.',
@@ -224,10 +247,11 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (callback) {
     const data = callback.data ?? '';
     const chatType = callback.message?.chat?.type;
-    const recognized = ['help', 'wallet', 'settings'].includes(data)
+    const recognized = ['help', 'wallet', 'settings', 'dismiss'].includes(data)
       || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana'].includes(data)
       || /^settings:chain:\d+$/.test(data)
-      || /^settings:slippage:(0\.5|1|3|5)$/.test(data);
+      || /^settings:slippage:(0\.5|1|3|5)$/.test(data)
+      || /^trade:(buy:(0\.1|0\.5|1\.0)|sell:(25|50|100)|custom)$/.test(data);
     if (!recognized) {
       await telegramApiCall('answerCallbackQuery', env, {
         callback_query_id: callback.id,
@@ -277,8 +301,12 @@ async function handleTelegramMessage(
     await sendTelegramMessage(chatId, 'Welcome to Hopr. Use /help to see working commands. Token lookups, wallet balance reads, and personal settings are available.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
+  if (command === '/menu') {
+    await sendTelegramMessage(chatId, 'Choose a Hopr tool. Send a token address to open the full action panel.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
   if (command === '/help' || !text) {
-    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for /wallet and /balances\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain and slippage preferences\n\nSend a token contract address by itself for a live DexScreener lookup. Wallet reads are public/read-only. This bot does not sign or submit trades.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for /wallet and /balances\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain and slippage preferences\n\nSend a token contract address by itself for a live DexScreener lookup. Wallet reads are public/read-only. This bot does not sign or submit trades.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
   if (command === '/wallet' || command === '/balances') {
@@ -353,7 +381,7 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env): P
   const name = typeof token.name === 'string' ? token.name : 'Unknown token';
   const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
   const result = `${symbol} — ${name}\nChain: ${chain}\nAddress: ${address}\nPrice: $${price.toPrecision(6)}\n24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\nLiquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\nFDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n\nMarket data from DexScreener. This bot does not execute trades.`;
-  await sendTelegramMessage(chatId, result, env, TELEGRAM_ACTION_KEYBOARD);
+  await sendTelegramMessage(chatId, result, env, telegramTokenKeyboard(address));
 }
 
 async function readTelegramProfile(chatId: number, env: Env): Promise<TelegramProfile | null> {
@@ -484,6 +512,10 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'help') return handleTelegramMessage(chatId, 'private', '/help', env);
   if (data === 'wallet') return showTelegramWallet(chatId, env);
   if (data === 'settings') return showTelegramSettings(chatId, env);
+  if (data === 'dismiss') return;
+  if (data.startsWith('trade:')) {
+    return sendTelegramMessage(chatId, 'Trading is not enabled yet. These controls mirror the dashboard; no wallet signing or transaction submission occurred.', env, TELEGRAM_ACTION_KEYBOARD);
+  }
   if (data === 'wallet:link') {
     if (!env.TELEGRAM_STATE) {
       return sendTelegramMessage(chatId, 'Saving a wallet requires the bot owner to configure the TELEGRAM_STATE KV binding. For a one-time read-only balance check, use /wallet <public-address>.', env);
