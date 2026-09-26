@@ -228,6 +228,27 @@ html.light textarea {
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
 }
 
+html.light .navbar-drawer {
+  color: #111827;
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+}
+
+html.light .navbar-drawer button {
+  color: #475569;
+}
+
+html.light .navbar-drawer button:hover {
+  color: #0f172a;
+  background-color: #f1f5f9 !important;
+}
+
+html.light .navbar-drawer button.bg-gray-800\/50 {
+  color: #0f172a;
+  background-color: #e2e8f0 !important;
+}
+
 html.light .docs-drawer {
   color: #111827;
   background: #ffffff !important;

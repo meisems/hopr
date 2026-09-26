@@ -20,7 +20,7 @@ interface ChartPanelProps {
   token: DetectedToken | null;
 }
 
-type RangeKey = '15M' | '30M' | '1H' | '4H' | '1D' | '1W' | '1M' | 'ALL';
+type RangeKey = '15M' | '30M' | '1H' | '4H' | 'ALL';
 type ChartPoint = { timestamp: number; price: number; volume: number };
 
 type RangeConfig = {
@@ -29,26 +29,23 @@ type RangeConfig = {
   limit: number;
 };
 
-const TIME_RANGES: RangeKey[] = ['15M', '30M', '1H', '4H', '1D', '1W', '1M', 'ALL'];
+const TIME_RANGES: RangeKey[] = ['15M', '30M', '1H', '4H', 'ALL'];
 const RANGE_CONFIG: Record<RangeKey, RangeConfig> = {
   '15M': { timeframe: 'minute', aggregate: 1, limit: 15 },
   '30M': { timeframe: 'minute', aggregate: 1, limit: 30 },
   '1H': { timeframe: 'minute', aggregate: 1, limit: 60 },
   '4H': { timeframe: 'minute', aggregate: 5, limit: 48 },
-  '1D': { timeframe: 'hour', aggregate: 1, limit: 24 },
-  '1W': { timeframe: 'hour', aggregate: 4, limit: 42 },
-  '1M': { timeframe: 'day', aggregate: 1, limit: 31 },
   ALL: { timeframe: 'day', aggregate: 1, limit: 100 },
 };
 
 function formatTime(timestamp: number, range: RangeKey) {
-  return new Date(timestamp).toLocaleString([], range === '1D' || range === '1W' || range === '1M' || range === 'ALL'
+  return new Date(timestamp).toLocaleString([], range === 'ALL'
     ? { month: 'short', day: 'numeric' }
     : { hour: 'numeric', minute: '2-digit' });
 }
 
 export default function ChartPanel({ token }: ChartPanelProps) {
-  const [timeRange, setTimeRange] = useState<RangeKey>('1M');
+  const [timeRange, setTimeRange] = useState<RangeKey>('1H');
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
   const [chartStatus, setChartStatus] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle');
   const [chartError, setChartError] = useState('');
