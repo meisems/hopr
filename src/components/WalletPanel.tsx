@@ -4,6 +4,7 @@ import { mockWalletBalances } from '../data/mockData';
 import { formatUsd } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useWallet } from '../context/WalletContext';
 
 function getChainKey(chainId: number): string {
   const map: Record<number, string> = {
@@ -21,9 +22,10 @@ export default function WalletPanel() {
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const { evmAddress, solanaAddress } = useWallet();
 
   const totalBalance = mockWalletBalances.reduce((sum, b) => sum + b.usdValue, 0);
-  const hasWallet = mockWalletBalances.length > 0;
+  const hasWallet = Boolean(evmAddress || solanaAddress);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -37,8 +39,8 @@ export default function WalletPanel() {
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const evmAddress = 'Not connected';
-  const solAddress = 'Not connected';
+  const evmDisplay = evmAddress ? `${evmAddress.slice(0, 6)}...${evmAddress.slice(-4)}` : 'Not connected';
+  const solDisplay = solanaAddress ? `${solanaAddress.slice(0, 6)}...${solanaAddress.slice(-4)}` : 'Not connected';
 
   return (
     <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
@@ -67,19 +69,19 @@ export default function WalletPanel() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500">EVM:</span>
-            <span className="text-xs text-gray-300 font-mono">{evmAddress}</span>
+            <span className="text-xs text-gray-300 font-mono">{evmDisplay}</span>
           </div>
-          <button onClick={() => handleCopy(evmAddress)} className="p-1 hover:bg-gray-800 rounded transition-colors">
-            {copied === evmAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
+          <button onClick={() => evmAddress && handleCopy(evmAddress)} disabled={!evmAddress} className="p-1 hover:bg-gray-800 rounded transition-colors">
+            {evmAddress && copied === evmAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
           </button>
         </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500">SOL:</span>
-            <span className="text-xs text-gray-300 font-mono">{solAddress}</span>
+            <span className="text-xs text-gray-300 font-mono">{solDisplay}</span>
           </div>
-          <button onClick={() => handleCopy(solAddress)} className="p-1 hover:bg-gray-800 rounded transition-colors">
-            {copied === solAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
+          <button onClick={() => solanaAddress && handleCopy(solanaAddress)} disabled={!solanaAddress} className="p-1 hover:bg-gray-800 rounded transition-colors">
+            {solanaAddress && copied === solanaAddress ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
           </button>
         </div>
       </div>

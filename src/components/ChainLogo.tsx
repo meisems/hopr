@@ -9,6 +9,16 @@ interface ChainLogoProps {
 // Real SVG chain logos based on official brand assets
 const ChainLogo = memo(({ chainKey, size = 24, className = '' }: ChainLogoProps) => {
   const s = size;
+  const officialAsset = {
+    sol: '/brand/chains/sol.svg',
+    arb: '/brand/chains/arbitrum.svg',
+    bsc: '/brand/chains/bsc.svg',
+    rhc: '/brand/chains/rhc.svg',
+  }[chainKey];
+
+  if (officialAsset) {
+    return <img src={officialAsset} width={s} height={s} alt={chainKey} className={`object-contain ${className}`} />;
+  }
   
   switch (chainKey) {
     case 'sol':

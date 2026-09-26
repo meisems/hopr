@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen } from 'lucide-react';
+import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ChartPanel from './components/ChartPanel';
 import TradeCard from './components/TradeCard';
@@ -11,16 +11,21 @@ import TelegramPreview from './components/TelegramPreview';
 import SplashScreen from './components/SplashScreen';
 import ChainLogo from './components/ChainLogo';
 import DocsPage from './components/DocsPage';
+import PositionsPage from './components/PositionsPage';
+import HistoryPage from './components/HistoryPage';
+import BridgePage from './components/BridgePage';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
+import { useWallet, WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
 
 function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'docs'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'positions' | 'history' | 'bridge' | 'docs'>('dashboard');
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { isReady } = useWallet();
 
   const handleSplashComplete = () => {
     setShowSplash(false);
@@ -30,6 +35,20 @@ function AppContent() {
   if (currentPage === 'docs') {
     return <DocsPage onBack={() => setCurrentPage('dashboard')} />;
   }
+
+  if (!isReady) {
+    return (
+      <>
+        <AnimatePresence>{showSplash && <SplashScreen onComplete={handleSplashComplete} />}</AnimatePresence>
+        <DashboardLocked showSplash={showSplash} onOpenSettings={() => setSettingsOpen(true)} />
+        <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      </>
+    );
+  }
+
+  if (currentPage === 'positions') return <PositionsPage onBack={() => setCurrentPage('dashboard')} />;
+  if (currentPage === 'history') return <HistoryPage onBack={() => setCurrentPage('dashboard')} />;
+  if (currentPage === 'bridge') return <BridgePage onBack={() => setCurrentPage('dashboard')} />;
 
   return (
     <>
@@ -66,10 +85,10 @@ function AppContent() {
 
             {/* Nav */}
             <nav className="hidden md:flex items-center gap-1">
-              <a href="#" className="px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg font-medium">Dashboard</a>
-              <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Positions</a>
-              <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">History</a>
-              <a href="#" className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Bridge</a>
+              <button onClick={() => setCurrentPage('dashboard')} className="px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg font-medium">Dashboard</button>
+              <button onClick={() => setCurrentPage('positions')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Positions</button>
+              <button onClick={() => setCurrentPage('history')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">History</button>
+              <button onClick={() => setCurrentPage('bridge')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Bridge</button>
               <button
                 onClick={() => setCurrentPage('docs')}
                 className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all flex items-center gap-1.5"
@@ -113,10 +132,10 @@ function AppContent() {
             className="md:hidden border-t border-gray-800/50 bg-gray-900/90 backdrop-blur-xl"
           >
             <div className="px-4 py-3 space-y-1">
-              <a href="#" className="block px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg">Dashboard</a>
-              <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">Positions</a>
-              <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">History</a>
-              <a href="#" className="block px-3 py-2 text-sm text-gray-400 rounded-lg">Bridge</a>
+              <button onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg">Dashboard</button>
+              <button onClick={() => { setCurrentPage('positions'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Positions</button>
+              <button onClick={() => { setCurrentPage('history'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">History</button>
+              <button onClick={() => { setCurrentPage('bridge'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Bridge</button>
               <button
                 onClick={() => { setCurrentPage('docs'); setMobileMenuOpen(false); }}
                 className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800/30"
@@ -281,6 +300,31 @@ function AppContent() {
   );
 }
 
+function DashboardLocked({ showSplash, onOpenSettings }: { showSplash: boolean; onOpenSettings: () => void }) {
+  const { evmAddress, solanaAddress } = useWallet();
+  const shortAddress = (address: string | null) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'Not connected';
+
+  return (
+    <div className={`min-h-screen bg-[#0a0b0f] text-white transition-opacity duration-700 ${showSplash ? 'opacity-0' : 'opacity-100'}`}>
+      <header className="relative z-10 border-b border-gray-800/50 bg-gray-900/30 backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2.5"><img src="/brand/logo-icon.png" alt="Hopr" className="w-9 h-9 object-contain" /><div><h1 className="text-lg font-bold gradient-text">hopr</h1><p className="text-[10px] text-gray-500 -mt-0.5">Hop Across Chains</p></div></div>
+          <div className="flex items-center gap-2"><ThemeToggle /><button onClick={onOpenSettings} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-brand-500/20 border border-brand-400/30 text-sm text-brand-200 hover:bg-brand-500/30"><Settings className="w-4 h-4" /> Wallet settings</button></div>
+        </div>
+      </header>
+      <main className="relative z-10 min-h-[calc(100vh-4rem)] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-xl text-center bg-gray-900/60 border border-gray-800/60 rounded-3xl p-8 sm:p-12 shadow-2xl">
+          <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-brand-500/10 border border-brand-400/20 flex items-center justify-center"><Wallet className="w-8 h-8 text-brand-300" /></div>
+          <h2 className="text-2xl font-semibold text-white">Connect both wallets to continue</h2>
+          <p className="mt-3 text-sm leading-relaxed text-gray-400">The web dashboard requires one EVM wallet and one Solana wallet connected in Settings. Your Telegram bot wallets remain managed separately.</p>
+          <button onClick={onOpenSettings} className="mt-7 px-5 py-3 rounded-xl bg-brand-500 hover:bg-brand-400 text-white font-medium transition-colors">Open wallet settings</button>
+          <div className="mt-6 grid grid-cols-2 gap-3 text-left"><div className="p-3 rounded-xl bg-gray-800/40 border border-gray-700/40"><div className="text-xs text-gray-500">EVM wallet</div><div className={`mt-1 text-sm ${evmAddress ? 'text-green-300' : 'text-yellow-300'}`}>{shortAddress(evmAddress)}</div></div><div className="p-3 rounded-xl bg-gray-800/40 border border-gray-700/40"><div className="text-xs text-gray-500">Solana wallet</div><div className={`mt-1 text-sm ${solanaAddress ? 'text-green-300' : 'text-yellow-300'}`}>{shortAddress(solanaAddress)}</div></div></div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 function StatCard({ icon, label, value, change, positive }: { icon: React.ReactNode; label: string; value: string; change: string; positive: boolean }) {
   return (
     <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
@@ -299,7 +343,9 @@ function StatCard({ icon, label, value, change, positive }: { icon: React.ReactN
 export default function App() {
   return (
     <ThemeProvider>
-      <AppContent />
+      <WalletProvider>
+        <AppContent />
+      </WalletProvider>
     </ThemeProvider>
   );
 }
