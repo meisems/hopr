@@ -1047,7 +1047,7 @@ async function handleApiRequest(
     return handleTradeBuy(body, env, corsHeaders);
   }
 
-  // POST /api/trade/quote - read-only LI.FI route quote
+  // POST /api/trade/quote - LI.FI route quote and executable transaction payload
   if (path === '/api/trade/quote' && request.method === 'POST') {
     const body = await request.json() as TradeRequest & { toChainId?: number; toToken?: string };
     return handleTradeQuote(body, env, corsHeaders);
@@ -1276,7 +1276,7 @@ async function handleTradeQuote(
     slippage: Math.min(0.5, Math.max(0.0005, Number(body.slippage || 1) / 100)),
   }, env);
   if (!quote.ok) return Response.json({ error: quote.message, code: 'LIFI_QUOTE_UNAVAILABLE' }, { status: 502, headers: corsHeaders });
-  return Response.json({ quote: quote.data, readOnly: true, execution: 'unavailable' }, { headers: corsHeaders });
+  return Response.json({ quote: quote.data, readOnly: false, execution: 'wallet_confirmation' }, { headers: corsHeaders });
 }
 
 async function handleTradeSell(

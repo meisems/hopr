@@ -145,7 +145,7 @@ function OverviewSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Welcome to Hopr</h2>
         <p className="text-lg text-gray-400 leading-relaxed">
-          Hopr provides a cross-chain dashboard and Telegram bot. The bot can scan token markets, read native balances, save preferences, and execute a fresh LI.FI quote after the user explicitly confirms it. The dashboard trade UI remains read-only.
+          Hopr provides a cross-chain dashboard and Telegram bot. Both surfaces scan token markets and prepare fresh LI.FI routes. The website submits through the connected browser wallet only after explicit confirmation; Telegram uses its confirmed trading-wallet flow.
         </p>
       </div>
 

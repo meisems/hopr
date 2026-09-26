@@ -29,8 +29,8 @@ A cross-chain dashboard with a **Telegram Bot** for premium token market scans, 
 │  ┌───────────────────┼───────────────────────┐  │
 │  │  /api/detect      │ Chain Detection       │  │
 │  │  /api/wallet      │ Balance Queries       │  │
-│  │  /api/trade/buy   │ MOCK (not executed)   │  │
-│  │  /api/trade/sell  │ MOCK (not executed)   │  │
+│  │  /api/trade/quote │ LI.FI quote + tx data │  │
+│  │  Browser wallet   │ explicit confirmation │  │
 │  └───────────────────┼───────────────────────┘  │
 │                      │                           │
 ├──────────────────────┼───────────────────────────┤
@@ -108,7 +108,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 ### Trading status
 - Telegram Buy/Sell buttons fetch a fresh LI.FI quote and show a Confirm and submit button.
 - Only the explicit confirmation signs and submits the stored, 90-second quote.
-- Dashboard trade routes remain read-only/mock and must not be treated as completed trades.
+- Dashboard Buy requests a fresh LI.FI quote and transaction payload; the connected browser wallet submits only after explicit confirmation.
 
 ### Dual Wallet Architecture
 - EVM and Solana public wallet addresses can be linked to the Telegram bot for read-only balance checks
@@ -121,7 +121,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - `/settings` – Set and view a per-chat funding-chain and slippage preference
 - Send a token address – Look up market information from DexScreener
 - Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`
-- `/api/trade/quote` uses the server-side LI.FI key for read-only route quotes from the dashboard and Telegram
+- `/api/trade/quote` uses the server-side LI.FI key to prepare a route; the website wallet submits after explicit confirmation
 - Telegram trades support native funding, token approvals, signing, and submission after explicit quote confirmation
 
 ## 📁 Project Structure
@@ -166,7 +166,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 | POST | `/api/detect` | Auto-detect token chain |
 | GET | `/api/wallet/:address/balances` | Multi-chain balances |
 | POST | `/api/trade/buy` | Execute cross-chain buy |
-| POST | `/api/trade/quote` | Read-only LI.FI route quote |
+| POST | `/api/trade/quote` | LI.FI route quote and executable transaction payload |
 | POST | `/api/trade/sell` | Execute cross-chain sell |
 | GET | `/api/trade/:id/status` | Poll trade progress |
 | GET | `/health` | Health check |

@@ -13,6 +13,10 @@ interface TradeCardProps {
 
 type TradeMode = 'buy' | 'sell';
 type TradeStatus = 'idle' | 'unavailable';
+type DashboardQuote = {
+  estimate?: { toAmount?: string; executionDuration?: number };
+  transactionRequest?: { to: string; data?: string; value?: string; gasLimit?: string; chainId?: number };
+};
 
 const BUY_PRESETS = [0.1, 0.5, 1.0, 2.0];
 const SELL_PRESETS = [25, 50, 75, 100];
@@ -22,11 +26,12 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [amount, setAmount] = useState('');
   const [slippage, setSlippage] = useState(3);
   const [showSettings, setShowSettings] = useState(false);
-  const [fundingChain, setFundingChain] = useState(SUPPORTED_CHAINS[0]);
+  const [fundingChain, setFundingChain] = useState(SUPPORTED_CHAINS.find((chain) => chain.key === 'bas') ?? SUPPORTED_CHAINS[0]);
   const [tradeStatus, setTradeStatus] = useState<TradeStatus>('idle');
   const [customAmount, setCustomAmount] = useState('');
   const [quoteStatus, setQuoteStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [quoteMessage, setQuoteMessage] = useState('');
+  const [pendingQuote, setPendingQuote] = useState<DashboardQuote | null>(null);
   const { evmAddress, connectEvm } = useWallet();
   const [connectingWallet, setConnectingWallet] = useState(false);
 
@@ -36,6 +41,7 @@ export default function TradeCard({ token }: TradeCardProps) {
     if (!token) return;
     const nextAmount = presetAmount?.toString() ?? customAmount;
     setAmount(nextAmount);
+    setPendingQuote(null);
     if (!evmAddress) {
       setQuoteStatus('error');
       setQuoteMessage('Connect an EVM wallet to buy this token. You can keep browsing and scanning without connecting.');
@@ -54,17 +60,60 @@ export default function TradeCard({ token }: TradeCardProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: evmAddress, fromAddress: evmAddress, tokenAddress: token.address, toChainId: token.chainId, amount: nextAmount, fundingChain: String(fundingChain.id), slippage }),
       });
-      const data = await response.json() as { quote?: { estimate?: { toAmount?: string; executionDuration?: number } }; error?: string };
+      const data = await response.json() as { quote?: DashboardQuote; error?: string };
       if (!response.ok || !data.quote) throw new Error(data.error ?? 'LI.FI could not return a quote.');
       const estimate = data.quote.estimate;
       const output = estimate?.toAmount ?? 'unavailable';
       const duration = typeof estimate?.executionDuration === 'number' ? `${Math.max(1, Math.round(estimate.executionDuration / 60))} min` : 'variable';
+      if (!data.quote.transactionRequest) throw new Error('LI.FI returned no executable transaction for this route.');
+      setPendingQuote(data.quote);
       setQuoteStatus('ready');
-      setQuoteMessage(`Quote ready: ~${output} ${token.symbol} · estimated ${duration}. Read-only preview; no transaction was signed.`);
+      setQuoteMessage(`Quote ready: ~${output} ${token.symbol} · estimated ${duration}. Review the route, then confirm to submit from your wallet.`);
     } catch (error) {
       setQuoteStatus('error');
       setQuoteMessage(error instanceof Error ? error.message : 'Unable to request a LI.FI quote.');
     }
+  };
+
+  const handleConfirmBuy = async () => {
+    if (!pendingQuote?.transactionRequest || !evmAddress || !window.ethereum) {
+      setQuoteStatus('error');
+      setQuoteMessage('Reconnect your EVM wallet before confirming this quote.');
+      return;
+    }
+    setQuoteStatus('loading');
+    setQuoteMessage('Confirm the transaction in your wallet…');
+    try {
+      const request = pendingQuote.transactionRequest;
+      if (request.chainId) {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: `0x${request.chainId.toString(16)}` }],
+        });
+      }
+      const txHash = await window.ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: evmAddress,
+          to: request.to,
+          data: request.data ?? '0x',
+          value: request.value ?? '0x0',
+          ...(request.gasLimit ? { gas: request.gasLimit } : {}),
+        }],
+      }) as string;
+      setPendingQuote(null);
+      setQuoteStatus('ready');
+      setQuoteMessage(`Trade submitted. Transaction: ${txHash}`);
+    } catch (error) {
+      setQuoteStatus('error');
+      setQuoteMessage(error instanceof Error ? error.message : 'The wallet rejected the transaction.');
+    }
+  };
+
+  const handleCancelQuote = () => {
+    setPendingQuote(null);
+    setQuoteStatus('idle');
+    setQuoteMessage('');
   };
 
   const handleSell = (_percent: number) => {
@@ -216,6 +265,12 @@ export default function TradeCard({ token }: TradeCardProps) {
                     >
                       {connectingWallet ? 'Connecting…' : 'Connect EVM wallet'}
                     </button>
+                  )}
+                  {quoteStatus === 'ready' && pendingQuote && (
+                    <div className="flex gap-2">
+                      <button onClick={handleConfirmBuy} className="px-3 py-1.5 rounded-lg bg-green-500/20 border border-green-400/30 text-xs font-medium text-green-200 hover:bg-green-500/30">Confirm and submit</button>
+                      <button onClick={handleCancelQuote} className="px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-xs font-medium text-gray-300 hover:text-white">Cancel</button>
+                    </div>
                   )}
                 </div>
               </div>

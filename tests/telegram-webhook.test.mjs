@@ -213,7 +213,7 @@ test('website/API quote path forwards requests to LI.FI with the server-side key
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     lifiRequest = { url: String(url), headers: init.headers };
-    return Response.json({ estimate: { toAmount: '12345', executionDuration: 120 } });
+    return Response.json({ estimate: { toAmount: '12345', executionDuration: 120 }, transactionRequest: { to: '0x1111111111111111111111111111111111111111', data: '0x', value: '0x0', chainId: 8453 } });
   };
   try {
     const response = await worker.fetch(new Request('https://worker.example/api/trade/quote', {
@@ -221,7 +221,7 @@ test('website/API quote path forwards requests to LI.FI with the server-side key
       body: JSON.stringify({ fromAddress: '0x1234567890abcdef1234567890abcdef12345678', tokenAddress: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', toChainId: 8453, amount: '0.1', fundingChain: '42161', slippage: 1 }),
     }), { ...env, LIFI_API_KEY: 'server-key' }, {});
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).readOnly, true);
+    assert.equal((await response.json()).execution, 'wallet_confirmation');
     assert.match(lifiRequest.url, /fromAmount=100000000000000000/);
     assert.equal(lifiRequest.headers['x-lifi-api-key'], 'server-key');
   } finally {
