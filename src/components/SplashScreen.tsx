@@ -378,17 +378,12 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         >
           {/* A single controlled halo assembles the mark before the black hole arrives. */}
           <div className="relative w-24 h-24 sm:w-32 sm:h-32">
-            <motion.div
-              className="absolute inset-2 bg-brand-500/35 blur-3xl"
-              initial={{ opacity: 0, scale: 0.55 }}
-              animate={{ opacity: [0, 0.7, 0.4], scale: [0.55, 1.1, 1] }}
-              transition={{ duration: 0.9, delay: 0.08, ease: 'easeOut' }}
-            />
+            <div className="absolute inset-2 bg-brand-500/35 blur-3xl" />
             <motion.div
               className="relative z-10 w-full h-full flex items-center justify-center"
               initial={{ opacity: 0, scale: 0.5, filter: 'blur(14px)' }}
-              animate={{ opacity: 1, scale: [0.5, 1.06, 1], filter: ['blur(14px)', 'blur(0px)', 'blur(0px)'] }}
-              transition={{ duration: 0.9, delay: 0.16, times: [0, 0.7, 1], ease: [0.16, 1, 0.3, 1] }}
+              animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+              transition={{ duration: 0.85, delay: 0.16, ease: [0.16, 1, 0.3, 1] }}
             >
               <img src="/brand/logo-icon.png" alt="Hopr" className="w-full h-full object-contain drop-shadow-[0_0_24px_rgba(63,176,170,0.7)]" />
             </motion.div>
