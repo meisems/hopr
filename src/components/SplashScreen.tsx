@@ -114,15 +114,15 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         shockwaveFired = true;
         setShockwave(true);
       }
-      if (elapsed > 1.8 && phaseRef.current === 'forming') {
+      if (elapsed > 1.5 && phaseRef.current === 'forming') {
         phaseRef.current = 'pulling';
         setPhase('pulling');
       }
-      if (elapsed > 2.35 && phaseRef.current === 'pulling') {
+      if (elapsed > 1.72 && phaseRef.current === 'pulling') {
         phaseRef.current = 'consuming';
         setPhase('consuming');
       }
-      if (elapsed > 3.45 && phaseRef.current === 'consuming') {
+      if (elapsed > 3.15 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
         setPhase('gone');
         setTimeout(() => onCompleteRef.current(), 360);
@@ -132,8 +132,8 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       // Update hole size
       const targetHoleSize = phaseRef.current === 'logo' ? 0 :
-        phaseRef.current === 'forming' ? minDim * 0.14 :
-        phaseRef.current === 'pulling' ? minDim * 0.26 :
+        phaseRef.current === 'forming' ? minDim * 0.18 :
+        phaseRef.current === 'pulling' ? minDim * 0.35 :
         phaseRef.current === 'consuming' ? minDim * 0.46 :
         minDim * 0.6;
       const holeEase = phaseRef.current === 'forming' ? 0.28 : 0.08;
@@ -141,7 +141,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       setHoleSize(holeSizeRef.current);
 
       // Update logo transform
-      if (phaseRef.current === 'consuming') {
+      if (phaseRef.current === 'pulling') {
+        setLogoScale(prev => Math.max(0.35, prev * 0.96));
+        setLogoOpacity(prev => Math.max(0.2, prev - 0.018));
+      } else if (phaseRef.current === 'consuming') {
         setLogoScale(prev => Math.max(0.01, prev * 0.97));
         setLogoOpacity(prev => Math.max(0, prev - 0.012));
       } else if (phaseRef.current === 'gone') {
@@ -243,12 +246,13 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         });
       }
 
-      // Accretion disk — hidden during the logo beat, then revealed as a dramatic event horizon.
+      // Keep the reveal clean: one flash ring first, then the full disk only while pulling/consuming.
       if (phaseRef.current !== 'logo') {
       const diskRotation = elapsed * 0.4;
-      for (let ring = 0; ring < 6; ring++) {
+      const ringCount = phaseRef.current === 'forming' ? 1 : phaseRef.current === 'pulling' ? 2 : 6;
+      for (let ring = 0; ring < ringCount; ring++) {
         const ringRadius = holeSizeRef.current * (1.15 + ring * 0.25);
-        const ringOpacity = (0.22 - ring * 0.03) * (phaseRef.current === 'forming' ? 0.5 : 1);
+        const ringOpacity = (0.26 - ring * 0.03) * (phaseRef.current === 'forming' ? 0.9 : 1);
 
         ctx.save();
         ctx.translate(cx, cy);
