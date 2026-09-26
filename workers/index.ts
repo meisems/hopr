@@ -17,6 +17,24 @@ export interface Env {
   LIFI_API_KEY: string;
   ENVIRONMENT: string;
   RATE_LIMIT: KVNamespace; // For rate limiting
+  TELEGRAM_BOT_TOKEN: string;
+  TELEGRAM_WEBHOOK_SECRET: string;
+}
+
+interface TelegramMessage {
+  chat?: { id: number };
+  text?: string;
+}
+
+interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  message?: TelegramMessage;
+}
+
+interface TelegramUpdate {
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 interface TradeRequest {
@@ -84,6 +102,22 @@ export default {
     }
 
     try {
+      // Telegram webhook. Keep this outside the public API rate limiter and
+      // authenticate it with the secret configured in BotFather's webhook.
+      if (path === '/telegram/webhook') {
+        if (request.method !== 'POST') {
+          return Response.json({ error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
+        }
+        if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) {
+          return Response.json({ error: 'Telegram is not configured' }, { status: 503, headers: corsHeaders });
+        }
+        const receivedSecret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+        if (receivedSecret !== env.TELEGRAM_WEBHOOK_SECRET) {
+          return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
+        }
+        return handleTelegramWebhook(request, env);
+      }
+
       // API Routes - apply rate limiting
       if (path.startsWith('/api/')) {
         // Check rate limit (10 requests per minute)
@@ -137,6 +171,58 @@ export default {
     }
   },
 };
+
+async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+  let update: TelegramUpdate;
+  try {
+    update = await request.json() as TelegramUpdate;
+  } catch {
+    return Response.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  const message = update.message;
+  const callback = update.callback_query;
+  const chatId = message?.chat?.id ?? callback?.message?.chat?.id;
+  if (!chatId) return Response.json({ ok: true });
+
+  if (callback) {
+    await telegramApiCall('answerCallbackQuery', env, { callback_query_id: callback.id });
+    await sendTelegramMessage(chatId, 'Trading actions will be available after wallet setup is connected.', env);
+    return Response.json({ ok: true });
+  }
+
+  const text = message?.text?.trim() ?? '';
+  const command = text.split(/\s+/)[0].toLowerCase().split('@')[0];
+  const reply = command === '/start'
+    ? 'Welcome to Hopr. Send /help to see available commands.'
+    : command === '/help'
+      ? 'Hopr commands:\n/start - Start the bot\n/wallet - View bot wallet status\n/settings - View trading settings\n\nSend a token address to begin.'
+      : command === '/wallet'
+        ? 'No Telegram wallet is connected yet. Wallet management will be enabled in the next bot update.'
+        : command === '/settings'
+          ? 'Trading settings are not configured yet. Use the Hopr dashboard to connect your wallets.'
+          : text
+            ? 'I received your message. Send /help for commands, or send a token address to inspect it.'
+            : 'Send /help to get started.';
+
+  await sendTelegramMessage(chatId, reply, env);
+  return Response.json({ ok: true });
+}
+
+async function sendTelegramMessage(chatId: number, text: string, env: Env): Promise<void> {
+  await telegramApiCall('sendMessage', env, { chat_id: chatId, text });
+}
+
+async function telegramApiCall(method: string, env: Env, body: Record<string, unknown>): Promise<void> {
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    console.error(`Telegram API ${method} failed with HTTP ${response.status}`);
+  }
+}
 
 async function handleApiRequest(
   request: Request,
