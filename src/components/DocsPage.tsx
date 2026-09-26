@@ -145,7 +145,7 @@ function OverviewSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Welcome to Hopr</h2>
         <p className="text-lg text-gray-400 leading-relaxed">
-          Hopr provides a cross-chain dashboard and Telegram bot. The bot can look up token market data, read native balances for public wallet addresses, and save personal preferences. Trade execution and wallet signing are not implemented.
+          Hopr provides a cross-chain dashboard and Telegram bot. The bot can scan token markets, read native balances, save preferences, and execute a fresh LI.FI quote after the user explicitly confirms it. The dashboard trade UI remains read-only.
         </p>
       </div>
 
@@ -158,7 +158,7 @@ function OverviewSection() {
         <InfoCard
           icon={<Rocket className="w-5 h-5" />}
           title="Read-Only Balances"
-          description="Query native balances for a public EVM or Solana address. The bot never asks for seed phrases or private keys."
+          description="Query native balances for a public EVM or Solana address. Read-only balance commands never ask for keys; trading-wallet setup is restricted to private chats."
         />
         <InfoCard
           icon={<RefreshCw className="w-5 h-5" />}
@@ -167,8 +167,8 @@ function OverviewSection() {
         />
         <InfoCard
           icon={<Globe className="w-5 h-5" />}
-          title="No Bot Trading"
-          description="Telegram does not sign, approve, or submit transactions. Trade-related dashboard animations and bot previews are prototypes, not completed trades."
+          title="Confirmed Telegram Trading"
+          description="Telegram trading requires an encrypted custodial wallet and an explicit Confirm and submit action. Dashboard trade animations remain prototypes, not completed trades."
         />
       </div>
 
@@ -179,7 +179,7 @@ function OverviewSection() {
           <Step number={2} text="Send a token contract address to get indexed market data" />
           <Step number={3} text="Use /wallet <public-address> to read native balances" />
           <Step number={4} text="Configure TELEGRAM_STATE to save addresses and preferences" />
-          <Step number={5} text="No trade, wallet signing, approval, or transfer is performed by this bot" />
+          <Step number={5} text="Create a trading wallet, then confirm a fresh quote before any signing or transfer" />
         </div>
       </div>
     </div>

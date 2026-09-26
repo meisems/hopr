@@ -74,7 +74,7 @@ test('help command lists working commands and shows navigation buttons', async (
   assert.equal(calls[0].url.endsWith('/sendMessage'), true);
   assert.equal(calls[0].body.chat_id, 321);
   assert.match(calls[0].body.text, /setwallet <evm\|solana>/);
-  assert.match(calls[0].body.text, /does not sign or submit trades/);
+  assert.match(calls[0].body.text, /Confirm and submit button signs and submits/);
   assert.deepEqual(calls[0].body.reply_markup.inline_keyboard, [
     [
       { text: 'Wallet', callback_data: 'wallet' },
@@ -180,14 +180,14 @@ test('token address gets real market lookup details from DexScreener', async () 
       }] });
     },
   });
-  assert.match(calls[0].body.text, /EX — Example Token/);
+  assert.match(calls[0].body.text, /EX  \|  Example Token/);
   assert.match(calls[0].body.text, /Base/);
   assert.match(calls[0].body.text, /24h: \+3\.50%/);
-  assert.match(calls[0].body.text, /does not execute trades/);
+  assert.match(calls[0].body.text, /no transaction was submitted/);
   assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[0], [
-    { text: '🚀 Buy 0.1', callback_data: 'trade:buy:0.1' },
-    { text: '🚀 Buy 0.5', callback_data: 'trade:buy:0.5' },
-    { text: '🚀 Buy 1.0', callback_data: 'trade:buy:1.0' },
+    { text: '🟢 Buy 0.1', callback_data: 'trade:buy:0.1' },
+    { text: '🟢 Buy 0.5', callback_data: 'trade:buy:0.5' },
+    { text: '🟢 Buy 1.0', callback_data: 'trade:buy:1.0' },
   ]);
 });
 
@@ -282,7 +282,7 @@ test('inline Settings button is answered and shows selectable options', async ()
   }, { extraEnv: { TELEGRAM_STATE: kv } });
   assert.equal(response.status, 200);
   assert.deepEqual(calls.map((call) => call.url.split('/').at(-1)), ['answerCallbackQuery', 'sendMessage']);
-  assert.match(calls[1].body.text, /Your trade preferences/);
+  assert.match(calls.at(-1).body.text, /Your Telegram trade preferences/);
 });
 
 test('rejects an incorrect webhook secret without calling Telegram', async () => {

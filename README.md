@@ -1,6 +1,6 @@
 # Hopr – Hop Across Chains
 
-A cross-chain dashboard with a **Telegram Bot** for token market lookup, public-wallet native-balance reads, saved preferences, and server-side LI.FI quote previews. Telegram and the dashboard do not sign or submit trades; execution remains disabled until wallet custody and transaction submission are implemented.
+A cross-chain dashboard with a **Telegram Bot** for premium token market scans, public-wallet native-balance reads, saved preferences, and server-side LI.FI routing. Telegram can execute a trade after a custodial wallet is configured and the user explicitly confirms a fresh quote; dashboard trade execution remains disabled.
 
 ## 🌐 Supported Chains
 
@@ -106,13 +106,13 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - 0x... → Multi-chain EVM probing (DexScreener + RPC fallback)
 
 ### Trading status
-- The dashboard's trade animations and the original Telegram buy/sell preview are UI prototypes, not executed trades.
-- Worker trade routes are not connected to signing, transaction submission, or real trade-status storage.
-- Do not use those mock routes as evidence that a trade was quoted, sent, or completed.
+- Telegram Buy/Sell buttons fetch a fresh LI.FI quote and show a Confirm and submit button.
+- Only the explicit confirmation signs and submits the stored, 90-second quote.
+- Dashboard trade routes remain read-only/mock and must not be treated as completed trades.
 
 ### Dual Wallet Architecture
 - EVM and Solana public wallet addresses can be linked to the Telegram bot for read-only balance checks
-- The bot never accepts private keys or seed phrases and does not sign transactions
+- Telegram trading uses encrypted custodial keys; never send private keys or seed phrases in a group
 
 ### Telegram Bot
 - `/start`, `/help` – Welcome and help, with inline navigation buttons
@@ -122,7 +122,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - Send a token address – Look up market information from DexScreener
 - Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`
 - `/api/trade/quote` uses the server-side LI.FI key for read-only route quotes from the dashboard and Telegram
-- Trades, signing, token approvals, and transfers are intentionally not implemented; settings are preferences only
+- Telegram trades support native funding, token approvals, signing, and submission after explicit quote confirmation
 
 ## 📁 Project Structure
 

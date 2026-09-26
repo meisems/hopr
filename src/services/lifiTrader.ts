@@ -18,6 +18,7 @@ import { Connection, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { decryptPrivateKey, unpackEncryptedSecret, type EncryptedSecret } from './walletService';
 
 const LIFI_QUOTE_URL = 'https://li.quest/v1/quote';
+const EVM_NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -139,7 +140,8 @@ async function executeEvm(params: ExecuteParams, privateKey: string): Promise<Ex
   const wallet = new ethers.Wallet(privateKey, provider);
 
   const approvalAddress = params.quote.estimate.approvalAddress;
-  const isNative = params.fromTokenAddress.toLowerCase() === 'native';
+  const isNative = params.fromTokenAddress.toLowerCase() === 'native'
+    || params.fromTokenAddress.toLowerCase() === EVM_NATIVE_TOKEN;
 
   if (approvalAddress && !isNative) {
     const token = new ethers.Contract(params.fromTokenAddress, ERC20_ABI, wallet);

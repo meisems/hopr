@@ -80,15 +80,20 @@ function telegramTokenKeyboard(address: string) {
   return {
     inline_keyboard: [
       [
-        { text: '🚀 Buy 0.1', callback_data: 'trade:buy:0.1' },
-        { text: '🚀 Buy 0.5', callback_data: 'trade:buy:0.5' },
-        { text: '🚀 Buy 1.0', callback_data: 'trade:buy:1.0' },
+        { text: '🟢 Buy 0.1', callback_data: 'trade:buy:0.1' },
+        { text: '🟢 Buy 0.5', callback_data: 'trade:buy:0.5' },
+        { text: '🟢 Buy 1.0', callback_data: 'trade:buy:1.0' },
       ],
-      [{ text: '✎ Custom', callback_data: 'trade:custom' }, { text: '↻ Change chain', callback_data: 'settings' }],
+      [{ text: '✎ Custom / X%', callback_data: 'trade:custom' }, { text: '↻ Change chain', callback_data: 'settings' }],
       [
-        { text: '⌁ Sell 25%', callback_data: 'trade:sell:25' },
-        { text: '⌁ Sell 50%', callback_data: 'trade:sell:50' },
-        { text: '⌁ Sell 100%', callback_data: 'trade:sell:100' },
+        { text: '🔴 Sell 25%', callback_data: 'trade:sell:25' },
+        { text: '🔴 Sell 50%', callback_data: 'trade:sell:50' },
+        { text: '🔴 Sell 100%', callback_data: 'trade:sell:100' },
+      ],
+      [
+        { text: '📊 Chart', url: `https://dexscreener.com/search?q=${encodeURIComponent(address)}` },
+        { text: '🔄 Refresh', callback_data: `token:refresh:${address}` },
+        { text: '🛡 Audit', callback_data: 'help' },
       ],
       [
         { text: '⚙ Settings', callback_data: 'settings' },
@@ -99,10 +104,21 @@ function telegramTokenKeyboard(address: string) {
   };
 }
 
+function telegramTradeConfirmationKeyboard(tradeId: string) {
+  return {
+    inline_keyboard: [[
+      { text: 'Confirm and submit', callback_data: `trade:confirm:${tradeId}` },
+      { text: 'Cancel', callback_data: 'trade:cancel' },
+    ]],
+  };
+}
+
 const TELEGRAM_WALLET_PROMPTS = {
   evm: 'Reply to this message with a public EVM address only.',
   solana: 'Reply to this message with a public Solana address only.',
 };
+
+const telegramDetectionMemoryCache = new Map<string, { expiresAt: number; value: Record<string, unknown> }>();
 
 const TELEGRAM_CHAINS = [
   { id: 1151111081099710, name: 'Solana', symbol: 'SOL' },
@@ -277,10 +293,11 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     const data = callback.data ?? '';
     const chatType = callback.message?.chat?.type;
     const recognized = ['help', 'wallet', 'settings', 'dismiss'].includes(data)
-      || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana'].includes(data)
+      || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana', 'wallet:generate', 'wallet:import', 'wallet:export'].includes(data)
+      || /^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(data)
       || /^settings:chain:\d+$/.test(data)
       || /^settings:slippage:(0\.5|1|3|5)$/.test(data)
-      || /^trade:(buy:(0\.1|0\.5|1\.0)|sell:(25|50|100)|custom)$/.test(data);
+      || /^trade:(buy:(0\.1|0\.5|1\.0)|sell:(25|50|100)|custom|confirm:[0-9a-f-]+|cancel)$/.test(data);
     if (!recognized) {
       await telegramApiCall('answerCallbackQuery', env, {
         callback_query_id: callback.id,
@@ -335,7 +352,7 @@ async function handleTelegramMessage(
     return;
   }
   if (command === '/help' || !text) {
-    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons execute immediately once you have a trading wallet — there is no confirmation step. The bot does not sign or submit trades without the required wallet and execution setup.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons first show a live quote; only the explicit Confirm and submit button signs and submits the trade.', env, TELEGRAM_ACTION_KEYBOARD);
     return;
   }
   if (command === '/wallet' || command === '/balances') {
@@ -430,7 +447,9 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env): P
   const symbol = typeof token.symbol === 'string' ? token.symbol : 'Unknown';
   const name = typeof token.name === 'string' ? token.name : 'Unknown token';
   const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
-  const result = `${symbol} — ${name}\nChain: ${chain}\nAddress: ${address}\nPrice: $${price.toPrecision(6)}\n24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\nLiquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\nFDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n\nMarket data from DexScreener. This bot does not execute trades.`;
+  const dex = typeof token.dexId === 'string' ? token.dexId.toUpperCase() : 'DEX';
+  const volume = numberOrZero(token.volume24h);
+  const result = `🟣 ${symbol}  |  ${name}\n🔗 ${chain}\n\`${address}\`\n\n🏊 POOL INFO\n🏪 DEX: ${dex}\n💰 Market cap / FDV: $${fdv.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n💧 Liquidity: $${liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n📊 24h volume: $${volume.toLocaleString('en-US', { maximumFractionDigits: 0 })}\n📈 Price: $${price.toPrecision(6)}  |  24h: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n🧾 TOKEN INFO\n🪙 Symbol: ${symbol}\n🌐 Network: ${chain}\n🛡️ Data: DexScreener indexed market\n\n⚡ Scan complete. Market data only — no transaction was submitted.`;
 
   // Do not make Telegram wait for D1/KV. The market result is the user-visible
   // response; persistence is best-effort and runs concurrently with delivery.
@@ -724,7 +743,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
   const wallet = await createCustodialWallet(userId, env);
   await sendTelegramMessage(
     chatId,
-    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Buy/Sell buttons execute immediately on tap — there is no confirmation step, so double-check the preset amount and chain before tapping. Keys are encrypted at rest (AES-256-GCM); use /exportkeys anytime to see the raw keys, or /importkey to bring your own.`,
+    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Buy/Sell first fetch a quote; only the explicit Confirm and submit button signs and sends it. Keys are encrypted at rest (AES-256-GCM); use /exportkeys anytime to see the raw keys, or /importkey to bring your own.`,
     env,
     TELEGRAM_ACTION_KEYBOARD,
   );
@@ -738,12 +757,30 @@ async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
   }
   const chain = TELEGRAM_CHAINS.find((item) => item.id === profile.fundingChainId) ?? TELEGRAM_CHAINS[0];
   const slippage = profile.slippagePercent ?? 1;
-  await sendTelegramMessage(chatId, `Your trade preferences (display only; Telegram trading is not enabled):\nFunding chain: ${chain.name}\nSlippage preference: ${slippage}%\n\nChoose a chain or slippage below.`, env, telegramSettingsKeyboard());
+  await sendTelegramMessage(chatId, `Your Telegram trade preferences:\nFunding chain: ${chain.name}\nSlippage preference: ${slippage}%\n\nChoose a chain or slippage below. Quotes still require an explicit confirmation before submission.`, env, telegramSettingsKeyboard());
 }
 
 async function handleTelegramTradeAction(chatId: number, data: string, env: Env): Promise<void> {
   if (data === 'trade:custom') {
     await sendTelegramMessage(chatId, 'Custom trade amounts are not enabled yet. Use /settings to choose a funding chain and slippage.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  if (data === 'trade:cancel') {
+    await sendTelegramMessage(chatId, 'Trade cancelled. No transaction was signed or submitted.', env, TELEGRAM_ACTION_KEYBOARD);
+    return;
+  }
+  const confirmMatch = data.match(/^trade:confirm:([0-9a-f-]+)$/);
+  if (confirmMatch) {
+    try {
+      const rpcUrls = {
+        evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
+        solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
+      };
+      const result = await confirmTrade(String(chatId), confirmMatch[1], rpcUrls, env);
+      await sendTelegramMessage(chatId, `Trade submitted successfully.\nTransaction: ${result.txHash}\n\nThe transaction is now on-chain; final settlement may take additional time.`, env, TELEGRAM_ACTION_KEYBOARD);
+    } catch (error) {
+      await sendTelegramMessage(chatId, `Trade was not submitted: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
+    }
     return;
   }
   const profile = await readTelegramProfile(chatId, env);
@@ -785,10 +822,6 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
       const fundingChainId = profile.fundingChainId ?? 8453;
       const fundingChain = getChainById(fundingChainId);
       if (!fundingChain) throw new Error('Configured funding chain is not supported');
-      const rpcUrls = {
-        evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
-        solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
-      };
       const trade = await prepareBuy(
         {
           userId,
@@ -802,14 +835,11 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
         },
         env,
       );
-      // Preset amounts are chosen in advance via /settings, so the tap itself
-      // is the user's confirmation — execute immediately, no second tap.
-      const result = await confirmTrade(userId, trade.id, rpcUrls, env);
       await sendTelegramMessage(
         chatId,
-        `⏳ Step 1/3: Swapping ${amountDecimal} ${fundingChain.nativeSymbol} on ${fundingChain.name} -> Step 2/3: Bridging via LI.FI -> Step 3/3: Delivering ${profile.lastTokenSymbol ?? 'tokens'} on ${targetChain.name}.\nTx: ${result.txHash}`,
+        `QUOTE READY\n\nBUY ${amountDecimal} ${fundingChain.nativeSymbol} -> ${profile.lastTokenSymbol ?? 'token'}\nRoute: ${fundingChain.name} -> ${targetChain.name}\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
         env,
-        TELEGRAM_ACTION_KEYBOARD,
+        telegramTradeConfirmationKeyboard(trade.id),
       );
       return;
     }
@@ -829,20 +859,15 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
         return;
       }
       const sellUnits = (BigInt(openTrade.purchased_amount) * BigInt(percent)) / 100n;
-      const rpcUrls = {
-        evm: (chainId: number) => getChainById(chainId)?.rpcUrl ?? '',
-        solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
-      };
       const trade = await prepareSell(
         { userId, wallet, originalTradeDbId: openTrade.id, sellAmountUnits: sellUnits.toString(), slippage },
         env,
       );
-      const result = await confirmTrade(userId, trade.id, rpcUrls, env);
       await sendTelegramMessage(
         chatId,
-        `⏳ Selling ${percent}% of ${profile.lastTokenSymbol ?? 'tokens'} -> Step 2/3: Bridging via LI.FI -> Step 3/3: Delivering proceeds to your original funding chain.\nTx: ${result.txHash}`,
+        `QUOTE READY\n\nSELL ${percent}% of ${profile.lastTokenSymbol ?? 'tokens'}\nRoute: ${targetChain.name} -> original funding asset\nMinimum output: ${trade.quote.estimate.toAmountMin} base units\n\nTap Confirm and submit to sign this quote, or Cancel to discard it.`,
         env,
-        TELEGRAM_ACTION_KEYBOARD,
+        telegramTradeConfirmationKeyboard(trade.id),
       );
       return;
     }
@@ -897,6 +922,11 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   if (data === 'wallet') return showTelegramWallet(chatId, env);
   if (data === 'settings') return showTelegramSettings(chatId, env);
   if (data === 'dismiss') return;
+  const refreshMatch = data.match(/^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/);
+  if (refreshMatch) {
+    telegramDetectionMemoryCache.delete(`detect:${refreshMatch[1]}`);
+    return lookupTelegramToken(chatId, refreshMatch[1], env);
+  }
   if (data.startsWith('trade:')) {
     return handleTelegramTradeAction(chatId, data, env);
   }
@@ -1045,9 +1075,16 @@ async function handleChainDetection(
 ): Promise<Response> {
   // Check cache first
   const cacheKey = `detect:${address}`;
+  const memoryCached = telegramDetectionMemoryCache.get(cacheKey);
+  if (memoryCached && memoryCached.expiresAt > Date.now()) {
+    return Response.json(memoryCached.value, { headers: { ...corsHeaders, 'X-Cache': 'MEMORY' } });
+  }
+  if (memoryCached) telegramDetectionMemoryCache.delete(cacheKey);
   const cached = await env.CACHE?.get(cacheKey);
   if (cached) {
-    return Response.json(JSON.parse(cached), { headers: { ...corsHeaders, 'X-Cache': 'HIT' } });
+    const value = JSON.parse(cached) as Record<string, unknown>;
+    telegramDetectionMemoryCache.set(cacheKey, { value, expiresAt: Date.now() + 300_000 });
+    return Response.json(value, { headers: { ...corsHeaders, 'X-Cache': 'HIT' } });
   }
 
   // Detect chain
@@ -1076,6 +1113,8 @@ async function handleChainDetection(
         liquidity: pair.liquidity?.usd || 0,
         fdv: pair.fdv || 0,
         change24h: pair.priceChange?.h24 || 0,
+        volume24h: pair.volume?.h24 || 0,
+        dexId: pair.dexId,
       };
     }
   } else if (isEvm) {
@@ -1108,6 +1147,8 @@ async function handleChainDetection(
         liquidity: pair.liquidity?.usd || 0,
         fdv: pair.fdv || 0,
         change24h: pair.priceChange?.h24 || 0,
+        volume24h: pair.volume?.h24 || 0,
+        dexId: pair.dexId,
       };
     }
   }
@@ -1117,6 +1158,7 @@ async function handleChainDetection(
   }
 
   // Cache for 5 minutes. Do not add KV write latency to the token response.
+  telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + 300_000 });
   if (env.CACHE) {
     void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch((error) => {
       console.error('Token detection cache write failed', error);

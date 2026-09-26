@@ -34,6 +34,12 @@ export interface CustodialWallet {
 }
 
 const PENDING_TRADE_TTL_SECONDS = 90;
+const EVM_NATIVE_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+const SOLANA_NATIVE_TOKEN = '11111111111111111111111111111111';
+
+function nativeTokenAddress(chainKey: string): string {
+  return chainKey === 'sol' ? SOLANA_NATIVE_TOKEN : EVM_NATIVE_TOKEN;
+}
 
 /** Fetch the user's custodial wallet, or null if they haven't created one. */
 export async function getCustodialWallet(userId: string, env: TradingEnv): Promise<CustodialWallet | null> {
@@ -151,12 +157,15 @@ export async function prepareBuy(params: {
 
   const fromAddress = fundingChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
   const toAddress = targetChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const fundingTokenAddress = params.fundingTokenAddress === 'native'
+    ? nativeTokenAddress(fundingChain.key)
+    : params.fundingTokenAddress;
 
   const quote = await getQuote(
     {
       fromChain: fundingChain.key,
       toChain: targetChain.key,
-      fromToken: params.fundingTokenAddress,
+      fromToken: fundingTokenAddress,
       toToken: params.targetTokenAddress,
       fromAmount: params.fundingAmountUnits,
       fromAddress,
@@ -175,10 +184,10 @@ export async function prepareBuy(params: {
     fromChainKey: fundingChain.key,
     toChainId: targetChain.id,
     toChainType: targetChain.type,
-    fromTokenAddress: params.fundingTokenAddress,
+    fromTokenAddress: fundingTokenAddress,
     toTokenAddress: params.targetTokenAddress,
     fundingChainId: fundingChain.id,
-    fundingTokenAddress: params.fundingTokenAddress,
+    fundingTokenAddress,
     displayAmount: params.fundingAmountUnits,
     displaySymbol: fundingChain.nativeSymbol,
     createdAt: Date.now(),
