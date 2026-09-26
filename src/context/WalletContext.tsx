@@ -48,7 +48,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [wallets, setWallets] = useState<WalletState>(() => readWallets());
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(wallets));
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(wallets));
+      } catch {
+        // Keep wallet state usable if storage is blocked.
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
   }, [wallets]);
 
   const connectEvm = async () => {

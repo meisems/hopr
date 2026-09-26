@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import TradeCard from './components/TradeCard';
@@ -21,11 +21,17 @@ const PositionsPage = lazy(() => import('./components/PositionsPage'));
 const HistoryPage = lazy(() => import('./components/HistoryPage'));
 const BridgePage = lazy(() => import('./components/BridgePage'));
 
-function BlackHoleSplash({ onComplete }: { onComplete: () => void }) {
+function BlackHoleSplash({ isExiting, onExitStart, onExitComplete }: { isExiting: boolean; onExitStart: () => void; onExitComplete: () => void }) {
   const { settings } = useBlackHoleSettings();
   return (
-    <Suspense fallback={<div className="fixed inset-0 z-[100] bg-black" aria-label="Loading black-hole animation" />}>
-      <SplashScreen onComplete={onComplete} spin={settings.spin} inclination={settings.inclination} />
+    <Suspense fallback={<div className="preloader-overlay" aria-label="Loading black-hole animation" />}>
+      <SplashScreen
+        isExiting={isExiting}
+        onExitStart={onExitStart}
+        onExitComplete={onExitComplete}
+        spin={settings.spin}
+        inclination={settings.inclination}
+      />
     </Suspense>
   );
 }
@@ -45,7 +51,7 @@ function PageLoading() {
 }
 
 function AppContent() {
-  const [showSplash, setShowSplash] = useState(true);
+  const [preloaderPhase, setPreloaderPhase] = useState<'loading' | 'exiting' | 'ready'>('loading');
   const [currentPage, setCurrentPage] = useState<'dashboard' | 'positions' | 'history' | 'bridge' | 'docs'>('dashboard');
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -53,15 +59,24 @@ function AppContent() {
   const [splashRun, setSplashRun] = useState(0);
   const { isReady } = useWallet();
 
-  const handleSplashComplete = () => {
-    setShowSplash(false);
-  };
-
   const previewBlackHole = () => {
     setSettingsOpen(false);
     setSplashRun((run) => run + 1);
-    setShowSplash(true);
+    setPreloaderPhase('loading');
   };
+
+  const preloader = preloaderPhase === 'ready' ? null : (
+    <div className="preloader-layer" aria-hidden={preloaderPhase === 'exiting'}>
+      <BlackHoleSplash
+        key={splashRun}
+        isExiting={preloaderPhase === 'exiting'}
+        onExitStart={() => setPreloaderPhase('exiting')}
+        onExitComplete={() => setPreloaderPhase('ready')}
+      />
+    </div>
+  );
+
+  const dashboardClassName = `app-page${preloaderPhase !== 'loading' ? ' app-page--ready' : ''}`;
 
   // If on docs page, render it instead of dashboard
   if (currentPage === 'docs') {
@@ -71,8 +86,10 @@ function AppContent() {
   if (!isReady) {
     return (
       <>
-        <AnimatePresence>{showSplash && <BlackHoleSplash key={splashRun} onComplete={handleSplashComplete} />}</AnimatePresence>
-        <DashboardLocked showSplash={showSplash} onOpenSettings={() => setSettingsOpen(true)} />
+        {preloader}
+        <div className={dashboardClassName}>
+          <DashboardLocked showSplash={false} onOpenSettings={() => setSettingsOpen(true)} />
+        </div>
         <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
       </>
     );
@@ -84,13 +101,10 @@ function AppContent() {
 
   return (
     <>
-      {/* Splash Screen */}
-      <AnimatePresence>
-        {showSplash && <BlackHoleSplash key={splashRun} onComplete={handleSplashComplete} />}
-      </AnimatePresence>
+      {preloader}
 
       {/* Main App */}
-      <div className={`min-h-screen bg-[#0a0b0f] text-white transition-opacity duration-700 ${showSplash ? 'opacity-0' : 'opacity-100'}`}>
+      <div className={`${dashboardClassName} min-h-screen bg-[#0a0b0f] text-white`}>
       {/* Background gradient */}
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-brand-500/5 rounded-full blur-3xl" />

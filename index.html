@@ -18,6 +18,21 @@
         background-color: #0a0b0f;
         color: #ffffff;
       }
+
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: #000;
+        opacity: 1;
+        pointer-events: auto;
+        transition: opacity 180ms ease-out;
+      }
+
+      html.app-ready #boot-splash {
+        opacity: 0;
+        pointer-events: none;
+      }
     </style>
     <script>
       (function () {
@@ -67,6 +82,7 @@
     </script>
   </head>
   <body>
+    <div id="boot-splash" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

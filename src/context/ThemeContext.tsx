@@ -28,7 +28,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.classList.remove('light', 'dark');
     root.classList.add(theme);
     root.setAttribute('data-theme', theme);
-    localStorage.setItem('hopr-theme', theme);
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem('hopr-theme', theme);
+      } catch {
+        // Keep theme switching usable if storage is blocked.
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
   }, [theme]);
 
   const toggleTheme = () => setThemeState(prev => prev === 'dark' ? 'light' : 'dark');

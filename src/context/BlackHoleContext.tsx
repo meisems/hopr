@@ -44,7 +44,7 @@ export function BlackHoleSettingsProvider({ children }: { children: ReactNode })
       } catch {
         // Keep the controls usable if storage is blocked or unavailable.
       }
-    }, 180);
+    }, 500);
     return () => window.clearTimeout(timeout);
   }, [settings]);
 
