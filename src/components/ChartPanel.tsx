@@ -125,7 +125,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
       </div>
 
       <div className="px-3 sm:px-4 pb-3 sm:pb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> 24h Vol</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity * 0.3)}</div></div>
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> 24h Vol</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.volume24h)}</div></div>
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">Liquidity</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity)}</div></div>
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">MCap/FDV</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.fdv)}</div></div>
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">Decimals</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{token.decimals}</div></div>

@@ -68,6 +68,7 @@ export default function BridgePage({ onBack }: BridgePageProps) {
           fromAddress: fromChain.type === 'SVM' ? SOL_QUOTE_ADDRESS : EVM_QUOTE_ADDRESS,
           toAddress: toChain.type === 'SVM' ? SOL_QUOTE_ADDRESS : EVM_QUOTE_ADDRESS,
           slippage: '0.03',
+          fee: '0.01',
         });
         const response = await fetch(`https://li.quest/v1/quote?${params.toString()}`, { signal: controller.signal });
         const data = await response.json() as LiveQuote & { message?: string };
@@ -203,6 +204,7 @@ export default function BridgePage({ onBack }: BridgePageProps) {
             <div className="flex justify-between gap-3"><span>Minimum received</span><span className="text-gray-300">{minimumAmount} {toChain.nativeSymbol}</span></div>
             <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Estimated time</span><span className="text-gray-300">{executionTime}</span></div>
             <div className="flex justify-between"><span>Estimated gas</span><span className="text-gray-300">{gasCost > 0 ? `$${gasCost.toFixed(4)}` : 'Included in route'}</span></div>
+            <div className="flex justify-between"><span>Hopr bridge fee</span><span className="text-gray-300">1% included</span></div>
           </div>
 
           <div className={`flex items-start gap-2 p-3 rounded-xl text-sm leading-relaxed ${quoteStatus === 'error' ? 'bg-red-500/10 border border-red-500/25 text-red-200' : 'bg-amber-500/10 border border-amber-500/25 text-amber-100'}`} role="status" aria-live="polite">

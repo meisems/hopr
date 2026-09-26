@@ -41,6 +41,7 @@ export interface DetectedToken {
   chainColor: string;
   priceUsd: number;
   liquidity: number;
+  volume24h: number;
   fdv: number;
   change24h: number;
   /** DexScreener pool used to request real OHLCV history. */
@@ -67,6 +68,7 @@ interface DexScreenerPair {
   baseToken: { address: string; name: string; symbol: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
+  volume?: { h24?: number };
   fdv?: number;
   priceChange?: { h24?: number };
 }
@@ -109,6 +111,7 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     chainColor: chainInfo.color,
     priceUsd: Number(pair.priceUsd ?? 0),
     liquidity: pair.liquidity?.usd ?? 0,
+    volume24h: pair.volume?.h24 ?? 0,
     fdv: pair.fdv ?? 0,
     change24h: pair.priceChange?.h24 ?? 0,
     pairAddress: pair.pairAddress,
@@ -219,6 +222,7 @@ async function probeEvmChains(address: string): Promise<DetectedToken | null> {
     chainColor: hit.chain.color,
     priceUsd: 0,
     liquidity: 0,
+    volume24h: 0,
     fdv: 0,
     change24h: 0,
     freshDeployment: true,
@@ -245,6 +249,7 @@ export async function detectChain(address: string): Promise<DetectedToken | null
       chainColor: solChain.color,
       priceUsd: 0,
       liquidity: 0,
+      volume24h: 0,
       fdv: 0,
       change24h: 0,
       freshDeployment: true,

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet } from 'lucide-react';
+import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet, DollarSign } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import TradeCard from './components/TradeCard';
 import PositionsTable from './components/PositionsTable';
@@ -10,7 +10,7 @@ import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
 import { WalletProvider } from './context/WalletContext';
-import { DetectedToken } from './services/chainDetector';
+import { DetectedToken, formatUsd } from './services/chainDetector';
 
 const SplashScreen = lazy(() => import('./components/SplashScreen'));
 const ChartPanel = lazy(() => import('./components/ChartPanel'));
@@ -70,6 +70,7 @@ function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [splashRun, setSplashRun] = useState(0);
+  const [dashboardTab, setDashboardTab] = useState<'market' | 'analytics'>('market');
 
   useEffect(() => {
     document.title = `${PAGE_TITLES[currentPage]} · Hopr`;
@@ -217,17 +218,32 @@ function AppContent() {
           <SearchBar onTokenDetected={setSelectedToken} />
         </motion.section>
 
-        {/* Stats bar */}
+        {/* Dashboard tabs and stats */}
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="grid grid-cols-2 sm:grid-cols-4 gap-3"
+          className="space-y-3"
         >
-          <StatCard icon={<Activity className="w-4 h-4" />} label="24h Volume" value="—" change="No data" positive />
-          <StatCard icon={<Shield className="w-4 h-4" />} label="Trades Today" value="—" change="No data" positive />
-          <StatCard icon={<Zap className="w-4 h-4" />} label="Avg Speed" value="—" change="No data" positive />
-          <StatCard icon={<Activity className="w-4 h-4" />} label="Active Users" value="—" change="No data" positive />
+          <div className="inline-flex items-center gap-1 rounded-xl border border-gray-800/50 bg-gray-900/60 p-1">
+            <button onClick={() => setDashboardTab('market')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dashboardTab === 'market' ? 'bg-brand-500/20 text-brand-300' : 'text-gray-400 hover:text-white'}`}>Market</button>
+            <button onClick={() => setDashboardTab('analytics')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dashboardTab === 'analytics' ? 'bg-brand-500/20 text-brand-300' : 'text-gray-400 hover:text-white'}`}>Analytics & fees</button>
+          </div>
+          {dashboardTab === 'market' ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard icon={<Activity className="w-4 h-4" />} label="24h Volume" value={selectedToken ? formatUsd(selectedToken.volume24h) : '—'} change={selectedToken ? 'Live market data' : 'Scan a token'} positive />
+              <StatCard icon={<Shield className="w-4 h-4" />} label="Liquidity" value={selectedToken ? formatUsd(selectedToken.liquidity) : '—'} change={selectedToken ? 'Selected pool' : 'Scan a token'} positive />
+              <StatCard icon={<Zap className="w-4 h-4" />} label="Market Cap / FDV" value={selectedToken ? formatUsd(selectedToken.fdv) : '—'} change={selectedToken ? 'Live market data' : 'Scan a token'} positive />
+              <StatCard icon={<Activity className="w-4 h-4" />} label="Token Price" value={selectedToken ? formatUsd(selectedToken.priceUsd) : '—'} change={selectedToken ? `${selectedToken.change24h >= 0 ? '+' : ''}${selectedToken.change24h.toFixed(2)}% 24h` : 'Scan a token'} positive={selectedToken ? selectedToken.change24h >= 0 : true} />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard icon={<Activity className="w-4 h-4" />} label="Trades Today" value="—" change="No completed trades" positive />
+              <StatCard icon={<Shield className="w-4 h-4" />} label="Active Users" value="—" change="No analytics source" positive />
+              <StatCard icon={<DollarSign className="w-4 h-4" />} label="Platform Fees Collected" value="$0.00" change="No completed trades" positive />
+              <StatCard icon={<Zap className="w-4 h-4" />} label="Fee Policy" value="1% / 0.5%" change="Bridge / token swap" positive />
+            </div>
+          )}
         </motion.section>
 
         {/* Main trading area */}
