@@ -136,7 +136,10 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         phaseRef.current === 'pulling' ? minDim * 0.35 :
         phaseRef.current === 'consuming' ? minDim * 0.46 :
         minDim * 0.6;
-      const holeEase = phaseRef.current === 'forming' ? 0.28 : 0.08;
+      // Let the lens field keep pace with the pull, then ease into its final size.
+      const holeEase = phaseRef.current === 'forming' ? 0.28 :
+        phaseRef.current === 'pulling' ? 0.14 :
+        phaseRef.current === 'consuming' ? 0.11 : 0.08;
       holeSizeRef.current += (targetHoleSize - holeSizeRef.current) * holeEase;
       setHoleSize(holeSizeRef.current);
 
@@ -155,8 +158,8 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       // Gravity strength
       const gravity = phaseRef.current === 'logo' ? 0 :
         phaseRef.current === 'forming' ? 0.8 :
-        phaseRef.current === 'pulling' ? 2.0 :
-        phaseRef.current === 'consuming' ? 5.0 : 10.0;
+        phaseRef.current === 'pulling' ? 2.6 :
+        phaseRef.current === 'consuming' ? 7.2 : 10.0;
 
       // Clear
       ctx.clearRect(0, 0, w, h);
@@ -248,7 +251,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
 
       // Realistic black-hole pass: a thin, asymmetric hot disk around a dark core.
       if (phaseRef.current !== 'logo') {
-        const diskRotation = elapsed * 0.18;
+        const diskRotation = elapsed * 0.32;
         const radius = Math.max(2, holeSizeRef.current);
         const reveal = phaseRef.current === 'forming' ? 0.7 : 1;
 
