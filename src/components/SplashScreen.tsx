@@ -379,29 +379,9 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           {/* A single controlled halo assembles the mark before the black hole arrives. */}
           <div className="relative w-24 h-24 sm:w-32 sm:h-32">
             <motion.div
-              className="absolute inset-[-24px] rounded-full border border-brand-300/20"
-              initial={{ opacity: 0, scale: 0.72 }}
-              animate={{ opacity: [0, 0.5, 0.2], scale: [0.72, 1.08, 1] }}
-              transition={{ duration: 1.2, ease: 'easeOut' }}
-            />
-            <motion.div
-              className="absolute inset-[-12px] rounded-full border border-brand-300/45"
-              style={{ transform: 'rotateX(66deg)' }}
-              initial={{ opacity: 0, scale: 0.5, rotate: -28 }}
-              animate={{ opacity: [0, 0.9, 0.38], scale: [0.5, 1.08, 1], rotate: 332 }}
-              transition={{ duration: 1.05, delay: 0.12, ease: [0.16, 1, 0.3, 1] }}
-            />
-            <motion.div
-              className="absolute inset-[-12px] rounded-full border border-brand-400/25"
-              style={{ transform: 'rotateX(66deg) rotateY(54deg)' }}
-              initial={{ opacity: 0, scale: 0.5, rotate: 30 }}
-              animate={{ opacity: [0, 0.65, 0.22], scale: [0.5, 1.05, 1], rotate: -330 }}
-              transition={{ duration: 1.1, delay: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            />
-            <motion.div
-              className="absolute inset-0 rounded-full bg-brand-500/35 blur-2xl"
-              initial={{ opacity: 0, scale: 0.45 }}
-              animate={{ opacity: [0, 0.8, 0.5], scale: [0.45, 1.15, 1] }}
+              className="absolute inset-2 bg-brand-500/35 blur-3xl"
+              initial={{ opacity: 0, scale: 0.55 }}
+              animate={{ opacity: [0, 0.7, 0.4], scale: [0.55, 1.1, 1] }}
               transition={{ duration: 0.9, delay: 0.08, ease: 'easeOut' }}
             />
             <motion.div
