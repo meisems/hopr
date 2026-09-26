@@ -43,6 +43,7 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
   const logoOpacityRef = useRef(1);
   const logoRotationRef = useRef(0);
   const holeSizeRef = useRef(0);
+  const completionTimerRef = useRef<number | null>(null);
   const [shockwave, setShockwave] = useState(false);
 
   const createParticle = useCallback((w: number, h: number): Particle => {
@@ -74,8 +75,18 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
     let w = window.innerWidth;
     let h = window.innerHeight;
 
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const finishSafely = () => {
+      if (completionTimerRef.current !== null) return;
+      onExitStartRef.current();
+      completionTimerRef.current = window.setTimeout(() => {
+        completionTimerRef.current = null;
+        onExitCompleteRef.current();
+      }, 420);
+    };
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // A capped backing-store scale prevents 3x/4x-DPR phones from exhausting the GPU.
+      const dpr = prefersReducedMotion ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
       w = window.innerWidth;
       h = window.innerHeight;
       canvas.width = w * dpr;
@@ -89,13 +100,15 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
     window.addEventListener('resize', resize);
 
     // Initialize particles based on screen size
-    const particleCount = Math.min(320, Math.max(150, Math.floor((w * h) / 4800)));
+    const particleCount = prefersReducedMotion
+      ? 72
+      : Math.min(220, Math.max(110, Math.floor((w * h) / 7200)));
     particlesRef.current = Array.from({ length: particleCount }, () =>
       createParticle(w, h)
     );
 
     // Pre-generate static star positions
-    const stars = Array.from({ length: 260 }, () => ({
+    const stars = Array.from({ length: prefersReducedMotion ? 100 : 190 }, () => ({
       x: Math.random() * w,
       y: Math.random() * h,
       size: Math.random() < 0.92 ? Math.random() * 1.1 + 0.2 : Math.random() * 2 + 1,
@@ -121,7 +134,7 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
     };
 
     // Orbiting "charge" ring shown while the mark is forming
-    const chargeDots = Array.from({ length: 22 }, (_, i) => ({
+    const chargeDots = Array.from({ length: prefersReducedMotion ? 12 : 18 }, (_, i) => ({
       offset: (i / 14) * Math.PI * 2,
       radiusJitter: Math.random() * 0.15 + 0.9,
     }));
@@ -149,8 +162,7 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
       }
       if (elapsed > 3.15 && phaseRef.current === 'consuming') {
         phaseRef.current = 'gone';
-        onExitStartRef.current();
-        window.setTimeout(() => onExitCompleteRef.current(), 420);
+        finishSafely();
         cancelAnimationFrame(animationRef.current);
         return;
       }
@@ -208,37 +220,49 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
       const einsteinRadius = Math.max(1, holeSizeRef.current * 1.1);
       const shadowCx = cx + holeSizeRef.current * 0.045 * spin * Math.sin(inclination);
       const shadowCy = cy;
-      stars.forEach((star) => {
-        const dx = star.x - shadowCx;
-        const dy = star.y - shadowCy;
-        const betaPixels = Math.sqrt(dx * dx + dy * dy);
-        const beta = betaPixels / einsteinRadius;
-        const root = Math.sqrt(beta * beta + 4);
-        const primaryRadius = einsteinRadius * (beta + root) * 0.5;
-        const secondaryRadius = einsteinRadius * (root - beta) * 0.5;
-        const magnification = Math.min(3.2, 0.5 + (beta * beta + 2) / (2 * Math.max(beta, 0.06) * root));
-        const angle = betaPixels > 0 ? Math.atan2(dy, dx) : 0;
-        const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
-        const primaryX = shadowCx + Math.cos(angle) * primaryRadius;
-        const primaryY = shadowCy + Math.sin(angle) * primaryRadius;
-        const blendedX = star.x + (primaryX - star.x) * lensMix;
-        const blendedY = star.y + (primaryY - star.y) * lensMix;
-        const blendedRadius = Math.sqrt((blendedX - shadowCx) ** 2 + (blendedY - shadowCy) ** 2);
-        const blendedAngle = Math.atan2(blendedY - shadowCy, blendedX - shadowCx);
-        drawLensedImage(star, shadowCx, shadowCy, blendedRadius, blendedAngle, twinkle * (1 - lensMix * 0.18) * Math.sqrt(magnification), 1 + lensMix * (Math.sqrt(magnification) - 1));
+      if (lensMix < 0.01) {
+        // Before the hole forms, keep the background as a cheap twinkling star field.
+        stars.forEach((star) => {
+          const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+          ctx.fillStyle = star.warmth > 0.82
+            ? `rgba(255, 225, 180, ${Math.max(0.04, twinkle)})`
+            : `rgba(218, 242, 255, ${Math.max(0.04, twinkle)})`;
+          ctx.fill();
+        });
+      } else {
+        // Bend background light into the characteristic paired images around the shadow.
+        stars.forEach((star) => {
+          const dx = star.x - shadowCx;
+          const dy = star.y - shadowCy;
+          const betaPixels = Math.sqrt(dx * dx + dy * dy);
+          const beta = betaPixels / einsteinRadius;
+          const root = Math.sqrt(beta * beta + 4);
+          const primaryRadius = einsteinRadius * (beta + root) * 0.5;
+          const secondaryRadius = einsteinRadius * (root - beta) * 0.5;
+          const magnification = Math.min(3.2, 0.5 + (beta * beta + 2) / (2 * Math.max(beta, 0.06) * root));
+          const angle = betaPixels > 0 ? Math.atan2(dy, dx) : 0;
+          const twinkle = 0.28 + Math.sin(elapsed * (1.4 + star.warmth * 2) + star.twinkle) * 0.24;
+          const primaryX = shadowCx + Math.cos(angle) * primaryRadius;
+          const primaryY = shadowCy + Math.sin(angle) * primaryRadius;
+          const blendedX = star.x + (primaryX - star.x) * lensMix;
+          const blendedY = star.y + (primaryY - star.y) * lensMix;
+          const blendedRadius = Math.sqrt((blendedX - shadowCx) ** 2 + (blendedY - shadowCy) ** 2);
+          const blendedAngle = Math.atan2(blendedY - shadowCy, blendedX - shadowCx);
+          drawLensedImage(star, shadowCx, shadowCy, blendedRadius, blendedAngle, twinkle * (1 - lensMix * 0.18) * Math.sqrt(magnification), 1 + lensMix * (Math.sqrt(magnification) - 1));
 
-        // The fainter, mirrored image makes close alignments resolve into luminous arcs.
-        if (beta < 3.6 && lensMix > 0.04) {
-          const secondaryMagnification = Math.max(0, magnification - 1);
-          drawLensedImage(star, shadowCx, shadowCy, secondaryRadius, angle + Math.PI, twinkle * lensMix * Math.min(0.42, secondaryMagnification * 0.2), 0.8 + Math.sqrt(secondaryMagnification) * 0.2);
-        }
-      });
-
+          if (beta < 3.6 && lensMix > 0.04) {
+            const secondaryMagnification = Math.max(0, magnification - 1);
+            drawLensedImage(star, shadowCx, shadowCy, secondaryRadius, angle + Math.PI, twinkle * lensMix * Math.min(0.42, secondaryMagnification * 0.2), 0.8 + Math.sqrt(secondaryMagnification) * 0.2);
+          }
+        });
+      }
       // Update and draw particles
       particlesRef.current.forEach((particle) => {
         // Trail
         particle.trail.push({ x: particle.x, y: particle.y });
-        if (particle.trail.length > 10) particle.trail.shift();
+        if (particle.trail.length > (prefersReducedMotion ? 3 : 7)) particle.trail.shift();
 
         // Gravity toward center
         const dx = cx - particle.x;
@@ -442,9 +466,21 @@ export default function SplashScreen({ isExiting, onExitStart, onExitComplete, s
 
     animate(previousFrameTime);
 
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      cancelAnimationFrame(animationRef.current);
+      finishSafely();
+    };
+    canvas.addEventListener('contextlost', handleContextLost);
+
     return () => {
       window.removeEventListener('resize', resize);
+      canvas.removeEventListener('contextlost', handleContextLost);
       cancelAnimationFrame(animationRef.current);
+      if (completionTimerRef.current !== null) {
+        window.clearTimeout(completionTimerRef.current);
+        completionTimerRef.current = null;
+      }
     };
   }, [createParticle]);
 
