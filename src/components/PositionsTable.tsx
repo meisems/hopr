@@ -58,18 +58,18 @@ export default function PositionsTable() {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full">
+      <div className="overflow-x-auto -mx-4 sm:mx-0">
+        <table className="w-full min-w-[800px]">
           <thead>
             <tr className="text-xs text-gray-500 border-b border-gray-800/30">
-              <th className="text-left px-4 py-3 font-medium">Token</th>
-              <th className="text-left px-4 py-3 font-medium">Chain</th>
-              <th className="text-right px-4 py-3 font-medium">Holdings</th>
-              <th className="text-right px-4 py-3 font-medium">Value</th>
-              <th className="text-right px-4 py-3 font-medium">Avg Buy</th>
-              <th className="text-right px-4 py-3 font-medium">PnL</th>
-              <th className="text-right px-4 py-3 font-medium">Funded Via</th>
-              <th className="text-right px-4 py-3 font-medium">Action</th>
+              <th className="text-left px-4 py-3 font-medium whitespace-nowrap">Token</th>
+              <th className="text-left px-4 py-3 font-medium whitespace-nowrap">Chain</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap">Holdings</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap">Value</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap hidden sm:table-cell">Avg Buy</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap">PnL</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap hidden md:table-cell">Funded Via</th>
+              <th className="text-right px-4 py-3 font-medium whitespace-nowrap">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -103,7 +103,7 @@ export default function PositionsTable() {
                   <td className="px-4 py-3 text-right">
                     <div className="text-sm text-white">{formatUsd(position.amount * position.currentPrice)}</div>
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right hidden sm:table-cell">
                     <div className="text-sm text-gray-300">{formatUsd(position.avgBuyPrice)}</div>
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -115,7 +115,7 @@ export default function PositionsTable() {
                       {position.pnlUsd >= 0 ? '+' : ''}{formatUsd(position.pnlUsd)}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right hidden md:table-cell">
                     <div className="flex items-center justify-end gap-1 text-xs text-gray-400">
                       <span>{position.fundingChain}</span>
                       <ArrowRight className="w-3 h-3" />
