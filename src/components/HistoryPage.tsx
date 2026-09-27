@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { ArrowLeft, Clock, CheckCircle2, XCircle, Loader2, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { mockTradeHistory } from '../data/mockData';
-import { formatAddress, formatUsd } from '../services/chainDetector';
+import { formatAddress, formatNumber, formatUsd } from '../services/chainDetector';
 import ThemeToggle from './ThemeToggle';
 
 interface HistoryPageProps {
@@ -151,7 +151,7 @@ export default function HistoryPage({ onBack }: HistoryPageProps) {
                           <div className="text-xs text-gray-500 font-mono">{formatAddress(t.token)}</div>
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-300">{t.chain}</td>
-                        <td className="px-4 py-3 text-right text-sm text-white">{t.amount}</td>
+                        <td className="px-4 py-3 text-right text-sm text-white">{formatNumber(t.amount)}</td>
                         <td className="px-4 py-3 text-right text-sm text-gray-300 hidden sm:table-cell">{formatUsd(t.price)}</td>
                         <td className="px-4 py-3 text-right">
                           <span className={`inline-flex items-center gap-1 text-xs font-medium ${status.className}`}>
@@ -191,7 +191,7 @@ export default function HistoryPage({ onBack }: HistoryPageProps) {
                   </div>
                   <span className={`inline-flex items-center gap-1 text-xs font-medium ${status.className}`}><StatusIcon className={`w-3.5 h-3.5 ${t.status === 'PENDING' ? 'animate-spin' : ''}`} />{t.status}</span>
                 </div>
-                <div className="grid grid-cols-2 gap-3 text-xs"><div><div className="text-gray-500">Chain</div><div className="text-gray-300 mt-0.5">{t.chain}</div></div><div><div className="text-gray-500">Amount</div><div className="text-white mt-0.5">{t.amount}</div></div><div><div className="text-gray-500">Price</div><div className="text-gray-300 mt-0.5">{formatUsd(t.price)}</div></div><div><div className="text-gray-500">When</div><div className="text-gray-300 mt-0.5">{timeAgo(t.timestamp)}</div></div></div>
+                <div className="grid grid-cols-2 gap-3 text-xs"><div><div className="text-gray-500">Chain</div><div className="text-gray-300 mt-0.5">{t.chain}</div></div><div><div className="text-gray-500">Amount</div><div className="text-white mt-0.5">{formatNumber(t.amount)}</div></div><div><div className="text-gray-500">Price</div><div className="text-gray-300 mt-0.5">{formatUsd(t.price)}</div></div><div><div className="text-gray-500">When</div><div className="text-gray-300 mt-0.5">{timeAgo(t.timestamp)}</div></div></div>
                 <a href="#" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 font-mono break-all">{t.txHash} <ExternalLink className="w-3 h-3 shrink-0" /></a>
               </div>
             );

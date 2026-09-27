@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Wallet, ChevronDown, ChevronUp, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { mockWalletBalances } from '../data/mockData';
-import { formatUsd } from '../services/chainDetector';
+import { formatNumber, formatUsd } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useWallet } from '../context/WalletContext';
@@ -115,12 +115,12 @@ export default function WalletPanel() {
                         <ChainLogo chainKey={chainKey} size={24} />
                         <div>
                           <div className="text-xs font-medium text-white">{balance.chainName}</div>
-                          <div className="text-xs text-gray-500">{balance.balance.toFixed(4)} {balance.nativeSymbol}</div>
+                          <div className="text-xs text-gray-500">{formatNumber(balance.balance)} {balance.nativeSymbol}</div>
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="text-xs font-medium text-white">{formatUsd(balance.usdValue)}</div>
-                        <div className="text-xs text-gray-500">{totalBalance > 0 ? ((balance.usdValue / totalBalance) * 100).toFixed(1) : '0.0'}%</div>
+                        <div className="text-xs text-gray-500">{formatNumber(totalBalance > 0 ? (balance.usdValue / totalBalance) * 100 : 0)}%</div>
                       </div>
                     </div>
                   );

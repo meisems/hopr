@@ -286,14 +286,6 @@ export function formatAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-export function formatUsd(value: number): string {
-  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
-  if (value >= 1e3) return `$${(value / 1e3).toFixed(2)}K`;
-  if (value >= 1) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(8)}`;
-}
-
 const SUPERSCRIPT_DIGITS: Record<string, string> = {
   '-': '⁻',
   '0': '⁰',
@@ -312,12 +304,28 @@ function toSuperscript(value: number): string {
   return String(value).split('').map((digit) => SUPERSCRIPT_DIGITS[digit] ?? digit).join('');
 }
 
+/** Format a displayed numeric value to two decimals, compacting large values. */
+export function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  if (value === 0) return '0.00';
+
+  const absolute = Math.abs(value);
+  if (absolute >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (absolute >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (absolute >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+  if (absolute >= 0.01) return value.toFixed(2);
+
+  const exponent = Math.floor(Math.log10(absolute));
+  const coefficient = value / (10 ** exponent);
+  return `${coefficient.toFixed(2)} × 10${toSuperscript(exponent)}`;
+}
+
+export function formatUsd(value: number): string {
+  const formatted = formatNumber(value);
+  return formatted === '—' ? formatted : `$${formatted}`;
+}
+
 /** Format token prices with two decimals, preserving tiny prices with ×10ⁿ notation. */
 export function formatTokenPrice(value: number): string {
-  if (!Number.isFinite(value) || value === 0) return '$0.00';
-  if (Math.abs(value) >= 0.01) return `$${value.toFixed(2)}`;
-
-  const exponent = Math.floor(Math.log10(Math.abs(value)));
-  const coefficient = value / (10 ** exponent);
-  return `$${coefficient.toFixed(2)} × 10${toSuperscript(exponent)}`;
+  return formatUsd(value);
 }

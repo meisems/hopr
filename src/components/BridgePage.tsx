@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowDown, Zap, Clock, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { SUPPORTED_CHAINS } from '../services/chainDetector';
+import { formatNumber, formatUsd, SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
 import ChainLogo from './ChainLogo';
 import ThemeToggle from './ThemeToggle';
@@ -24,7 +24,7 @@ function formatTokenAmount(raw: string | undefined, decimals: number) {
   if (!raw) return '—';
   try {
     const value = Number(raw) / (10 ** decimals);
-    return Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 8 }) : '—';
+    return Number.isFinite(value) ? formatNumber(value) : '—';
   } catch {
     return '—';
   }
@@ -134,7 +134,7 @@ export default function BridgePage({ onBack }: BridgePageProps) {
           <div className="bg-gray-800/30 rounded-xl border border-gray-800/40 p-3 space-y-2">
             <div className="flex items-center justify-between text-xs text-gray-500">
               <span>From</span>
-              {fromBalance && <span>Balance: {fromBalance.balance.toLocaleString()} {fromBalance.nativeSymbol}</span>}
+              {fromBalance && <span>Balance: {formatNumber(fromBalance.balance)} {fromBalance.nativeSymbol}</span>}
             </div>
             <div className="flex items-center gap-2">
               <select
@@ -203,7 +203,7 @@ export default function BridgePage({ onBack }: BridgePageProps) {
           <div className="space-y-1.5 text-xs text-gray-400 border-t border-gray-800/40 pt-3">
             <div className="flex justify-between gap-3"><span>Minimum received</span><span className="text-gray-300">{minimumAmount} {toChain.nativeSymbol}</span></div>
             <div className="flex justify-between items-center"><span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Estimated time</span><span className="text-gray-300">{executionTime}</span></div>
-            <div className="flex justify-between"><span>Estimated gas</span><span className="text-gray-300">{gasCost > 0 ? `$${gasCost.toFixed(4)}` : 'Included in route'}</span></div>
+            <div className="flex justify-between"><span>Estimated gas</span><span className="text-gray-300">{gasCost > 0 ? formatUsd(gasCost) : 'Included in route'}</span></div>
             <div className="flex justify-between"><span>Hopr bridge fee</span><span className="text-gray-300">1% included</span></div>
           </div>
 

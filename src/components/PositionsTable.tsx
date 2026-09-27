@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowRight, TrendingUp, TrendingDown, Loader2, CheckCircle2, ExternalLink } from 'lucide-react';
 import { mockPositions } from '../data/mockData';
-import { formatUsd, formatAddress } from '../services/chainDetector';
+import { formatNumber, formatUsd, formatAddress } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -100,7 +100,7 @@ export default function PositionsTable() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <div className="text-sm text-white">{position.amount.toLocaleString()}</div>
+                    <div className="text-sm text-white">{formatNumber(position.amount)}</div>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="text-sm text-white">{formatUsd(position.amount * position.currentPrice)}</div>
@@ -111,7 +111,7 @@ export default function PositionsTable() {
                   <td className="px-4 py-3 text-right">
                     <div className={`text-sm font-medium flex items-center justify-end gap-1 ${position.pnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {position.pnlPercent >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                      {position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%
+                      {position.pnlPercent >= 0 ? '+' : ''}{formatNumber(position.pnlPercent)}%
                     </div>
                     <div className={`text-xs ${position.pnlUsd >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
                       {position.pnlUsd >= 0 ? '+' : ''}{formatUsd(position.pnlUsd)}
@@ -166,10 +166,10 @@ export default function PositionsTable() {
               <span className="text-xs px-2 py-0.5 rounded-full shrink-0" style={{ backgroundColor: position.token.chainColor + '22', color: position.token.chainColor }}>{position.token.chainName}</span>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
-              <div><div className="text-gray-500">Holdings</div><div className="text-sm text-white mt-0.5">{position.amount.toLocaleString()}</div></div>
+              <div><div className="text-gray-500">Holdings</div><div className="text-sm text-white mt-0.5">{formatNumber(position.amount)}</div></div>
               <div><div className="text-gray-500">Value</div><div className="text-sm text-white mt-0.5">{formatUsd(position.amount * position.currentPrice)}</div></div>
               <div><div className="text-gray-500">Avg Buy</div><div className="text-sm text-gray-300 mt-0.5">{formatUsd(position.avgBuyPrice)}</div></div>
-              <div><div className="text-gray-500">PnL</div><div className={`text-sm mt-0.5 ${position.pnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>{position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%</div></div>
+              <div><div className="text-gray-500">PnL</div><div className={`text-sm mt-0.5 ${position.pnlPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>{position.pnlPercent >= 0 ? '+' : ''}{formatNumber(position.pnlPercent)}%</div></div>
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-gray-500">{position.fundingChain} → {position.fundingSymbol}</span>

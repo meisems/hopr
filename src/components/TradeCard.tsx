@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowDownUp, Settings, AlertTriangle, Rocket, TrendingDown, Pencil, XCircle, BarChart3, Loader2, CheckCircle2 } from 'lucide-react';
-import { DetectedToken, formatUsd, SUPPORTED_CHAINS } from '../services/chainDetector';
+import { DetectedToken, formatNumber, formatUsd, SUPPORTED_CHAINS } from '../services/chainDetector';
 import { mockWalletBalances } from '../data/mockData';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -287,12 +287,12 @@ export default function TradeCard({ token }: TradeCardProps) {
                 <div>
                   <div className="text-xs text-gray-500">You Pay</div>
                   <div className="text-lg font-semibold text-white mt-0.5">
-                    {amount || '0.0'} {fundingChain.nativeSymbol}
+                    {amount ? formatNumber(parseFloat(amount)) : '0.00'} {fundingChain.nativeSymbol}
                   </div>
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-gray-500">Balance</div>
-                  <div className="text-sm text-gray-300">{userBalance ? `${userBalance.balance.toFixed(4)} ${fundingChain.nativeSymbol}` : 'Not connected'}</div>
+                  <div className="text-sm text-gray-300">{userBalance ? `${formatNumber(userBalance.balance)} ${fundingChain.nativeSymbol}` : 'Not connected'}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-2">
@@ -303,7 +303,7 @@ export default function TradeCard({ token }: TradeCardProps) {
                   />
                 </div>
                 <span className="text-xs text-gray-500">
-                  {userBalance ? `≈ $${(parseFloat(amount || '0') * (userBalance.usdValue / userBalance.balance)).toFixed(2)}` : '$0.00'}
+                  {userBalance ? `≈ ${formatUsd(parseFloat(amount || '0') * (userBalance.usdValue / userBalance.balance))}` : '$0.00'}
                 </span>
               </div>
             </div>
@@ -331,7 +331,7 @@ export default function TradeCard({ token }: TradeCardProps) {
                 </div>
               </div>
               <div className="text-xs text-gray-500 mt-1">
-                ≈ {amount ? (parseFloat(amount) * 100 / token.priceUsd).toLocaleString() : '0'} {token.symbol}
+                ≈ {amount ? formatNumber(parseFloat(amount) * 100 / token.priceUsd) : '0.00'} {token.symbol}
               </div>
             </div>
 
@@ -413,7 +413,7 @@ export default function TradeCard({ token }: TradeCardProps) {
           </div>
           <div className="flex items-center justify-between text-xs text-gray-500 mt-1">
             <span>Slippage</span>
-            <span>{slippage}%</span>
+            <span>{formatNumber(slippage)}%</span>
           </div>
           <div className="flex items-center justify-between text-xs text-gray-500 mt-1">
             <span>Execution</span>
