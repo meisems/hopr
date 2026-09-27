@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Copy, KeyRound, Plus, Shield, Trash2, Wallet as WalletIcon } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
-import { useWallet } from '../context/WalletContext';
 import { apiUrl } from '../services/api';
 
 type VaultWallet = { id: string; label: string; source: string; evmAddress: string; solanaAddress: string; isActive: boolean; createdAt: string };
@@ -10,7 +9,6 @@ interface WalletsPageProps { onBack: () => void; }
 function short(address: string | null) { return address ? `${address.slice(0, 8)}…${address.slice(-6)}` : 'Not available'; }
 
 export default function WalletsPage({ onBack }: WalletsPageProps) {
-  const { telegramUser } = useWallet();
   const [wallets, setWallets] = useState<VaultWallet[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -46,7 +44,7 @@ export default function WalletsPage({ onBack }: WalletsPageProps) {
   const remove = async () => { setBusy(true); try { await call('/api/telegram/wallet/delete', { walletId: deleteWallet?.id, confirmation, backupConfirmed: deleteChecks[0], acknowledgeIrreversible: deleteChecks[1] }); setWallets((current) => current.filter((wallet) => wallet.id !== deleteWallet?.id)); setDeleteWallet(null); setConfirmation(''); setMessage('Wallet permanently deleted. It cannot be recovered without a backup.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to delete wallet.'); } finally { setBusy(false); } };
   const copy = (value: string) => { void navigator.clipboard.writeText(value); setMessage('Copied. Clear your clipboard after securing the key.'); };
 
-  if (!telegramUser || !initData) return <div className="min-h-screen bg-[#0a0b0f] text-white"><header className="border-b border-gray-800/50"><div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between"><button onClick={onBack} className="text-sm text-gray-400 hover:text-white">← Back</button><ThemeToggle /></div></header><main className="max-w-2xl mx-auto px-4 py-16 text-center"><Shield className="mx-auto h-12 w-12 text-brand-300" /><h1 className="mt-4 text-2xl font-bold">Wallet Vault is Telegram-secured</h1><p className="mt-2 text-sm text-gray-400">Open this page from the Hopr Telegram Mini App so your wallet actions can be authenticated securely.</p></main></div>;
+  if (!initData) return <div className="min-h-screen bg-[#0a0b0f] text-white"><header className="border-b border-gray-800/50"><div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between"><button onClick={onBack} className="text-sm text-gray-400 hover:text-white">← Back</button><ThemeToggle /></div></header><main className="max-w-2xl mx-auto px-4 py-16 text-center"><Shield className="mx-auto h-12 w-12 text-brand-300" /><h1 className="mt-4 text-2xl font-bold">Wallet Vault is Telegram-secured</h1><p className="mt-2 text-sm text-gray-400">Open this page from the Hopr Telegram Mini App so your wallet actions can be authenticated securely.</p></main></div>;
 
   return <div className="min-h-screen bg-[#0a0b0f] text-white"><header className="sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/85 backdrop-blur-xl"><div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between"><button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white"><ArrowLeft className="h-4 w-4" />Back</button><div className="flex items-center gap-3"><h1 className="font-semibold">Wallet Vault</h1><ThemeToggle /></div></div></header><main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6"><section className="rounded-2xl border border-brand-400/20 bg-gradient-to-br from-brand-500/15 via-gray-900/70 to-purple-500/10 p-6"><div className="flex gap-4"><div className="rounded-2xl bg-brand-400/15 p-3 h-fit"><Shield className="h-7 w-7 text-brand-200" /></div><div><p className="text-xs uppercase tracking-[0.24em] text-brand-300">Private key custody</p><h2 className="mt-2 text-2xl font-bold">Your wallets, your decision</h2><p className="mt-2 text-sm leading-relaxed text-gray-400">Hopr stores encrypted keys. Choose an active wallet for trading, keep backups offline, and never reveal a private key on a shared or compromised device.</p></div></div></section>
       {message && <div className="rounded-xl border border-brand-400/20 bg-brand-500/10 px-4 py-3 text-sm text-brand-100">{message}</div>}
