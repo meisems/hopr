@@ -14,6 +14,7 @@ const ChainLogo = memo(({ chainKey, size = 24, className = '' }: ChainLogoProps)
     arb: '/brand/chains/arbitrum.svg',
     bsc: '/brand/chains/bsc.svg',
     rhc: '/brand/chains/rhc.svg',
+    arc: '/brand/chains/arc.jpg',
   }[chainKey];
 
   if (officialAsset) {

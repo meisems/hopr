@@ -168,7 +168,7 @@ export default function SearchBar({ onTokenDetected }: SearchBarProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-white">{detected.symbol}</span>
+                    <span className="font-semibold text-white">{detected.symbol !== 'UNKNOWN' ? detected.symbol : detected.name}</span>
                     <span className="text-gray-400 text-sm truncate">{detected.name}</span>
                   </div>
                   <div className="flex items-center gap-2 sm:gap-3 mt-1 flex-wrap">
