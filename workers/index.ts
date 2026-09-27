@@ -1103,6 +1103,7 @@ async function handleApiRequest(
   }
   if (path === '/api/telegram/wallets' && request.method === 'POST') return handleTelegramWalletList(request, env, corsHeaders);
   if (path === '/api/telegram/wallet/import' && request.method === 'POST') return handleTelegramWalletImport(request, env, corsHeaders);
+  if (path === '/api/telegram/wallet/rename' && request.method === 'POST') return handleTelegramWalletRename(request, env, corsHeaders);
   if (path === '/api/telegram/wallet/active' && request.method === 'POST') return handleTelegramWalletActive(request, env, corsHeaders);
   if (path === '/api/telegram/wallet/reveal' && request.method === 'POST') return handleTelegramWalletReveal(request, env, corsHeaders);
   if (path === '/api/telegram/wallet/delete' && request.method === 'POST') return handleTelegramWalletDelete(request, env, corsHeaders);
@@ -1210,7 +1211,7 @@ async function handleTelegramWalletCreate(request: Request, env: Env, corsHeader
   if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
   const body = auth.body as { label?: string };
   const generated = generateDualWallet();
-  const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || 'Primary wallet', 'generated', env);
+  const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || '', 'generated', env);
   return Response.json({ wallet: publicWallet(wallet), created: true }, { headers: corsHeaders });
 }
 
@@ -1238,9 +1239,19 @@ async function storeWalletAccount(userId: string, wallet: { evmAddress: string |
   const id = crypto.randomUUID();
   const evmEncrypted = wallet.evmPrivateKey ? packEncryptedSecret(await encryptPrivateKey(wallet.evmPrivateKey, env.ENCRYPTION_KEY)) : null;
   const solanaEncrypted = wallet.solanaPrivateKey ? packEncryptedSecret(await encryptPrivateKey(wallet.solanaPrivateKey, env.ENCRYPTION_KEY)) : null;
+  const finalLabel = label.trim() || await nextWalletLabel(userId, env);
   await env.DB.prepare(`UPDATE wallet_accounts SET is_active = 0 WHERE user_id = ?1`).bind(userId).run();
-  await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)`).bind(id, userId, label.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted).run();
+  await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)`).bind(id, userId, finalLabel.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted).run();
   return (await env.DB.prepare(`SELECT * FROM wallet_accounts WHERE id = ?1`).bind(id).first<WalletAccountRow>())!;
+}
+
+async function nextWalletLabel(userId: string, env: Env): Promise<string> {
+  const rows = await env.DB!.prepare(`SELECT label FROM wallet_accounts WHERE user_id = ?1`).bind(userId).all<{ label: string }>();
+  const highest = (rows.results ?? []).reduce((max, row) => {
+    const match = /^W(\d+)$/i.exec(row.label.trim());
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `W${highest + 1}`;
 }
 
 async function walletAuth(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<{ auth: { user: { id: number }; body: Record<string, unknown> } } | Response> {
@@ -1278,6 +1289,15 @@ async function handleTelegramWalletActive(request: Request, env: Env, corsHeader
   if (!walletId) return Response.json({ error: 'walletId is required.' }, { status: 400, headers: corsHeaders });
   await env.DB!.prepare(`UPDATE wallet_accounts SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END WHERE user_id = ?2`).bind(walletId, String(checked.auth.user.id)).run();
   return Response.json({ ok: true }, { headers: corsHeaders });
+}
+
+async function handleTelegramWalletRename(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const walletId = typeof checked.auth.body.walletId === 'string' ? checked.auth.body.walletId : '';
+  const label = typeof checked.auth.body.label === 'string' ? checked.auth.body.label.trim().slice(0, 80) : '';
+  if (!walletId || !label) return Response.json({ error: 'A wallet and non-empty label are required.' }, { status: 400, headers: corsHeaders });
+  const result = await env.DB!.prepare(`UPDATE wallet_accounts SET label = ?1 WHERE id = ?2 AND user_id = ?3`).bind(label, walletId, String(checked.auth.user.id)).run();
+  return Response.json({ renamed: (result.meta?.changes ?? 0) > 0, label }, { headers: corsHeaders });
 }
 
 async function handleTelegramWalletReveal(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {

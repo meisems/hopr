@@ -83,7 +83,7 @@ export async function createCustodialWallet(userId: string, env: TradingEnv): Pr
     await env.DB.prepare(
       `INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active)
        VALUES (?1, ?2, ?3, 'generated', ?4, ?5, ?6, ?7, 1)`
-    ).bind(crypto.randomUUID(), userId, 'Primary wallet', wallet.evmAddress, packedEvm, wallet.solanaAddress, packedSolana).run();
+    ).bind(crypto.randomUUID(), userId, 'W1', wallet.evmAddress, packedEvm, wallet.solanaAddress, packedSolana).run();
   } catch {
     // Backward-compatible deployment path before 0003_multi_wallets.sql is applied.
   }

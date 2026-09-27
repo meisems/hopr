@@ -20,6 +20,6 @@ INSERT OR IGNORE INTO wallet_accounts (
   id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active, created_at
 )
 SELECT
-  'legacy:' || user_id, user_id, 'Primary wallet', 'generated', evm_address, evm_encrypted_key,
+  'legacy:' || user_id, user_id, 'W1', 'generated', evm_address, evm_encrypted_key,
   solana_address, solana_encrypted_key, 1, created_at
 FROM user_wallets;
