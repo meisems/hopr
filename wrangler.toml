@@ -1,12 +1,24 @@
 name = "hopr"
 compatibility_date = "2024-01-01"
 main = "workers/index.ts"
-
-[site]
-bucket = "./dist"
-
 [env.production]
 route = "hopr-432.pages.dev/*"
+[env.production.vars]
+ENVIRONMENT = "production"
+TELEGRAM_MINI_APP_URL = "https://hopr-432.pages.dev/"
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "hopr-db"
+database_id = "2367cac7-781c-4b93-bb93-7743e1a03026"
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "973df0713fc746baa0ca71e63da25a4d"
+[[env.production.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "c75340fc9e934d20bdf8437e4725541b"
+[[env.production.kv_namespaces]]
+binding = "TELEGRAM_STATE"
+id = "c75340fc9e934d20bdf8437e4725541b"
 
 [env.staging]
 route = "staging.hopr.pages.dev/*"
