@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Settings, Zap, Shield, Activity, Menu, X, Github, MessageCircle, Search, Rocket, BarChart3, RefreshCw, ArrowRightLeft, Coins, BookOpen, Wallet, DollarSign } from 'lucide-react';
+import { Settings, Shield, Menu, X, Github, MessageCircle, Search, BarChart3, BookOpen, Wallet } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import TradeCard from './components/TradeCard';
 import PositionsTable from './components/PositionsTable';
@@ -10,7 +10,7 @@ import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
 import { WalletProvider } from './context/WalletContext';
-import { DetectedToken, formatUsd } from './services/chainDetector';
+import { DetectedToken } from './services/chainDetector';
 
 const SplashScreen = lazy(() => import('./components/SplashScreen'));
 const ChartPanel = lazy(() => import('./components/ChartPanel'));
@@ -19,10 +19,11 @@ const DocsPage = lazy(() => import('./components/DocsPage'));
 const PositionsPage = lazy(() => import('./components/PositionsPage'));
 const HistoryPage = lazy(() => import('./components/HistoryPage'));
 const BridgePage = lazy(() => import('./components/BridgePage'));
+const AnalyticsPage = lazy(() => import('./components/AnalyticsPage'));
 
-type Page = 'dashboard' | 'positions' | 'history' | 'bridge' | 'docs';
-const PAGE_PATHS: Record<Page, string> = { dashboard: '/', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs' };
-const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation' };
+type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs';
+const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs' };
+const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation' };
 
 function pageFromPath(pathname: string): Page {
   const match = (Object.entries(PAGE_PATHS) as [Page, string][]).find(([, path]) => path === pathname);
@@ -70,7 +71,6 @@ function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [splashRun, setSplashRun] = useState(0);
-  const [dashboardTab, setDashboardTab] = useState<'market' | 'analytics'>('market');
 
   useEffect(() => {
     document.title = `${PAGE_TITLES[currentPage]} · Hopr`;
@@ -111,6 +111,7 @@ function AppContent() {
   if (currentPage === 'positions') return <Suspense fallback={<PageLoading />}><PositionsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
   if (currentPage === 'history') return <Suspense fallback={<PageLoading />}><HistoryPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
   if (currentPage === 'bridge') return <Suspense fallback={<PageLoading />}><BridgePage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
+  if (currentPage === 'analytics') return <Suspense fallback={<PageLoading />}><AnalyticsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
 
   return (
     <>
@@ -145,6 +146,7 @@ function AppContent() {
             {/* Nav */}
             <nav className="hidden md:flex items-center gap-1">
               <button onClick={() => setCurrentPage('dashboard')} className="px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg font-medium">Dashboard</button>
+              <button onClick={() => setCurrentPage('analytics')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Analytics</button>
               <button onClick={() => setCurrentPage('positions')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Positions</button>
               <button onClick={() => setCurrentPage('history')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">History</button>
               <button onClick={() => setCurrentPage('bridge')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Bridge</button>
@@ -193,6 +195,7 @@ function AppContent() {
           >
             <div className="px-4 py-3 space-y-1">
               <button onClick={() => { setCurrentPage('dashboard'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-white bg-gray-800/50 rounded-lg">Dashboard</button>
+              <button onClick={() => { setCurrentPage('analytics'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Analytics</button>
               <button onClick={() => { setCurrentPage('positions'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Positions</button>
               <button onClick={() => { setCurrentPage('history'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">History</button>
               <button onClick={() => { setCurrentPage('bridge'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Bridge</button>
@@ -216,34 +219,6 @@ function AppContent() {
           transition={{ delay: 0.1 }}
         >
           <SearchBar onTokenDetected={setSelectedToken} />
-        </motion.section>
-
-        {/* Dashboard tabs and stats */}
-        <motion.section
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="space-y-3"
-        >
-          <div className="inline-flex items-center gap-1 rounded-xl border border-gray-800/50 bg-gray-900/60 p-1">
-            <button onClick={() => setDashboardTab('market')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dashboardTab === 'market' ? 'bg-brand-500/20 text-brand-300' : 'text-gray-400 hover:text-white'}`}>Market</button>
-            <button onClick={() => setDashboardTab('analytics')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dashboardTab === 'analytics' ? 'bg-brand-500/20 text-brand-300' : 'text-gray-400 hover:text-white'}`}>Analytics & fees</button>
-          </div>
-          {dashboardTab === 'market' ? (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard icon={<Activity className="w-4 h-4" />} label="24h Volume" value={selectedToken ? formatUsd(selectedToken.volume24h) : '—'} change={selectedToken ? 'Live market data' : 'Scan a token'} positive />
-              <StatCard icon={<Shield className="w-4 h-4" />} label="Liquidity" value={selectedToken ? formatUsd(selectedToken.liquidity) : '—'} change={selectedToken ? 'Selected pool' : 'Scan a token'} positive />
-              <StatCard icon={<Zap className="w-4 h-4" />} label="Market Cap / FDV" value={selectedToken ? formatUsd(selectedToken.fdv) : '—'} change={selectedToken ? 'Live market data' : 'Scan a token'} positive />
-              <StatCard icon={<Activity className="w-4 h-4" />} label="Token Price" value={selectedToken ? formatUsd(selectedToken.priceUsd) : '—'} change={selectedToken ? `${selectedToken.change24h >= 0 ? '+' : ''}${selectedToken.change24h.toFixed(2)}% 24h` : 'Scan a token'} positive={selectedToken ? selectedToken.change24h >= 0 : true} />
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard icon={<Activity className="w-4 h-4" />} label="Trades Today" value="—" change="No completed trades" positive />
-              <StatCard icon={<Shield className="w-4 h-4" />} label="Active Users" value="—" change="No analytics source" positive />
-              <StatCard icon={<DollarSign className="w-4 h-4" />} label="Platform Fees Collected" value="$0.00" change="No completed trades" positive />
-              <StatCard icon={<Zap className="w-4 h-4" />} label="Fee Policy" value="1% / 0.5%" change="Bridge / token swap" positive />
-            </div>
-          )}
         </motion.section>
 
         {/* Main trading area */}
@@ -288,7 +263,7 @@ function AppContent() {
             <div className="space-y-4">
               {[
                 { step: '1', title: 'Scan a Token', desc: 'Paste any supported EVM or Solana token address to resolve its chain and market data.', icon: Search },
-                { step: '2', title: 'Review the Market', desc: 'Inspect the live chart, liquidity, FDV, volume, and price movement without connecting a wallet.', icon: BarChart3 },
+                { step: '2', title: 'Review Token Data', desc: 'Inspect the live chart, liquidity, FDV, volume, and price movement without connecting a wallet.', icon: BarChart3 },
                 { step: '3', title: 'Connect Only to Buy', desc: 'Connect an EVM wallet only when you are ready to request a buy quote and confirm a transaction.', icon: Wallet },
                 { step: '4', title: 'Confirm in Wallet', desc: 'Review the fresh LI.FI route, then approve the transaction in your browser wallet.', icon: Shield },
               ].map((item) => {
@@ -374,20 +349,6 @@ function AppContent() {
   );
 }
 
-function StatCard({ icon, label, value, change, positive }: { icon: React.ReactNode; label: string; value: string; change: string; positive: boolean }) {
-  return (
-    <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-brand-400">{icon}</span>
-        <span className="text-xs text-gray-500">{label}</span>
-      </div>
-      <div className="flex items-end justify-between">
-        <span className="text-xl font-bold text-white">{value}</span>
-        <span className={`text-xs font-medium ${positive ? 'text-green-400' : 'text-red-400'}`}>{change}</span>
-      </div>
-    </div>
-  );
-}
 
 export default function App() {
   return (
