@@ -29,6 +29,7 @@ interface WalletContextValue extends WalletState {
   connectSolana: () => Promise<string | null>;
   disconnectEvm: () => void;
   disconnectSolana: () => void;
+  createTelegramWallet: () => Promise<void>;
   telegramUser: { id: number; firstName?: string; username?: string } | null;
   isTelegramSyncing: boolean;
 };
@@ -112,6 +113,31 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return address;
   };
 
+  const createTelegramWallet = async () => {
+    const webApp = window.Telegram?.WebApp;
+    if (!webApp?.initData) throw new Error('Open Hopr from the Telegram Mini App to create a Telegram wallet.');
+    setIsTelegramSyncing(true);
+    try {
+      const response = await fetch(apiUrl('/api/telegram/wallet/create'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: webApp.initData }),
+      });
+      const data = await response.json() as {
+        wallet?: { evmAddress?: string; solanaAddress?: string };
+        error?: string;
+      };
+      if (!response.ok || !data.wallet) throw new Error(data.error ?? 'Unable to create a Telegram wallet.');
+      setWallets({
+        evmAddress: data.wallet.evmAddress ?? null,
+        solanaAddress: data.wallet.solanaAddress ?? null,
+        source: 'telegram',
+      });
+    } finally {
+      setIsTelegramSyncing(false);
+    }
+  };
+
   return (
     <WalletContext.Provider
       value={{
@@ -121,6 +147,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         connectSolana,
         disconnectEvm: () => setWallets((current) => ({ ...current, evmAddress: null })),
         disconnectSolana: () => setWallets((current) => ({ ...current, solanaAddress: null })),
+        createTelegramWallet,
         telegramUser,
         isTelegramSyncing,
       }}

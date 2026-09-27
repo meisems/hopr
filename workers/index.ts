@@ -356,6 +356,10 @@ async function handleTelegramMessage(
     await sendTelegramMessage(chatId, 'Choose a Hopr tool. Send a token address to open the full action panel.', env, telegramActionKeyboard(env));
     return;
   }
+  if (command === '/app') {
+    await sendTelegramMessage(chatId, env.TELEGRAM_MINI_APP_URL ? 'Open your secure Hopr Mini App to view your synced wallet and dashboard.' : 'The Hopr Mini App is not configured yet. Ask the bot owner to set TELEGRAM_MINI_APP_URL.', env, telegramActionKeyboard(env));
+    return;
+  }
   if (command === '/help' || !text) {
     await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons first show a live quote; only the explicit Confirm and submit button signs and submits the trade.', env, telegramActionKeyboard(env));
     return;
@@ -739,18 +743,20 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
   if (existing) {
     await sendTelegramMessage(
       chatId,
-      `You already have a trading wallet:\nEVM: ${shortenTelegramAddress(existing.evmAddress)}\nSolana: ${shortenTelegramAddress(existing.solanaAddress)}\n\nHopr holds your encrypted keys and executes Buy/Sell taps immediately — there's no second confirmation step, so only tap presets you're sure about. Use /exportkeys to reveal the raw keys, or /importkey to replace this wallet with one you already control.`,
+      `<b>✦ YOUR HOPR WALLET IS READY</b>\n\nYour secure cross-chain wallet is already active.\n\n<b>EVM</b>  <code>${shortenTelegramAddress(existing.evmAddress)}</code>\n<b>Solana</b>  <code>${shortenTelegramAddress(existing.solanaAddress)}</code>\n\n🔐 Keys are encrypted and kept protected by Hopr.\n⚡ Open the Mini App to view your synced wallet and dashboard.`,
       env,
       telegramActionKeyboard(env),
+      'HTML',
     );
     return;
   }
   const wallet = await createCustodialWallet(userId, env);
   await sendTelegramMessage(
     chatId,
-    `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Buy/Sell first fetch a quote; only the explicit Confirm and submit button signs and sends it. Keys are encrypted at rest (AES-256-GCM); use /exportkeys anytime to see the raw keys, or /importkey to bring your own.`,
+    `<b>✦ YOUR HOPR WALLET IS READY</b>\n\nWelcome to your private cross-chain command center.\n\n<b>EVM</b>  <code>${shortenTelegramAddress(wallet.evmAddress)}</code>\n<b>Solana</b>  <code>${shortenTelegramAddress(wallet.solanaAddress)}</code>\n\n━━━━━━━━━━━━━━━━━━\n<b>Next step</b>\nFund either address, then open the Mini App to see your wallet synced instantly.\n\n🔐 Encrypted key custody\n⚡ Cross-chain ready\n🛡 Confirmation required before trades\n━━━━━━━━━━━━━━━━━━`,
     env,
     telegramActionKeyboard(env),
+    'HTML',
   );
 }
 
@@ -1001,11 +1007,13 @@ async function sendTelegramMessage(
   text: string,
   env: Env,
   replyMarkup?: Record<string, unknown>,
+  parseMode?: 'HTML' | 'Markdown',
 ): Promise<void> {
   await telegramApiCall('sendMessage', env, {
     chat_id: chatId,
     text,
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    ...(parseMode ? { parse_mode: parseMode } : {}),
   });
 }
 
@@ -1047,6 +1055,11 @@ async function handleApiRequest(
   // POST /api/telegram/session - verify Mini App initData and return public wallet addresses
   if (path === '/api/telegram/session' && request.method === 'POST') {
     return handleTelegramSession(request, env, corsHeaders);
+  }
+
+  // POST /api/telegram/wallet/create - create or return the user's encrypted custodial wallet
+  if (path === '/api/telegram/wallet/create' && request.method === 'POST') {
+    return handleTelegramWalletCreate(request, env, corsHeaders);
   }
 
   // GET /api/wallet/:address/balances
@@ -1145,6 +1158,21 @@ async function handleTelegramSession(request: Request, env: Env, corsHeaders: Re
     wallet: wallet ? { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress } : null,
     walletSource: wallet ? 'telegram' : null,
   }, { headers: corsHeaders });
+}
+
+async function handleTelegramWalletCreate(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.DB || !env.ENCRYPTION_KEY) {
+    return Response.json({ error: 'Telegram wallet creation is not configured.' }, { status: 503, headers: corsHeaders });
+  }
+  const body = await request.json() as { initData?: string };
+  if (!body.initData || body.initData.length > 4096) return Response.json({ error: 'Telegram initData is required.' }, { status: 400, headers: corsHeaders });
+  const user = await verifyTelegramInitData(body.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!user) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+
+  const userId = String(user.id);
+  const existing = await getCustodialWallet(userId, env);
+  const wallet = existing ?? await createCustodialWallet(userId, env);
+  return Response.json({ wallet: { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress }, created: !existing }, { headers: corsHeaders });
 }
 
 async function handleChainDetection(

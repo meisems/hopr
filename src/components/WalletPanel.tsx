@@ -19,10 +19,11 @@ function getChainKey(chainId: number): string {
 }
 
 export default function WalletPanel() {
-  const { source, isTelegramSyncing, telegramUser } = useWallet();
+  const { source, isTelegramSyncing, telegramUser, createTelegramWallet } = useWallet();
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [walletMessage, setWalletMessage] = useState('');
   const { evmAddress, solanaAddress } = useWallet();
 
   const totalBalance = mockWalletBalances.reduce((sum, b) => sum + b.usdValue, 0);
@@ -38,6 +39,16 @@ export default function WalletPanel() {
     navigator.clipboard.writeText(text);
     setCopied(text);
     setTimeout(() => setCopied(null), 2000);
+  };
+
+  const handleCreateTelegramWallet = async () => {
+    setWalletMessage('');
+    try {
+      await createTelegramWallet();
+      setWalletMessage('Your encrypted HOPR wallet is ready.');
+    } catch (error) {
+      setWalletMessage(error instanceof Error ? error.message : 'Wallet creation failed.');
+    }
   };
 
   const evmDisplay = evmAddress ? `${evmAddress.slice(0, 6)}...${evmAddress.slice(-4)}` : 'Not connected';
@@ -64,6 +75,13 @@ export default function WalletPanel() {
           <div className="text-xs text-gray-500">
             {isTelegramSyncing ? 'Syncing Telegram wallet…' : source === 'telegram' ? `Synced from Telegram${telegramUser?.username ? ` · @${telegramUser.username}` : ''}` : hasWallet ? `Across ${mockWalletBalances.length} chains` : 'Connect a wallet to view balances'}
           </div>
+          {telegramUser && !hasWallet && !isTelegramSyncing && (
+            <button onClick={handleCreateTelegramWallet} className="mt-3 w-full rounded-xl border border-brand-400/30 bg-gradient-to-r from-brand-500/20 via-purple-500/15 to-brand-400/20 px-3 py-2.5 text-left transition hover:border-brand-300/60 hover:from-brand-500/30">
+              <span className="block text-sm font-semibold text-brand-200">Create your HOPR wallet</span>
+              <span className="mt-0.5 block text-xs text-gray-400">Encrypted custody, ready across supported chains</span>
+            </button>
+          )}
+          {walletMessage && <div className="mt-2 text-xs text-brand-200">{walletMessage}</div>}
         </div>
       </div>
 
