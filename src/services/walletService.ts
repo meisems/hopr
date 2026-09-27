@@ -29,7 +29,9 @@ export interface EncryptedSecret {
   salt: string; // base64, 16 bytes — per-secret salt for key derivation
 }
 
-const PBKDF2_ITERATIONS = 210_000; // OWASP 2023+ minimum for PBKDF2-HMAC-SHA256
+// Cloudflare Workers Web Crypto rejects counts above 100,000. Keep the
+// platform maximum while retaining a unique salt and AES-256-GCM per secret.
+const PBKDF2_ITERATIONS = 100_000;
 const AES_KEY_LENGTH = 256;
 
 /**
