@@ -26,6 +26,7 @@ import {
 } from './trading';
 import { getChainById, SUPPORTED_CHAINS } from '../src/services/chainDetector';
 import {
+  generateDualWallet,
   decryptPrivateKey,
   encryptPrivateKey,
   packEncryptedSecret,
@@ -1061,6 +1062,11 @@ async function handleApiRequest(
   if (path === '/api/telegram/wallet/create' && request.method === 'POST') {
     return handleTelegramWalletCreate(request, env, corsHeaders);
   }
+  if (path === '/api/telegram/wallets' && request.method === 'POST') return handleTelegramWalletList(request, env, corsHeaders);
+  if (path === '/api/telegram/wallet/import' && request.method === 'POST') return handleTelegramWalletImport(request, env, corsHeaders);
+  if (path === '/api/telegram/wallet/active' && request.method === 'POST') return handleTelegramWalletActive(request, env, corsHeaders);
+  if (path === '/api/telegram/wallet/reveal' && request.method === 'POST') return handleTelegramWalletReveal(request, env, corsHeaders);
+  if (path === '/api/telegram/wallet/delete' && request.method === 'POST') return handleTelegramWalletDelete(request, env, corsHeaders);
 
   // GET /api/wallet/:address/balances
   if (path.match(/^\/api\/wallet\/[^/]+\/balances$/) && request.method === 'GET') {
@@ -1098,7 +1104,7 @@ async function handleApiRequest(
 async function hmacSha256(key: ArrayBuffer | Uint8Array, message: string): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    key,
+    key as BufferSource,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -1145,12 +1151,9 @@ async function verifyTelegramInitData(initData: string, botToken: string): Promi
 }
 
 async function handleTelegramSession(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
-  if (!env.TELEGRAM_BOT_TOKEN) return Response.json({ error: 'Telegram authentication is not configured.' }, { status: 503, headers: corsHeaders });
-  const body = await request.json() as { initData?: string };
-  if (!body.initData || body.initData.length > 4096) return Response.json({ error: 'Telegram initData is required.' }, { status: 400, headers: corsHeaders });
-
-  const user = await verifyTelegramInitData(body.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!user) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+  const auth = await getTelegramRequestUser(request, env);
+  if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+  const { user } = auth;
 
   const wallet = await getCustodialWallet(String(user.id), env);
   return Response.json({
@@ -1164,15 +1167,104 @@ async function handleTelegramWalletCreate(request: Request, env: Env, corsHeader
   if (!env.TELEGRAM_BOT_TOKEN || !env.DB || !env.ENCRYPTION_KEY) {
     return Response.json({ error: 'Telegram wallet creation is not configured.' }, { status: 503, headers: corsHeaders });
   }
-  const body = await request.json() as { initData?: string };
-  if (!body.initData || body.initData.length > 4096) return Response.json({ error: 'Telegram initData is required.' }, { status: 400, headers: corsHeaders });
-  const user = await verifyTelegramInitData(body.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!user) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+  const auth = await getTelegramRequestUser(request, env);
+  if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+  const body = auth.body as { label?: string };
+  const generated = generateDualWallet();
+  const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || 'Primary wallet', 'generated', env);
+  return Response.json({ wallet: publicWallet(wallet), created: true }, { headers: corsHeaders });
+}
 
-  const userId = String(user.id);
-  const existing = await getCustodialWallet(userId, env);
-  const wallet = existing ?? await createCustodialWallet(userId, env);
-  return Response.json({ wallet: { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress }, created: !existing }, { headers: corsHeaders });
+type WalletAccountRow = {
+  id: string; user_id: string; label: string; source: string; evm_address: string | null; evm_encrypted_key: string | null;
+  solana_address: string | null; solana_encrypted_key: string | null; is_active: number; created_at: string;
+};
+
+function publicWallet(row: WalletAccountRow | { id: string; label: string; source: string; evm_address: string | null; solana_address: string | null; is_active: number; created_at: string }) {
+  return { id: row.id, label: row.label, source: row.source, evmAddress: row.evm_address, solanaAddress: row.solana_address, isActive: Boolean(row.is_active), createdAt: row.created_at };
+}
+
+async function getTelegramRequestUser(request: Request, env: Env): Promise<{ user: { id: number; first_name?: string; last_name?: string; username?: string }; body: Record<string, unknown> } | null> {
+  if (!env.TELEGRAM_BOT_TOKEN) return null;
+  let body: Record<string, unknown>;
+  try { body = await request.json() as Record<string, unknown>; } catch { return null; }
+  const initData = typeof body.initData === 'string' ? body.initData : '';
+  if (!initData || initData.length > 4096) return null;
+  const user = await verifyTelegramInitData(initData, env.TELEGRAM_BOT_TOKEN);
+  return user ? { user, body } : null;
+}
+
+async function storeWalletAccount(userId: string, wallet: { evmAddress: string | null; evmPrivateKey: string | null; solanaAddress: string | null; solanaPrivateKey: string | null }, label: string, source: 'generated' | 'imported', env: Env): Promise<WalletAccountRow> {
+  if (!env.DB || !env.ENCRYPTION_KEY) throw new Error('Wallet storage is not configured.');
+  const id = crypto.randomUUID();
+  const evmEncrypted = wallet.evmPrivateKey ? packEncryptedSecret(await encryptPrivateKey(wallet.evmPrivateKey, env.ENCRYPTION_KEY)) : null;
+  const solanaEncrypted = wallet.solanaPrivateKey ? packEncryptedSecret(await encryptPrivateKey(wallet.solanaPrivateKey, env.ENCRYPTION_KEY)) : null;
+  await env.DB.prepare(`UPDATE wallet_accounts SET is_active = 0 WHERE user_id = ?1`).bind(userId).run();
+  await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)`).bind(id, userId, label.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted).run();
+  return (await env.DB.prepare(`SELECT * FROM wallet_accounts WHERE id = ?1`).bind(id).first<WalletAccountRow>())!;
+}
+
+async function walletAuth(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<{ auth: { user: { id: number }; body: Record<string, unknown> } } | Response> {
+  if (!env.DB || !env.ENCRYPTION_KEY) return Response.json({ error: 'Wallet storage is not configured.' }, { status: 503, headers: corsHeaders });
+  const auth = await getTelegramRequestUser(request, env);
+  if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+  return { auth: { user: auth.user, body: auth.body } };
+}
+
+async function handleTelegramWalletList(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const rows = await env.DB!.prepare(`SELECT * FROM wallet_accounts WHERE user_id = ?1 ORDER BY is_active DESC, created_at ASC`).bind(String(checked.auth.user.id)).all<WalletAccountRow>();
+  return Response.json({ wallets: (rows.results ?? []).map(publicWallet) }, { headers: corsHeaders });
+}
+
+async function handleTelegramWalletImport(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const body = checked.auth.body as { network?: string; privateKey?: string; label?: string; confirmRisk?: boolean };
+  if (!body.confirmRisk || typeof body.privateKey !== 'string' || body.privateKey.length > 4096) return Response.json({ error: 'Confirm the private-key risk acknowledgement before importing.' }, { status: 400, headers: corsHeaders });
+  try {
+    const network = body.network;
+    const imported = network === 'evm' ? importEvmKey(body.privateKey) : network === 'solana' ? importSolanaKey(body.privateKey) : null;
+    if (!imported) throw new Error('Choose EVM or Solana.');
+    const blank: { evmAddress: string | null; evmPrivateKey: string | null; solanaAddress: string | null; solanaPrivateKey: string | null } = { evmAddress: null, evmPrivateKey: null, solanaAddress: null, solanaPrivateKey: null };
+    if (network === 'evm') { blank.evmAddress = imported.address; blank.evmPrivateKey = imported.privateKey; }
+    else { blank.solanaAddress = imported.address; blank.solanaPrivateKey = imported.privateKey; }
+    const wallet = await storeWalletAccount(String(checked.auth.user.id), blank, body.label || `${network!.toUpperCase()} imported`, 'imported', env);
+    return Response.json({ wallet: publicWallet(wallet) }, { headers: corsHeaders });
+  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Private key could not be imported.' }, { status: 400, headers: corsHeaders }); }
+}
+
+async function handleTelegramWalletActive(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const walletId = typeof checked.auth.body.walletId === 'string' ? checked.auth.body.walletId : '';
+  if (!walletId) return Response.json({ error: 'walletId is required.' }, { status: 400, headers: corsHeaders });
+  await env.DB!.prepare(`UPDATE wallet_accounts SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END WHERE user_id = ?2`).bind(walletId, String(checked.auth.user.id)).run();
+  return Response.json({ ok: true }, { headers: corsHeaders });
+}
+
+async function handleTelegramWalletReveal(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const body = checked.auth.body as { walletId?: string; confirmation?: string; acknowledgeSecurity?: boolean; acknowledgeClipboard?: boolean; acknowledgeIrreversible?: boolean };
+  if (body.confirmation !== 'REVEAL PRIVATE KEYS' || !body.acknowledgeSecurity || !body.acknowledgeClipboard || !body.acknowledgeIrreversible) return Response.json({ error: 'All security acknowledgements and the exact confirmation phrase are required.' }, { status: 400, headers: corsHeaders });
+  const row = await env.DB!.prepare(`SELECT * FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(body.walletId ?? '', String(checked.auth.user.id)).first<WalletAccountRow>();
+  if (!row) return Response.json({ error: 'Wallet not found.' }, { status: 404, headers: corsHeaders });
+  const evmPrivateKey = row.evm_encrypted_key ? await decryptPrivateKey(unpackEncryptedSecret(row.evm_encrypted_key), env.ENCRYPTION_KEY!) : '';
+  const solanaPrivateKey = row.solana_encrypted_key ? await decryptPrivateKey(unpackEncryptedSecret(row.solana_encrypted_key), env.ENCRYPTION_KEY!) : '';
+  return new Response(JSON.stringify({ warning: 'Never share these keys. Anyone with them can permanently control the wallet.', evmPrivateKey, solanaPrivateKey }), { headers: { ...corsHeaders, 'Cache-Control': 'no-store, no-cache, must-revalidate', Pragma: 'no-cache', 'Content-Type': 'application/json' } });
+}
+
+async function handleTelegramWalletDelete(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const checked = await walletAuth(request, env, corsHeaders); if (checked instanceof Response) return checked;
+  const body = checked.auth.body as { walletId?: string; confirmation?: string; backupConfirmed?: boolean; acknowledgeIrreversible?: boolean };
+  if (body.confirmation !== 'DELETE WALLET' || !body.backupConfirmed || !body.acknowledgeIrreversible) return Response.json({ error: 'Confirm the backup and irreversible deletion warnings first.' }, { status: 400, headers: corsHeaders });
+  const deletedWallet = await env.DB!.prepare(`SELECT is_active, evm_address, solana_address FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(body.walletId ?? '', String(checked.auth.user.id)).first<{ is_active: number; evm_address: string | null; solana_address: string | null }>();
+  const result = await env.DB!.prepare(`DELETE FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(body.walletId ?? '', String(checked.auth.user.id)).run();
+  if (deletedWallet?.evm_address || deletedWallet?.solana_address) {
+    await env.DB!.prepare(`DELETE FROM user_wallets WHERE user_id = ?1 AND (evm_address = ?2 OR solana_address = ?3)`).bind(String(checked.auth.user.id), deletedWallet.evm_address ?? '', deletedWallet.solana_address ?? '').run();
+  }
+  if (deletedWallet?.is_active) {
+    await env.DB!.prepare(`UPDATE wallet_accounts SET is_active = 1 WHERE id = (SELECT id FROM wallet_accounts WHERE user_id = ?1 ORDER BY created_at ASC LIMIT 1)`).bind(String(checked.auth.user.id)).run();
+  }
+  return Response.json({ deleted: (result.meta?.changes ?? 0) > 0 }, { headers: corsHeaders });
 }
 
 async function handleChainDetection(
@@ -1267,7 +1359,7 @@ async function handleChainDetection(
   // Cache for 5 minutes. Do not add KV write latency to the token response.
   telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + 300_000 });
   if (env.CACHE) {
-    void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch((error) => {
+    void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch((error: unknown) => {
       console.error('Token detection cache write failed', error);
     });
   }

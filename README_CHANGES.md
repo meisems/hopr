@@ -34,5 +34,6 @@
 
 ## Before deploying
 1. `npx wrangler d1 execute hopr-db --file=migrations/0002_trade_history.sql`
-2. `npx wrangler secret put ENCRYPTION_KEY` (32+ random bytes) if not already set
-3. `npm install`
+2. `npx wrangler d1 execute hopr-db --file=migrations/0003_multi_wallets.sql`
+3. `npx wrangler secret put ENCRYPTION_KEY` (32+ random bytes) if not already set
+4. `npm install`

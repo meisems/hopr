@@ -14,16 +14,17 @@ import { DetectedToken } from './services/chainDetector';
 
 const SplashScreen = lazy(() => import('./components/SplashScreen'));
 const ChartPanel = lazy(() => import('./components/ChartPanel'));
-const SettingsModal = lazy(() => import('./components/SettingsModal'));
 const DocsPage = lazy(() => import('./components/DocsPage'));
 const PositionsPage = lazy(() => import('./components/PositionsPage'));
 const HistoryPage = lazy(() => import('./components/HistoryPage'));
 const BridgePage = lazy(() => import('./components/BridgePage'));
 const AnalyticsPage = lazy(() => import('./components/AnalyticsPage'));
+const SettingsPage = lazy(() => import('./components/SettingsPage'));
+const WalletsPage = lazy(() => import('./components/WalletsPage'));
 
-type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs';
-const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs' };
-const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation' };
+type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs' | 'settings' | 'wallets';
+const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs', settings: '/settings', wallets: '/wallets' };
+const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation', settings: 'Settings', wallets: 'Wallet Vault' };
 
 function pageFromPath(pathname: string): Page {
   const match = (Object.entries(PAGE_PATHS) as [Page, string][]).find(([, path]) => path === pathname);
@@ -45,18 +46,6 @@ function BlackHoleSplash({ isExiting, onExitStart, onExitComplete }: { isExiting
   );
 }
 
-function BlackHoleSettingsModal({ isOpen, onClose, onPreviewBlackHole }: { isOpen: boolean; onClose: () => void; onPreviewBlackHole: () => void }) {
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <Suspense fallback={null}>
-          <SettingsModal isOpen={isOpen} onClose={onClose} onPreviewBlackHole={onPreviewBlackHole} />
-        </Suspense>
-      )}
-    </AnimatePresence>
-  );
-}
-
 function PageLoading() {
   return <div className="min-h-[45vh] flex items-center justify-center text-sm text-gray-500" role="status">Loading page…</div>;
 }
@@ -68,7 +57,6 @@ function AppContent() {
     return pageFromPath(window.location.pathname);
   });
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [splashRun, setSplashRun] = useState(0);
 
@@ -85,7 +73,6 @@ function AppContent() {
   }, []);
 
   const previewBlackHole = () => {
-    setSettingsOpen(false);
     setSplashRun((run) => run + 1);
     setPreloaderPhase('loading');
   };
@@ -112,6 +99,8 @@ function AppContent() {
   if (currentPage === 'history') return <Suspense fallback={<PageLoading />}><HistoryPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
   if (currentPage === 'bridge') return <Suspense fallback={<PageLoading />}><BridgePage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
   if (currentPage === 'analytics') return <Suspense fallback={<PageLoading />}><AnalyticsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
+  if (currentPage === 'settings') return <Suspense fallback={<PageLoading />}><SettingsPage onBack={() => setCurrentPage('dashboard')} onOpenWallets={() => setCurrentPage('wallets')} onPreviewBlackHole={previewBlackHole} /></Suspense>;
+  if (currentPage === 'wallets') return <Suspense fallback={<PageLoading />}><WalletsPage onBack={() => setCurrentPage('dashboard')} /></Suspense>;
 
   return (
     <>
@@ -150,6 +139,8 @@ function AppContent() {
               <button onClick={() => setCurrentPage('positions')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Positions</button>
               <button onClick={() => setCurrentPage('history')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">History</button>
               <button onClick={() => setCurrentPage('bridge')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Bridge</button>
+              <button onClick={() => setCurrentPage('wallets')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Wallets</button>
+              <button onClick={() => setCurrentPage('settings')} className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all">Settings</button>
               <button
                 onClick={() => setCurrentPage('docs')}
                 className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800/30 rounded-lg transition-all flex items-center gap-1.5"
@@ -167,7 +158,7 @@ function AppContent() {
                 <span className="text-xs text-green-400 font-medium">Dashboard online</span>
               </div>
               <button
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => setCurrentPage('settings')}
                 className="settings-trigger p-2 rounded-xl transition-all duration-200 hover:bg-gray-800 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300/70"
                 aria-label="Open settings"
               >
@@ -199,6 +190,8 @@ function AppContent() {
               <button onClick={() => { setCurrentPage('positions'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Positions</button>
               <button onClick={() => { setCurrentPage('history'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">History</button>
               <button onClick={() => { setCurrentPage('bridge'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Bridge</button>
+              <button onClick={() => { setCurrentPage('wallets'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Wallets</button>
+              <button onClick={() => { setCurrentPage('settings'); setMobileMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg">Settings</button>
               <button
                 onClick={() => { setCurrentPage('docs'); setMobileMenuOpen(false); }}
                 className="block w-full text-left px-3 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800/30"
@@ -343,7 +336,6 @@ function AppContent() {
       </footer>
 
       {/* Settings Modal */}
-      <BlackHoleSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} onPreviewBlackHole={previewBlackHole} />
     </div>
     </>
   );

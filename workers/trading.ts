@@ -44,11 +44,19 @@ function nativeTokenAddress(chainKey: string): string {
 /** Fetch the user's custodial wallet, or null if they haven't created one. */
 export async function getCustodialWallet(userId: string, env: TradingEnv): Promise<CustodialWallet | null> {
   if (!env.DB) return null;
-  const row = await env.DB.prepare(
-    `SELECT evm_address, solana_address FROM user_wallets WHERE user_id = ?1`
-  )
-    .bind(userId)
-    .first<{ evm_address: string; solana_address: string }>();
+  let row: { evm_address: string; solana_address: string } | null = null;
+  try {
+    row = await env.DB.prepare(
+      `SELECT evm_address, solana_address FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
+    ).bind(userId).first<{ evm_address: string; solana_address: string }>();
+  } catch {
+    // The migration may not be applied yet; fall back to the legacy single-wallet table.
+  }
+  if (!row) {
+    row = await env.DB.prepare(
+      `SELECT evm_address, solana_address FROM user_wallets WHERE user_id = ?1`
+    ).bind(userId).first<{ evm_address: string; solana_address: string }>();
+  }
   if (!row) return null;
   return { evmAddress: row.evm_address, solanaAddress: row.solana_address };
 }
@@ -69,6 +77,16 @@ export async function createCustodialWallet(userId: string, env: TradingEnv): Pr
   const evmEncrypted = await encryptPrivateKey(wallet.evmPrivateKey, env.ENCRYPTION_KEY);
   const solEncrypted = await encryptPrivateKey(wallet.solanaPrivateKey, env.ENCRYPTION_KEY);
 
+  const packedEvm = packEncryptedSecret(evmEncrypted);
+  const packedSolana = packEncryptedSecret(solEncrypted);
+  try {
+    await env.DB.prepare(
+      `INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active)
+       VALUES (?1, ?2, ?3, 'generated', ?4, ?5, ?6, ?7, 1)`
+    ).bind(crypto.randomUUID(), userId, 'Primary wallet', wallet.evmAddress, packedEvm, wallet.solanaAddress, packedSolana).run();
+  } catch {
+    // Backward-compatible deployment path before 0003_multi_wallets.sql is applied.
+  }
   await env.DB.prepare(
     `INSERT INTO user_wallets (user_id, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key)
      VALUES (?1, ?2, ?3, ?4, ?5)`
@@ -76,9 +94,9 @@ export async function createCustodialWallet(userId: string, env: TradingEnv): Pr
     .bind(
       userId,
       wallet.evmAddress,
-      packEncryptedSecret(evmEncrypted),
+      packedEvm,
       wallet.solanaAddress,
-      packEncryptedSecret(solEncrypted)
+      packedSolana
     )
     .run();
 
@@ -91,11 +109,19 @@ async function getEncryptedKey(
   env: TradingEnv
 ): Promise<EncryptedSecret> {
   if (!env.DB) throw new Error('DB binding required');
-  const row = await env.DB.prepare(
-    `SELECT evm_encrypted_key, solana_encrypted_key FROM user_wallets WHERE user_id = ?1`
-  )
-    .bind(userId)
-    .first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
+  let row: { evm_encrypted_key: string; solana_encrypted_key: string } | null = null;
+  try {
+    row = await env.DB.prepare(
+      `SELECT evm_encrypted_key, solana_encrypted_key FROM wallet_accounts WHERE user_id = ?1 AND evm_encrypted_key IS NOT NULL AND solana_encrypted_key IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
+    ).bind(userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
+  } catch {
+    // Fall through to the legacy table.
+  }
+  if (!row) {
+    row = await env.DB.prepare(
+      `SELECT evm_encrypted_key, solana_encrypted_key FROM user_wallets WHERE user_id = ?1`
+    ).bind(userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
+  }
   if (!row) throw new Error('No custodial wallet on file for this user');
   const packed = chainType === 'EVM' ? row.evm_encrypted_key : row.solana_encrypted_key;
   return unpackEncryptedSecret(packed);
