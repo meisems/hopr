@@ -1209,10 +1209,15 @@ async function handleTelegramWalletCreate(request: Request, env: Env, corsHeader
   }
   const auth = await getTelegramRequestUser(request, env);
   if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
-  const body = auth.body as { label?: string };
-  const generated = generateDualWallet();
-  const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || '', 'generated', env);
-  return Response.json({ wallet: publicWallet(wallet), created: true }, { headers: corsHeaders });
+  try {
+    const body = auth.body as { label?: string };
+    const generated = generateDualWallet();
+    const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || '', 'generated', env);
+    return Response.json({ wallet: publicWallet(wallet), created: true }, { headers: corsHeaders });
+  } catch (error) {
+    console.error('Telegram wallet creation failed', error);
+    return Response.json({ error: 'Wallet storage is unavailable. Apply migrations/0003_multi_wallets.sql to the production D1 database, then try again.' }, { status: 503, headers: corsHeaders });
+  }
 }
 
 type WalletAccountRow = {
