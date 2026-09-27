@@ -1417,6 +1417,41 @@ async function handleChainDetection(
   }
 
   if (!result) {
+    const launchpadNetworks = isBase58
+      ? [{ slug: 'solana', id: 1151111081099710, name: 'Solana', type: 'SVM', color: '#9945FF' }]
+      : [
+        { slug: 'arbitrum', id: 42161, name: 'Arbitrum One', type: 'EVM', color: '#28A0F0' },
+        { slug: 'base', id: 8453, name: 'Base', type: 'EVM', color: '#0052FF' },
+        { slug: 'bsc', id: 56, name: 'BNB Chain', type: 'EVM', color: '#F0B90B' },
+        { slug: 'robinhood-chain', id: 4663, name: 'Robinhood Chain', type: 'EVM', color: '#00C853' },
+        { slug: 'arc', id: 5042, name: 'Arc Chain', type: 'EVM', color: '#FF6D00' },
+      ];
+    const launchpadPools = await Promise.all(launchpadNetworks.map(async (network) => ({ network, pool: await fetchGeckoLaunchpadPool(address, network.slug) })));
+    const hit = launchpadPools.find((item) => item.pool);
+    if (hit?.pool) {
+      result = {
+        address,
+        name: hit.pool.name,
+        symbol: hit.pool.symbol,
+        decimals: hit.network.type === 'SVM' ? 9 : 18,
+        chainId: hit.network.id,
+        chainType: hit.network.type,
+        chainName: hit.network.name,
+        chainColor: hit.network.color,
+        priceUsd: hit.pool.priceUsd,
+        liquidity: hit.pool.liquidity,
+        fdv: hit.pool.fdv,
+        change24h: 0,
+        volume24h: hit.pool.volume24h,
+        pairAddress: hit.pool.pairAddress,
+        liquiditySource: hit.pool.source,
+        launchpad: hit.pool.launchpad,
+        dexId: hit.pool.source,
+      };
+    }
+  }
+
+  if (!result) {
     return Response.json({ error: 'Token not found' }, { status: 404, headers: corsHeaders });
   }
 
@@ -1429,6 +1464,34 @@ async function handleChainDetection(
   }
 
   return Response.json(result, { headers: { ...corsHeaders, 'X-Cache': 'MISS' } });
+}
+
+async function fetchGeckoLaunchpadPool(address: string, network: string): Promise<{ name: string; symbol: string; source: string; launchpad?: string; priceUsd: number; liquidity: number; volume24h: number; fdv: number; pairAddress: string } | null> {
+  try {
+    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
+    if (!response.ok) return null;
+    const payload = await response.json() as { data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } } } }> };
+    const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
+    if (!pool?.attributes || Number(pool.attributes.reserve_in_usd ?? 0) <= 0) return null;
+    const attrs = pool.attributes;
+    const source = String(pool.relationships?.dex?.data?.id?.split('_').pop() ?? 'GeckoTerminal').replace(/[_-]+/g, ' ');
+    const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
+    const launchpad = normalized.includes('pump') ? 'Pump.fun' : normalized.includes('stonk') ? 'StonkFun' : normalized.includes('argus') ? 'ArgusWorld' : normalized.includes('tolly') ? 'TollyLabs' : normalized.includes('pons') ? 'PonsFamily' : undefined;
+    const volume = attrs.volume_usd as { h24?: number } | undefined;
+    return {
+      name: String(attrs.name ?? 'Launchpad token').split(' / ')[0],
+      symbol: String(attrs.base_token_symbol ?? 'UNKNOWN'),
+      source,
+      launchpad,
+      priceUsd: Number(attrs.base_token_price_usd ?? 0),
+      liquidity: Number(attrs.reserve_in_usd ?? 0),
+      volume24h: Number(volume?.h24 ?? 0),
+      fdv: Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0),
+      pairAddress: pool.id?.split('_').pop() ?? '',
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function handleWalletBalances(

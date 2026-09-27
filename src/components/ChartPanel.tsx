@@ -107,7 +107,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"><ChainLogo chainKey={getChainKey(token.chainId)} size={32} /></div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-white">{token.symbol}/USD</span><span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>{token.chainName}</span></div>
+              <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-white">{token.symbol}/USD</span><span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>{token.chainName}</span>{token.launchpad && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-200">{token.launchpad}</span>}</div>
               <div className="flex items-center gap-2 mt-0.5 flex-wrap"><span className="text-base sm:text-lg font-bold text-white">{formatTokenPrice(token.priceUsd)}</span><span className={`flex items-center gap-0.5 text-xs sm:text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>{isPositive ? <TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <TrendingDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}{isPositive ? '+' : ''}{priceChange.toFixed(2)}%</span></div>
             </div>
           </div>
@@ -126,7 +126,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
 
       <div className="px-3 sm:px-4 pb-3 sm:pb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> 24h Vol</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.volume24h)}</div></div>
-        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">Liquidity</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity)}</div></div>
+        <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">{token.launchpad ? `${token.launchpad} Liquidity` : 'Liquidity'}</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.liquidity)}</div></div>
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">MCap/FDV</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{formatUsd(token.fdv)}</div></div>
         <div className="bg-gray-800/40 rounded-xl p-2 sm:p-3"><div className="text-xs text-gray-500">Decimals</div><div className="text-xs sm:text-sm font-semibold text-white mt-1">{token.decimals}</div></div>
       </div>

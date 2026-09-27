@@ -49,6 +49,10 @@ export interface DetectedToken {
   geckoNetwork?: string;
   /** true if resolved via bytecode probing rather than an indexed DexScreener pair */
   freshDeployment: boolean;
+  /** Data source used for the displayed pool/liquidity metrics. */
+  liquiditySource?: string;
+  /** Launchpad or pool family when the source exposes one. */
+  launchpad?: string;
 }
 
 const BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -71,6 +75,7 @@ interface DexScreenerPair {
   volume?: { h24?: number };
   fdv?: number;
   priceChange?: { h24?: number };
+  dexId?: string;
 }
 
 async function fetchDexScreener(address: string): Promise<DexScreenerPair[]> {
@@ -100,6 +105,7 @@ const GECKO_NETWORKS: Record<string, string> = {
 };
 
 function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo): DetectedToken {
+  const source = pair.dexId ? formatLiquiditySource(pair.dexId) : 'DexScreener';
   return {
     address: pair.baseToken.address,
     name: pair.baseToken.name,
@@ -117,6 +123,105 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     pairAddress: pair.pairAddress,
     geckoNetwork: GECKO_NETWORKS[pair.chainId.toLowerCase()],
     freshDeployment: false,
+    liquiditySource: source,
+    launchpad: detectLaunchpad(source),
+  };
+}
+
+const GECKO_NETWORK_SLUGS: Record<string, string> = {
+  sol: 'solana',
+  arb: 'arbitrum',
+  bas: 'base',
+  bsc: 'bsc',
+  rhc: 'robinhood-chain',
+  arc: 'arc',
+};
+
+interface GeckoPoolMarket {
+  address: string;
+  name: string;
+  source: string;
+  symbol: string;
+  priceUsd: number;
+  liquidity: number;
+  volume24h: number;
+  fdv: number;
+  pairAddress: string;
+}
+
+/**
+ * GeckoTerminal is the fallback for fresh launchpad pools that are not yet
+ * present in DexScreener. Its public API reads indexed on-chain pool state,
+ * including reserve_in_usd and volume_usd.h24.
+ */
+async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Promise<GeckoPoolMarket | null> {
+  const network = GECKO_NETWORK_SLUGS[chain.key];
+  if (!network) return null;
+  try {
+    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
+    if (!response.ok) return null;
+    const payload = await response.json() as {
+      data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } } } }>;
+    };
+    const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
+    if (!pool?.attributes) return null;
+    const attrs = pool.attributes;
+    const reserve = Number(attrs.reserve_in_usd ?? 0);
+    if (!Number.isFinite(reserve) || reserve <= 0) return null;
+    const volume = attrs.volume_usd as { h24?: number } | undefined;
+    const fdv = Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0);
+    const poolId = pool.id?.split('_').pop() ?? '';
+    const source = formatLiquiditySource(pool.relationships?.dex?.data?.id?.split('_').pop() ?? 'GeckoTerminal');
+    return {
+      address,
+      name: String(attrs.name ?? 'Launchpad token').split(' / ')[0],
+      symbol: String(attrs.base_token_symbol ?? 'UNKNOWN'),
+      source,
+      priceUsd: Number(attrs.base_token_price_usd ?? 0),
+      liquidity: reserve,
+      volume24h: Number(volume?.h24 ?? 0),
+      fdv: Number.isFinite(fdv) ? fdv : 0,
+      pairAddress: poolId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatLiquiditySource(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function detectLaunchpad(source: string): string | undefined {
+  const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
+  if (normalized.includes('pump')) return 'Pump.fun';
+  if (normalized.includes('stonk')) return 'StonkFun';
+  if (normalized.includes('argus')) return 'ArgusWorld';
+  if (normalized.includes('tolly')) return 'TollyLabs';
+  if (normalized.includes('pons')) return 'PonsFamily';
+  return undefined;
+}
+
+function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackAddress: string): DetectedToken {
+  return {
+    address: fallbackAddress,
+    name: market.name,
+    symbol: market.symbol,
+    decimals: chain.type === 'SVM' ? 9 : 18,
+    chainId: chain.id,
+    chainType: chain.type,
+    chainName: chain.name,
+    chainColor: chain.color,
+    priceUsd: market.priceUsd,
+    liquidity: market.liquidity,
+    volume24h: market.volume24h,
+    fdv: market.fdv,
+    change24h: 0,
+    pairAddress: market.pairAddress,
+    geckoNetwork: GECKO_NETWORK_SLUGS[chain.key],
+    freshDeployment: true,
+    liquiditySource: market.source,
+    launchpad: detectLaunchpad(market.source),
   };
 }
 
@@ -236,6 +341,9 @@ export async function detectChain(address: string): Promise<DetectedToken | null
     const solChain = SUPPORTED_CHAINS.find((c) => c.key === 'sol')!;
     if (solPair) return pairToDetectedToken(solPair, solChain.id, solChain);
 
+    const launchpadMarket = await fetchGeckoTerminalMarket(address, solChain);
+    if (launchpadMarket) return geckoMarketToToken(launchpadMarket, solChain, address);
+
     // Not indexed yet — we can't probe Solana bytecode the same way as EVM,
     // so report it as a fresh/unverified Solana mint pending indexing.
     return {
@@ -264,6 +372,15 @@ export async function detectChain(address: string): Promise<DetectedToken | null
       const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
       if (chainInfo) return pairToDetectedToken(indexedPair, chainId, chainInfo);
     }
+
+    const launchpadMarkets = await Promise.all(
+      SUPPORTED_CHAINS.filter((chain) => chain.type === 'EVM').map(async (chain) => ({
+        chain,
+        market: await fetchGeckoTerminalMarket(address, chain),
+      }))
+    );
+    const launchpadHit = launchpadMarkets.find((item) => item.market);
+    if (launchpadHit?.market) return geckoMarketToToken(launchpadHit.market, launchpadHit.chain, address);
 
     // Not indexed (fresh deployment, or a chain DexScreener doesn't cover,
     // e.g. Robinhood Chain / Arc) — fall back to bytecode probing.
