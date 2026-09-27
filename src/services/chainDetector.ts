@@ -393,7 +393,16 @@ export async function detectChain(address: string): Promise<DetectedToken | null
     if (indexedPair) {
       const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId.toLowerCase()];
       const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
-      if (chainInfo) return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+      if (chainInfo) {
+        // PonsFamily can launch against a tokenized stock quote. Prefer the
+        // canonical GeckoTerminal pool name on Robinhood so AAPL/GOOGL is
+        // retained instead of being flattened to USD by another indexer.
+        if (chainId === 4663) {
+          const canonicalPool = await fetchGeckoTerminalMarket(address, chainInfo);
+          if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
+        }
+        return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+      }
     }
 
     const launchpadMarkets = await Promise.all(
