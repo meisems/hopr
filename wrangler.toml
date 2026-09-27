@@ -14,6 +14,7 @@ route = "staging.hopr.pages.dev/*"
 # Variables
 [vars]
 ENVIRONMENT = "production"
+TELEGRAM_MINI_APP_URL = "https://hopr-432.pages.dev/"
 
 [[d1_databases]]
 binding = "DB"
