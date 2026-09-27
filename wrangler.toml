@@ -2,7 +2,6 @@ name = "hopr"
 compatibility_date = "2024-01-01"
 main = "workers/index.ts"
 [env.production]
-route = "hopr-432.pages.dev/*"
 [env.production.vars]
 ENVIRONMENT = "production"
 TELEGRAM_MINI_APP_URL = "https://hopr-432.pages.dev/"
