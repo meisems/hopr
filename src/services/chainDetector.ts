@@ -102,7 +102,8 @@ const GECKO_NETWORKS: Record<string, string> = {
   arbitrum: 'arbitrum',
   base: 'base',
   bsc: 'bsc',
-  robinhood: 'robinhood-chain',
+  // GeckoTerminal's network slug is `robinhood`; the longer chain label returns 404.
+  robinhood: 'robinhood',
   arc: 'arc',
 };
 
@@ -167,7 +168,7 @@ const GECKO_NETWORK_SLUGS: Record<string, string> = {
   arb: 'arbitrum',
   bas: 'base',
   bsc: 'bsc',
-  rhc: 'robinhood-chain',
+  rhc: 'robinhood',
   arc: 'arc',
 };
 

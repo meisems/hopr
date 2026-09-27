@@ -1429,7 +1429,7 @@ async function handleChainDetection(
         { slug: 'arbitrum', id: 42161, name: 'Arbitrum One', type: 'EVM', color: '#28A0F0' },
         { slug: 'base', id: 8453, name: 'Base', type: 'EVM', color: '#0052FF' },
         { slug: 'bsc', id: 56, name: 'BNB Chain', type: 'EVM', color: '#F0B90B' },
-        { slug: 'robinhood-chain', id: 4663, name: 'Robinhood Chain', type: 'EVM', color: '#00C853' },
+        { slug: 'robinhood', id: 4663, name: 'Robinhood Chain', type: 'EVM', color: '#00C853' },
         { slug: 'arc', id: 5042, name: 'Arc Chain', type: 'EVM', color: '#FF6D00' },
       ];
     const launchpadPools = await Promise.all(launchpadNetworks.map(async (network) => ({ network, pool: await fetchGeckoLaunchpadPool(address, network.slug) })));
