@@ -45,6 +45,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_STATE?: KVNamespace;
+  TELEGRAM_MINI_APP_URL?: string;
 }
 
 interface TelegramMessage {
@@ -64,8 +65,9 @@ interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
 }
 
-const TELEGRAM_ACTION_KEYBOARD = {
-  inline_keyboard: [
+function telegramActionKeyboard(env: Env) {
+  return {
+    inline_keyboard: [
     [
       { text: 'Wallet', callback_data: 'wallet' },
       { text: 'Settings', callback_data: 'settings' },
@@ -74,8 +76,10 @@ const TELEGRAM_ACTION_KEYBOARD = {
       { text: 'Link wallet', callback_data: 'wallet:link' },
       { text: 'Help', callback_data: 'help' },
     ],
+    ...(env.TELEGRAM_MINI_APP_URL ? [[{ text: 'Open Hopr Mini App', web_app: { url: env.TELEGRAM_MINI_APP_URL } }]] : []),
   ],
-};
+  };
+}
 
 function telegramTokenKeyboard(address: string) {
   return {
@@ -345,15 +349,15 @@ async function handleTelegramMessage(
   const command = rawCommand.toLowerCase().split('@')[0];
 
   if (command === '/start') {
-    await sendTelegramMessage(chatId, 'Welcome to Hopr. Use /help to see working commands. Token lookups, wallet balance reads, and personal settings are available.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Welcome to Hopr. Use /help to see working commands. Token lookups, wallet balance reads, and personal settings are available.', env, telegramActionKeyboard(env));
     return;
   }
   if (command === '/menu') {
-    await sendTelegramMessage(chatId, 'Choose a Hopr tool. Send a token address to open the full action panel.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Choose a Hopr tool. Send a token address to open the full action panel.', env, telegramActionKeyboard(env));
     return;
   }
   if (command === '/help' || !text) {
-    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons first show a live quote; only the explicit Confirm and submit button signs and submits the trade.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Hopr bot commands:\n/start - Start the bot\n/menu - Open the action menu\n/help - Show this help\n/wallet <address> - Read native balances for a public address\n/setwallet <evm|solana> <address> - Save a public address for read-only /wallet and /balances\n/importkey <evm|solana> <key> - Import a private key as your trading wallet (DM only)\n/exportkeys - Reveal your trading wallet\'s raw private keys (DM only)\n/balances [address] - Refresh native balances\n/settings - View/change funding-chain, slippage, and quick-buy presets\n\nSend a token contract address by itself for a live lookup. Buy/Sell buttons first show a live quote; only the explicit Confirm and submit button signs and submits the trade.', env, telegramActionKeyboard(env));
     return;
   }
   if (command === '/wallet' || command === '/balances') {
@@ -422,7 +426,7 @@ async function handleTelegramMessage(
     return;
   }
 
-  await sendTelegramMessage(chatId, 'I could not match that to a command or token address. Use /help, or send a complete EVM or Solana token address.', env, TELEGRAM_ACTION_KEYBOARD);
+  await sendTelegramMessage(chatId, 'I could not match that to a command or token address. Use /help, or send a complete EVM or Solana token address.', env, telegramActionKeyboard(env));
 }
 
 function normalizeTelegramAddress(text: string): string | null {
@@ -573,7 +577,7 @@ async function setTelegramWallet(chatId: number, args: string[], env: Env): Prom
     await sendTelegramMessage(chatId, 'Could not save your wallet address. Please try again later.', env);
     return;
   }
-  await sendTelegramMessage(chatId, `${network?.toUpperCase()} public address linked: ${shortenTelegramAddress(address)}. Only native balances are read; no signing or transactions are performed. Use /wallet to check balances.`, env, TELEGRAM_ACTION_KEYBOARD);
+  await sendTelegramMessage(chatId, `${network?.toUpperCase()} public address linked: ${shortenTelegramAddress(address)}. Only native balances are read; no signing or transactions are performed. Use /wallet to check balances.`, env, telegramActionKeyboard(env));
 }
 
 async function showTelegramWallet(chatId: number, env: Env): Promise<void> {
@@ -613,7 +617,7 @@ async function showTelegramWalletBalances(chatId: number, evmAddress: string | u
     }
   }
   lines.push('\nTo save addresses, use /setwallet <evm|solana> <address>.');
-  await sendTelegramMessage(chatId, lines.join('\n'), env, TELEGRAM_ACTION_KEYBOARD);
+  await sendTelegramMessage(chatId, lines.join('\n'), env, telegramActionKeyboard(env));
 }
 
 function telegramSettingsKeyboard() {
@@ -661,7 +665,7 @@ function telegramExportWarningKeyboard() {
 async function showTelegramWalletExport(chatId: number, env: Env): Promise<void> {
   const userId = String(chatId);
   if (!env.DB || !env.ENCRYPTION_KEY) {
-    await sendTelegramMessage(chatId, 'Exporting keys requires the bot owner to configure DB and ENCRYPTION_KEY.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Exporting keys requires the bot owner to configure DB and ENCRYPTION_KEY.', env, telegramActionKeyboard(env));
     return;
   }
   const row = await env.DB.prepare(
@@ -703,7 +707,7 @@ async function handleTelegramImportKey(chatId: number, args: string[], env: Env)
          VALUES (?1, ?2, ?3, COALESCE((SELECT solana_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT solana_encrypted_key FROM user_wallets WHERE user_id = ?1), ''))
          ON CONFLICT(user_id) DO UPDATE SET evm_address = excluded.evm_address, evm_encrypted_key = excluded.evm_encrypted_key`
       ).bind(userId, address, encrypted).run();
-      await sendTelegramMessage(chatId, `EVM key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, TELEGRAM_ACTION_KEYBOARD);
+      await sendTelegramMessage(chatId, `EVM key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, telegramActionKeyboard(env));
     } else if (network?.toLowerCase() === 'solana') {
       const { address, privateKey } = importSolanaKey(rawKey ?? '');
       const encrypted = packEncryptedSecret(await encryptPrivateKey(privateKey, env.ENCRYPTION_KEY));
@@ -712,7 +716,7 @@ async function handleTelegramImportKey(chatId: number, args: string[], env: Env)
          VALUES (?1, COALESCE((SELECT evm_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT evm_encrypted_key FROM user_wallets WHERE user_id = ?1), ''), ?2, ?3)
          ON CONFLICT(user_id) DO UPDATE SET solana_address = excluded.solana_address, solana_encrypted_key = excluded.solana_encrypted_key`
       ).bind(userId, address, encrypted).run();
-      await sendTelegramMessage(chatId, `Solana key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, TELEGRAM_ACTION_KEYBOARD);
+      await sendTelegramMessage(chatId, `Solana key imported: ${shortenTelegramAddress(address)}. Delete your previous message containing the raw key now.`, env, telegramActionKeyboard(env));
     } else {
       await sendTelegramMessage(chatId, 'Usage: /importkey evm <private-key> or /importkey solana <base58-secret-key>', env);
     }
@@ -724,11 +728,11 @@ async function handleTelegramImportKey(chatId: number, args: string[], env: Env)
 async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<void> {
   const userId = String(chatId);
   if (!env.DB) {
-    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to configure the D1 database binding.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to configure the D1 database binding.', env, telegramActionKeyboard(env));
     return;
   }
   if (!env.ENCRYPTION_KEY) {
-    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to set the ENCRYPTION_KEY secret.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Creating a trading wallet requires the bot owner to set the ENCRYPTION_KEY secret.', env, telegramActionKeyboard(env));
     return;
   }
   const existing = await getCustodialWallet(userId, env);
@@ -737,7 +741,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
       chatId,
       `You already have a trading wallet:\nEVM: ${shortenTelegramAddress(existing.evmAddress)}\nSolana: ${shortenTelegramAddress(existing.solanaAddress)}\n\nHopr holds your encrypted keys and executes Buy/Sell taps immediately — there's no second confirmation step, so only tap presets you're sure about. Use /exportkeys to reveal the raw keys, or /importkey to replace this wallet with one you already control.`,
       env,
-      TELEGRAM_ACTION_KEYBOARD,
+      telegramActionKeyboard(env),
     );
     return;
   }
@@ -746,7 +750,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
     chatId,
     `Trading wallet created.\nEVM: ${shortenTelegramAddress(wallet.evmAddress)}\nSolana: ${shortenTelegramAddress(wallet.solanaAddress)}\n\nFund either address to start trading. Buy/Sell first fetch a quote; only the explicit Confirm and submit button signs and sends it. Keys are encrypted at rest (AES-256-GCM); use /exportkeys anytime to see the raw keys, or /importkey to bring your own.`,
     env,
-    TELEGRAM_ACTION_KEYBOARD,
+    telegramActionKeyboard(env),
   );
 }
 
@@ -763,11 +767,11 @@ async function showTelegramSettings(chatId: number, env: Env): Promise<void> {
 
 async function handleTelegramTradeAction(chatId: number, data: string, env: Env): Promise<void> {
   if (data === 'trade:custom') {
-    await sendTelegramMessage(chatId, 'Custom trade amounts are not enabled yet. Use /settings to choose a funding chain and slippage.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Custom trade amounts are not enabled yet. Use /settings to choose a funding chain and slippage.', env, telegramActionKeyboard(env));
     return;
   }
   if (data === 'trade:cancel') {
-    await sendTelegramMessage(chatId, 'Trade cancelled. No transaction was signed or submitted.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Trade cancelled. No transaction was signed or submitted.', env, telegramActionKeyboard(env));
     return;
   }
   const confirmMatch = data.match(/^trade:confirm:([0-9a-f-]+)$/);
@@ -778,15 +782,15 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
         solana: SUPPORTED_CHAINS.find((c) => c.key === 'sol')!.rpcUrl,
       };
       const result = await confirmTrade(String(chatId), confirmMatch[1], rpcUrls, env);
-      await sendTelegramMessage(chatId, `Trade submitted successfully.\nTransaction: ${result.txHash}\n\nThe transaction is now on-chain; final settlement may take additional time.`, env, TELEGRAM_ACTION_KEYBOARD);
+      await sendTelegramMessage(chatId, `Trade submitted successfully.\nTransaction: ${result.txHash}\n\nThe transaction is now on-chain; final settlement may take additional time.`, env, telegramActionKeyboard(env));
     } catch (error) {
-      await sendTelegramMessage(chatId, `Trade was not submitted: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
+      await sendTelegramMessage(chatId, `Trade was not submitted: ${error instanceof Error ? error.message : 'unknown error'}`, env, telegramActionKeyboard(env));
     }
     return;
   }
   const profile = await readTelegramProfile(chatId, env);
   if (!profile?.lastTokenAddress || !profile.lastTokenChainId) {
-    await sendTelegramMessage(chatId, 'Open a token lookup first (paste a contract address), then use the buy/sell buttons on that result.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Open a token lookup first (paste a contract address), then use the buy/sell buttons on that result.', env, telegramActionKeyboard(env));
     return;
   }
 
@@ -802,7 +806,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
     return;
   }
   if (!env.ENCRYPTION_KEY) {
-    await sendTelegramMessage(chatId, 'Trading is not available: the bot owner has not set ENCRYPTION_KEY.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'Trading is not available: the bot owner has not set ENCRYPTION_KEY.', env, telegramActionKeyboard(env));
     return;
   }
 
@@ -812,7 +816,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
 
   const targetChain = getChainById(profile.lastTokenChainId);
   if (!targetChain) {
-    await sendTelegramMessage(chatId, 'That chain is not supported for trading yet.', env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, 'That chain is not supported for trading yet.', env, telegramActionKeyboard(env));
     return;
   }
   const slippage = (profile.slippagePercent ?? 1) / 100;
@@ -856,7 +860,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
         .bind(userId, profile.lastTokenAddress)
         .first<{ id: string; purchased_amount: string }>();
       if (!openTrade) {
-        await sendTelegramMessage(chatId, `No open ${profile.lastTokenSymbol ?? 'token'} position found for this wallet to sell.`, env, TELEGRAM_ACTION_KEYBOARD);
+        await sendTelegramMessage(chatId, `No open ${profile.lastTokenSymbol ?? 'token'} position found for this wallet to sell.`, env, telegramActionKeyboard(env));
         return;
       }
       const sellUnits = (BigInt(openTrade.purchased_amount) * BigInt(percent)) / 100n;
@@ -873,7 +877,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env)
       return;
     }
   } catch (error) {
-    await sendTelegramMessage(chatId, `Trade failed: ${error instanceof Error ? error.message : 'unknown error'}`, env, TELEGRAM_ACTION_KEYBOARD);
+    await sendTelegramMessage(chatId, `Trade failed: ${error instanceof Error ? error.message : 'unknown error'}`, env, telegramActionKeyboard(env));
   }
 }
 
@@ -946,7 +950,7 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
       chatId,
       'Send /importkey evm <private-key> or /importkey solana <base58-secret-key> as a direct message (not in a group). Delete your message right after sending it.',
       env,
-      TELEGRAM_ACTION_KEYBOARD,
+      telegramActionKeyboard(env),
     );
   }
   if (data === 'wallet:link') {
@@ -1040,6 +1044,11 @@ async function handleApiRequest(
     return handleChainDetection(body.address, env, corsHeaders);
   }
 
+  // POST /api/telegram/session - verify Mini App initData and return public wallet addresses
+  if (path === '/api/telegram/session' && request.method === 'POST') {
+    return handleTelegramSession(request, env, corsHeaders);
+  }
+
   // GET /api/wallet/:address/balances
   if (path.match(/^\/api\/wallet\/[^/]+\/balances$/) && request.method === 'GET') {
     const address = path.split('/')[3];
@@ -1071,6 +1080,71 @@ async function handleApiRequest(
   }
 
   return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders });
+}
+
+async function hmacSha256(key: ArrayBuffer | Uint8Array, message: string): Promise<Uint8Array> {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(message)));
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) difference |= left[index] ^ right[index];
+  return difference === 0;
+}
+
+function hexToBytes(value: string): Uint8Array | null {
+  if (!/^[0-9a-f]{64}$/i.test(value)) return null;
+  const bytes = new Uint8Array(32);
+  for (let index = 0; index < bytes.length; index += 1) bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  return bytes;
+}
+
+async function verifyTelegramInitData(initData: string, botToken: string): Promise<{ id: number; first_name?: string; last_name?: string; username?: string } | null> {
+  const params = new URLSearchParams(initData);
+  const receivedHash = params.get('hash');
+  const authDate = Number(params.get('auth_date'));
+  if (!receivedHash || !Number.isFinite(authDate) || Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
+
+  const dataCheckString = [...params.entries()]
+    .filter(([key]) => key !== 'hash')
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+  const secretKey = await hmacSha256(new TextEncoder().encode('WebAppData'), botToken);
+  const expectedHash = await hmacSha256(secretKey, dataCheckString);
+  const actualHash = hexToBytes(receivedHash);
+  if (!actualHash || !bytesEqual(expectedHash, actualHash)) return null;
+
+  try {
+    const user = JSON.parse(params.get('user') ?? '') as { id?: number; first_name?: string; last_name?: string; username?: string };
+    return typeof user.id === 'number' ? { id: user.id, first_name: user.first_name, last_name: user.last_name, username: user.username } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleTelegramSession(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  if (!env.TELEGRAM_BOT_TOKEN) return Response.json({ error: 'Telegram authentication is not configured.' }, { status: 503, headers: corsHeaders });
+  const body = await request.json() as { initData?: string };
+  if (!body.initData || body.initData.length > 4096) return Response.json({ error: 'Telegram initData is required.' }, { status: 400, headers: corsHeaders });
+
+  const user = await verifyTelegramInitData(body.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!user) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
+
+  const wallet = await getCustodialWallet(String(user.id), env);
+  return Response.json({
+    user: { id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username },
+    wallet: wallet ? { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress } : null,
+    walletSource: wallet ? 'telegram' : null,
+  }, { headers: corsHeaders });
 }
 
 async function handleChainDetection(

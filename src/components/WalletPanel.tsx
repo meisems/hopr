@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Wallet, ChevronDown, ChevronUp, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { mockWalletBalances } from '../data/mockData';
 import { formatNumber, formatUsd } from '../services/chainDetector';
+import { useWallet } from '../context/WalletContext';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useWallet } from '../context/WalletContext';
 
 function getChainKey(chainId: number): string {
   const map: Record<number, string> = {
@@ -19,6 +19,7 @@ function getChainKey(chainId: number): string {
 }
 
 export default function WalletPanel() {
+  const { source, isTelegramSyncing, telegramUser } = useWallet();
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -60,7 +61,9 @@ export default function WalletPanel() {
         </div>
         <div className="mt-2">
           <div className="text-2xl font-bold text-white">{hasWallet ? formatUsd(totalBalance) : '—'}</div>
-          <div className="text-xs text-gray-500">{hasWallet ? `Across ${mockWalletBalances.length} chains` : 'Connect a wallet to view balances'}</div>
+          <div className="text-xs text-gray-500">
+            {isTelegramSyncing ? 'Syncing Telegram wallet…' : source === 'telegram' ? `Synced from Telegram${telegramUser?.username ? ` · @${telegramUser.username}` : ''}` : hasWallet ? `Across ${mockWalletBalances.length} chains` : 'Connect a wallet to view balances'}
+          </div>
         </div>
       </div>
 

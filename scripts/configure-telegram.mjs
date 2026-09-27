@@ -10,7 +10,7 @@ export const TELEGRAM_COMMANDS = [
   { command: 'settings', description: 'View funding-chain and slippage preferences' },
 ];
 
-function validateConfiguration({ token, webhookSecret, webhookUrl }) {
+function validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl }) {
   const missing = [];
   if (!token) missing.push('TELEGRAM_BOT_TOKEN');
   if (!webhookSecret) missing.push('TELEGRAM_WEBHOOK_SECRET');
@@ -29,6 +29,15 @@ function validateConfiguration({ token, webhookSecret, webhookUrl }) {
   }
   if (parsedUrl.protocol !== 'https:') {
     throw new Error('TELEGRAM_WEBHOOK_URL must use HTTPS.');
+  }
+  if (miniAppUrl) {
+    let parsedMiniAppUrl;
+    try {
+      parsedMiniAppUrl = new URL(miniAppUrl);
+    } catch {
+      throw new Error('TELEGRAM_MINI_APP_URL must be a valid HTTPS URL.');
+    }
+    if (parsedMiniAppUrl.protocol !== 'https:') throw new Error('TELEGRAM_MINI_APP_URL must use HTTPS.');
   }
 }
 
@@ -57,8 +66,8 @@ async function callTelegramApi(token, method, body, fetchImpl) {
   return result.result;
 }
 
-export async function configureTelegram({ token, webhookSecret, webhookUrl, fetchImpl = fetch }) {
-  validateConfiguration({ token, webhookSecret, webhookUrl });
+export async function configureTelegram({ token, webhookSecret, webhookUrl, miniAppUrl, fetchImpl = fetch }) {
+  validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl });
 
   await callTelegramApi(token, 'setWebhook', {
     url: webhookUrl,
@@ -66,9 +75,11 @@ export async function configureTelegram({ token, webhookSecret, webhookUrl, fetc
     allowed_updates: ['message', 'callback_query'],
   }, fetchImpl);
   await callTelegramApi(token, 'setMyCommands', TELEGRAM_COMMANDS, fetchImpl);
-  await callTelegramApi(token, 'setChatMenuButton', { menu_button: { type: 'commands' } }, fetchImpl);
+  await callTelegramApi(token, 'setChatMenuButton', {
+    menu_button: miniAppUrl ? { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } : { type: 'commands' },
+  }, fetchImpl);
 
-  return { webhook: true, commands: TELEGRAM_COMMANDS.map(({ command }) => command), menuButton: 'commands' };
+  return { webhook: true, commands: TELEGRAM_COMMANDS.map(({ command }) => command), menuButton: miniAppUrl ? 'web_app' : 'commands' };
 }
 
 async function main() {
@@ -77,6 +88,7 @@ async function main() {
       token: process.env.TELEGRAM_BOT_TOKEN,
       webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
       webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
+      miniAppUrl: process.env.TELEGRAM_MINI_APP_URL,
     });
     console.log(`Telegram configured: webhook, slash-command suggestions (${result.commands.map((command) => `/${command}`).join(', ')}), and command menu.`);
   } catch (error) {
