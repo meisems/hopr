@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Search, Loader2, X, Zap } from 'lucide-react';
-import { detectChain, DetectedToken, formatAddress } from '../services/chainDetector';
+import { detectChain, DetectedToken, formatAddress, formatTokenPrice } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useCache } from '../hooks/useCache';
@@ -180,7 +180,7 @@ export default function SearchBar({ onTokenDetected }: SearchBarProps) {
                 </div>
                 <div className="text-right flex-shrink-0">
                   <div className="text-sm font-semibold text-white">
-                    ${detected.priceUsd < 0.01 ? detected.priceUsd.toFixed(8) : detected.priceUsd.toFixed(4)}
+                    {formatTokenPrice(detected.priceUsd)}
                   </div>
                   <div className={`text-xs font-medium ${detected.change24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {detected.change24h >= 0 ? '+' : ''}{detected.change24h.toFixed(2)}%

@@ -293,3 +293,31 @@ export function formatUsd(value: number): string {
   if (value >= 1) return `$${value.toFixed(4)}`;
   return `$${value.toFixed(8)}`;
 }
+
+const SUPERSCRIPT_DIGITS: Record<string, string> = {
+  '-': '⁻',
+  '0': '⁰',
+  '1': '¹',
+  '2': '²',
+  '3': '³',
+  '4': '⁴',
+  '5': '⁵',
+  '6': '⁶',
+  '7': '⁷',
+  '8': '⁸',
+  '9': '⁹',
+};
+
+function toSuperscript(value: number): string {
+  return String(value).split('').map((digit) => SUPERSCRIPT_DIGITS[digit] ?? digit).join('');
+}
+
+/** Format token prices with two decimals, preserving tiny prices with ×10ⁿ notation. */
+export function formatTokenPrice(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return '$0.00';
+  if (Math.abs(value) >= 0.01) return `$${value.toFixed(2)}`;
+
+  const exponent = Math.floor(Math.log10(Math.abs(value)));
+  const coefficient = value / (10 ** exponent);
+  return `$${coefficient.toFixed(2)} × 10${toSuperscript(exponent)}`;
+}

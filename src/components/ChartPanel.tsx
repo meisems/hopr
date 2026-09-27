@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { DetectedToken, formatUsd } from '../services/chainDetector';
+import { DetectedToken, formatTokenPrice, formatUsd } from '../services/chainDetector';
 import { TrendingUp, TrendingDown, Clock, BarChart3, Loader2 } from 'lucide-react';
 import ChainLogo from './ChainLogo';
 
@@ -108,7 +108,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
             <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"><ChainLogo chainKey={getChainKey(token.chainId)} size={32} /></div>
             <div>
               <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-white">{token.symbol}/USD</span><span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>{token.chainName}</span></div>
-              <div className="flex items-center gap-2 mt-0.5 flex-wrap"><span className="text-base sm:text-lg font-bold text-white">{token.priceUsd < 0.01 ? `$${token.priceUsd.toFixed(8)}` : `$${token.priceUsd.toFixed(4)}`}</span><span className={`flex items-center gap-0.5 text-xs sm:text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>{isPositive ? <TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <TrendingDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}{isPositive ? '+' : ''}{priceChange.toFixed(2)}%</span></div>
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap"><span className="text-base sm:text-lg font-bold text-white">{formatTokenPrice(token.priceUsd)}</span><span className={`flex items-center gap-0.5 text-xs sm:text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>{isPositive ? <TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <TrendingDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}{isPositive ? '+' : ''}{priceChange.toFixed(2)}%</span></div>
             </div>
           </div>
           <div className="flex items-center gap-0.5 sm:gap-1 bg-gray-800/60 rounded-lg p-1 overflow-x-auto">
@@ -119,7 +119,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
 
       <div className="flex-1 p-4 min-h-0">
         {chartStatus === 'loading' ? <div className="h-full min-h-64 flex items-center justify-center gap-2 text-sm text-gray-400"><Loader2 className="w-4 h-4 animate-spin" /> Loading real price history…</div> : chartStatus === 'ready' ? <>
-          <ResponsiveContainer width="100%" height="70%"><AreaChart data={chartData}><defs><linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={isPositive ? '#10B981' : '#EF4444'} stopOpacity={0.3} /><stop offset="95%" stopColor={isPositive ? '#10B981' : '#EF4444'} stopOpacity={0} /></linearGradient></defs><XAxis dataKey="timestamp" hide /><YAxis hide domain={['auto', 'auto']} /><Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '12px', fontSize: '12px' }} labelStyle={{ color: '#9CA3AF' }} formatter={(value: number) => [formatUsd(value), 'Price']} labelFormatter={(label: number) => formatTime(label, timeRange)} /><Area type="monotone" dataKey="price" stroke={isPositive ? '#10B981' : '#EF4444'} strokeWidth={2} fill="url(#priceGradient)" /></AreaChart></ResponsiveContainer>
+          <ResponsiveContainer width="100%" height="70%"><AreaChart data={chartData}><defs><linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={isPositive ? '#10B981' : '#EF4444'} stopOpacity={0.3} /><stop offset="95%" stopColor={isPositive ? '#10B981' : '#EF4444'} stopOpacity={0} /></linearGradient></defs><XAxis dataKey="timestamp" hide /><YAxis hide domain={['auto', 'auto']} /><Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '12px', fontSize: '12px' }} labelStyle={{ color: '#9CA3AF' }} formatter={(value: number) => [formatTokenPrice(value), 'Price']} labelFormatter={(label: number) => formatTime(label, timeRange)} /><Area type="monotone" dataKey="price" stroke={isPositive ? '#10B981' : '#EF4444'} strokeWidth={2} fill="url(#priceGradient)" /></AreaChart></ResponsiveContainer>
           <ResponsiveContainer width="100%" height="25%"><BarChart data={chartData}><XAxis dataKey="timestamp" hide /><YAxis hide /><Bar dataKey="volume" fill="#6366F1" opacity={0.3} radius={[2, 2, 0, 0]} /></BarChart></ResponsiveContainer>
           </> : <div className="h-full min-h-64 flex items-center justify-center text-center px-6"><div><BarChart3 className="w-10 h-10 text-gray-500 mx-auto mb-3" /><p className="text-sm text-gray-400">{chartStatus === 'error' ? chartError : token.pairAddress ? 'No historical candles are available for this range.' : 'No liquidity pool is available for this token yet.'}</p><p className="text-xs text-gray-500 mt-1">Hopr only displays chart data returned by the data provider.</p></div></div>}
       </div>
