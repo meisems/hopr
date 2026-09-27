@@ -106,6 +106,32 @@ const GECKO_NETWORKS: Record<string, string> = {
   arc: 'arc',
 };
 
+const PONS_V2_FACTORY = '0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e';
+const PONS_GET_LAUNCHED_TOKEN_SELECTOR = '0x3cf28b5a';
+
+/** Read Pons V2's selected quote asset before a launch graduates into a pool. */
+async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: string; symbol: string; name: string } | null> {
+  const data = `${PONS_GET_LAUNCHED_TOKEN_SELECTOR}${tokenAddress.slice(2).padStart(64, '0')}`;
+  try {
+    const response = await fetch('https://rpc.mainnet.chain.robinhood.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: PONS_V2_FACTORY, data }, 'latest'] }),
+    });
+    const payload = await response.json() as { result?: string };
+    const encoded = payload.result ?? '';
+    if (!encoded.startsWith('0x') || encoded.length < 2 + 32 * 12 * 2) return null;
+    const word = (index: number) => encoded.slice(2 + index * 64, 2 + (index + 1) * 64);
+    if (!word(11).endsWith('1')) return null;
+    const pairedAddress = `0x${word(2).slice(24)}`;
+    if (/^0x0+$/.test(pairedAddress)) return null;
+    const metadata = await readErc20Metadata(SUPPORTED_CHAINS.find((chain) => chain.id === 4663)!.rpcUrl, pairedAddress);
+    return { address: pairedAddress, symbol: metadata?.symbol ?? 'QUOTE', name: metadata?.name ?? 'Quote asset' };
+  } catch {
+    return null;
+  }
+}
+
 function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo, scannedAddress: string): DetectedToken {
   const source = pair.dexId ? formatLiquiditySource(pair.dexId) : 'DexScreener';
   const scanned = scannedAddress.toLowerCase();
@@ -401,7 +427,10 @@ export async function detectChain(address: string): Promise<DetectedToken | null
           const canonicalPool = await fetchGeckoTerminalMarket(address, chainInfo);
           if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
         }
-        return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+        const detected = pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+        const ponsPair = await fetchPonsPairToken(address);
+        if (ponsPair) detected.pairedAsset = ponsPair;
+        return detected;
       }
     }
 
@@ -416,7 +445,12 @@ export async function detectChain(address: string): Promise<DetectedToken | null
 
     // Not indexed (fresh deployment, or a chain DexScreener doesn't cover,
     // e.g. Robinhood Chain / Arc) — fall back to bytecode probing.
-    return probeEvmChains(address);
+    const freshToken = await probeEvmChains(address);
+    if (freshToken && freshToken.chainId === 4663) {
+      const ponsPair = await fetchPonsPairToken(address);
+      if (ponsPair) freshToken.pairedAsset = ponsPair;
+    }
+    return freshToken;
   }
 
   return null;
