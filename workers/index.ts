@@ -600,15 +600,14 @@ async function showTelegramWallet(chatId: number, env: Env): Promise<void> {
 }
 
 async function showTelegramWalletBalances(chatId: number, evmAddress: string | undefined, solanaAddress: string | undefined, env: Env): Promise<void> {
-  const lines = ['Linked public wallets (read-only):'];
+  const lines = ['<b>Wallet 1</b>'];
   if (evmAddress) {
-    lines.push(`EVM ${shortenTelegramAddress(evmAddress)}:`);
     const results = await Promise.all(TELEGRAM_CHAINS.filter((chain) => chain.id !== 1151111081099710).map(async (chain) => {
       try {
         const balance = await fetchEvmBalance(evmAddress, chain.id);
-        return `  ${chain.name}: ${Number(balance).toFixed(5)} ${chain.symbol}`;
+        return `${chainEmoji(chain.name)} <b>${escapeTelegramHtml(chain.name)}</b>: ${formatTelegramBalance(balance)} <code>${chain.symbol}</code>  <tg-spoiler>$—</tg-spoiler>`;
       } catch {
-        return `  ${chain.name}: unavailable`;
+        return `${chainEmoji(chain.name)} <b>${escapeTelegramHtml(chain.name)}</b>: <i>unavailable</i>`;
       }
     }));
     lines.push(...results);
@@ -616,13 +615,41 @@ async function showTelegramWalletBalances(chatId: number, evmAddress: string | u
   if (solanaAddress) {
     try {
       const balance = await fetchSolanaBalance(solanaAddress);
-      lines.push(`Solana ${shortenTelegramAddress(solanaAddress)}: ${Number(balance).toFixed(5)} SOL`);
+      lines.push(`◎ <b>Solana</b>: ${formatTelegramBalance(balance)} <code>SOL</code>  <tg-spoiler>$—</tg-spoiler>`);
     } catch {
-      lines.push(`Solana ${shortenTelegramAddress(solanaAddress)}: unavailable`);
+      lines.push('◎ <b>Solana</b>: <i>unavailable</i>');
     }
   }
-  lines.push('\nTo save addresses, use /setwallet <evm|solana> <address>.');
-  await sendTelegramMessage(chatId, lines.join('\n'), env, telegramActionKeyboard(env));
+  lines.push('', '<b>Total:</b> USD pricing unavailable', '', `<b>EVM:</b> <code>${escapeTelegramHtml(evmAddress ?? 'not linked')}</code>`, `<b>SOL:</b> <code>${escapeTelegramHtml(solanaAddress ?? 'not linked')}</code>`);
+  await sendTelegramMessage(chatId, lines.join('\n'), env, telegramWalletActionKeyboard(env), 'HTML');
+}
+
+function formatTelegramBalance(value: string | number): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '—';
+  if (amount !== 0 && Math.abs(amount) < 0.01) return amount.toExponential(2);
+  return amount.toFixed(2);
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function chainEmoji(name: string): string {
+  const icons: Record<string, string> = { Base: '🔷', Ethereum: '♦️', Binance: '🟡', Abstract: '🟢', Avalanche: '🔺', HyperEVM: '◉', Arbitrum: '🔵', Ink: '🟣', Story: 'Ⓢ', 'X Layer': '▧', Plasma: '◒', UniChain: '🟪', Monad: '◈', MegaETH: 'Ⓜ️', Tempo: 'Ⓣ', Robinhood: '🟩', Arc: '◢', Stable: '₮' };
+  return icons[name] ?? '•';
+}
+
+function telegramWalletActionKeyboard(env: Env) {
+  return {
+    inline_keyboard: [
+      [{ text: '📥 Import a wallet', callback_data: 'wallet:import' }, { text: '💼 Preferred Wallet', callback_data: 'wallet:preferred' }],
+      [{ text: '🔑 Export private key', callback_data: 'wallet:export' }, { text: '🗑 Delete wallet', callback_data: 'wallet:delete' }],
+      [{ text: '📦 Create wallet', callback_data: 'wallet:generate' }, { text: '🔄 Refresh balances', callback_data: 'wallet' }],
+      ...(env.TELEGRAM_MINI_APP_URL ? [[{ text: '↗ Open Wallet Vault', web_app: { url: env.TELEGRAM_MINI_APP_URL } }]] : []),
+      [{ text: '⚙ Settings', callback_data: 'settings' }, { text: '❔ Help', callback_data: 'help' }],
+    ],
+  };
 }
 
 function telegramSettingsKeyboard() {
@@ -948,6 +975,18 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env): P
   }
   if (data === 'wallet:generate') {
     return showTelegramWalletGenerate(chatId, env);
+  }
+  if (data === 'wallet:preferred') {
+    return sendTelegramMessage(chatId, '💼 The wallet shown above is your preferred wallet. Use the Wallet Vault in the Mini App to create, select, archive, or manage multiple wallets.', env, telegramWalletActionKeyboard(env));
+  }
+  if (data === 'wallet:delete') {
+    return sendTelegramMessage(chatId, '⚠️ <b>Delete wallet permanently?</b>\n\nThis cannot be undone. If you did not back up the private keys, the wallet and its funds cannot be recovered.', env, { inline_keyboard: [[{ text: '🗑 Delete permanently', callback_data: 'wallet:delete:confirm' }], [{ text: 'Cancel', callback_data: 'wallet' }]] }, 'HTML');
+  }
+  if (data === 'wallet:delete:confirm') {
+    if (!env.DB) return sendTelegramMessage(chatId, 'Wallet storage is not configured.', env);
+    await env.DB.prepare('DELETE FROM wallet_accounts WHERE user_id = ?1').bind(String(chatId)).run().catch(() => undefined);
+    await env.DB.prepare('DELETE FROM user_wallets WHERE user_id = ?1').bind(String(chatId)).run().catch(() => undefined);
+    return sendTelegramMessage(chatId, '✅ Wallet deleted permanently. It cannot be recovered without a backup.', env, telegramActionKeyboard(env));
   }
   if (data === 'wallet:export') {
     return showTelegramWalletExport(chatId, env);

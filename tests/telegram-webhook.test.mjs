@@ -151,9 +151,9 @@ test('wallet command reads EVM and Solana native balances', async () => {
       return Response.json({ result: '0x38d7ea4c68000' });
     },
   });
-  assert.match(calls.at(-1).body.text, /Solana .*: 2\.50000 SOL/);
-  assert.match(calls.at(-1).body.text, /Base: 0\.00100 ETH/);
-  assert.match(calls.at(-1).body.text, /Arbitrum One: 0\.00100 ETH/);
+  assert.match(calls.at(-1).body.text, /<b>Solana<\/b>: 2\.50 <code>SOL<\/code>/);
+  assert.match(calls.at(-1).body.text, /<b>Base<\/b>: 1\.00e-3 <code>ETH<\/code>/);
+  assert.match(calls.at(-1).body.text, /<b>Arbitrum One<\/b>: 1\.00e-3 <code>ETH<\/code>/);
 });
 
 test('/wallet <address> reads balances without requiring saved profile storage', async () => {
@@ -161,8 +161,8 @@ test('/wallet <address> reads balances without requiring saved profile storage',
   const { calls } = await sendUpdate({ message: { chat: { id: 459, type: 'private' }, text: `/wallet ${address}` } }, {
     externalFetch: async () => Response.json({ result: '0x38d7ea4c68000' }),
   });
-  assert.match(calls[0].body.text, /EVM 0x1234…5678/);
-  assert.match(calls[0].body.text, /Base: 0\.00100 ETH/);
+  assert.match(calls[0].body.text, /<b>EVM:<\/b> <code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);
+  assert.match(calls[0].body.text, /<b>Base<\/b>: 1\.00e-3 <code>ETH<\/code>/);
 });
 
 test('token address gets real market lookup details from DexScreener', async () => {
