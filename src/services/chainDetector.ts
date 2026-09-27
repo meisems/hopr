@@ -112,6 +112,7 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
   const isQuote = pair.quoteToken?.address.toLowerCase() === scanned && pair.baseToken.address.toLowerCase() !== scanned;
   const token = isQuote && pair.quoteToken ? pair.quoteToken : pair.baseToken;
   const paired = isQuote ? pair.baseToken : pair.quoteToken;
+  const robinhoodDefaultPair = chainInfo.id === 4663 && !paired ? { symbol: 'WETH', name: 'Wrapped Ether' } : undefined;
   return {
     address: token.address,
     name: token.name,
@@ -131,7 +132,7 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     freshDeployment: false,
     liquiditySource: source,
     launchpad: detectLaunchpad(source),
-    pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : undefined,
+    pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : robinhoodDefaultPair,
   };
 }
 

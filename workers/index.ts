@@ -1362,7 +1362,7 @@ async function handleChainDetection(
     const data = await response.json();
     
     if (data.pairs && data.pairs.length > 0) {
-      const pair = data.pairs[0];
+      const pair = data.pairs.find((item: { baseToken?: { address?: string }; quoteToken?: { address?: string } }) => item.baseToken?.address === address || item.quoteToken?.address === address) ?? data.pairs[0];
       result = {
         address,
         name: pair.baseToken.name,
@@ -1386,7 +1386,9 @@ async function handleChainDetection(
     const data = await response.json();
     
     if (data.pairs && data.pairs.length > 0) {
-      const pair = data.pairs[0];
+      const pair = data.pairs.find((item: { chainId?: string; baseToken?: { address?: string }; quoteToken?: { address?: string } }) => item.chainId === 'robinhood' && (item.baseToken?.address?.toLowerCase() === address.toLowerCase() || item.quoteToken?.address?.toLowerCase() === address.toLowerCase()))
+        ?? data.pairs.find((item: { chainId?: string }) => item.chainId === 'robinhood')
+        ?? data.pairs[0];
       const chainMap: Record<string, { id: number; name: string; color: string }> = {
         'arbitrum': { id: 42161, name: 'Arbitrum One', color: '#28A0F0' },
         'base': { id: 8453, name: 'Base', color: '#0052FF' },
@@ -1397,10 +1399,13 @@ async function handleChainDetection(
       
       const chainInfo = chainMap[pair.chainId] || { id: 0, name: pair.chainId, color: '#666' };
       
+      const scannedIsQuote = pair.quoteToken?.address?.toLowerCase() === address.toLowerCase() && pair.baseToken?.address?.toLowerCase() !== address.toLowerCase();
+      const token = scannedIsQuote && pair.quoteToken ? pair.quoteToken : pair.baseToken;
+      const paired = scannedIsQuote ? pair.baseToken : pair.quoteToken;
       result = {
         address,
-        name: pair.baseToken.name,
-        symbol: pair.baseToken.symbol,
+        name: token.name,
+        symbol: token.symbol,
         decimals: 18,
         chainId: chainInfo.id,
         chainType: 'EVM',
@@ -1411,6 +1416,7 @@ async function handleChainDetection(
         fdv: pair.fdv || 0,
         change24h: pair.priceChange?.h24 || 0,
         volume24h: pair.volume?.h24 || 0,
+        pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : chainInfo.id === 4663 ? { symbol: 'WETH', name: 'Wrapped Ether' } : undefined,
         dexId: pair.dexId,
       };
     }
