@@ -109,6 +109,8 @@ const GECKO_NETWORKS: Record<string, string> = {
 
 const PONS_V2_FACTORY = '0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e';
 const PONS_GET_LAUNCHED_TOKEN_SELECTOR = '0x3cf28b5a';
+const ARGUS_PORTAL_7 = '0xB021Be536808f551b31789422Fd28a6c9c6e97Da';
+const ARGUS_LAUNCHES_SELECTOR = '0x1f2d8550';
 
 /** Read Pons V2's selected quote asset before a launch graduates into a pool. */
 async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: string; symbol: string; name: string } | null> {
@@ -128,6 +130,43 @@ async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: stri
     if (/^0x0+$/.test(pairedAddress)) return null;
     const metadata = await readErc20Metadata(SUPPORTED_CHAINS.find((chain) => chain.id === 4663)!.rpcUrl, pairedAddress);
     return { address: pairedAddress, symbol: metadata?.symbol ?? 'QUOTE', name: metadata?.name ?? 'Quote asset' };
+  } catch {
+    return null;
+  }
+}
+
+interface ArgusLaunch {
+  creator: string;
+  hook: string;
+  locker: string;
+  quoteAsset: string;
+  name: string;
+  symbol: string;
+}
+
+/** Portal #7 is the authority for current Arc Argus launches. */
+async function fetchArgusPortalLaunch(tokenAddress: string): Promise<ArgusLaunch | null> {
+  const arcRpc = SUPPORTED_CHAINS.find((chain) => chain.id === 5042)!.rpcUrl;
+  const data = `${ARGUS_LAUNCHES_SELECTOR}${tokenAddress.slice(2).padStart(64, '0')}`;
+  try {
+    const response = await fetch(arcRpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: ARGUS_PORTAL_7, data }, 'latest'] }),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { result?: string };
+    const encoded = payload.result ?? '';
+    if (!/^0x[0-9a-fA-F]+$/.test(encoded) || encoded.length !== 2 + 11 * 64) return null;
+    const word = (index: number) => encoded.slice(2 + index * 64, 2 + (index + 1) * 64);
+    const addressFromWord = (index: number) => `0x${word(index).slice(24)}`;
+    const creator = addressFromWord(0);
+    const hook = addressFromWord(4);
+    const locker = addressFromWord(3);
+    const quoteAsset = addressFromWord(10);
+    if (/^0x0+$/.test(creator) || /^0x0+$/.test(hook) || /^0x0+$/.test(locker)) return null;
+    const metadata = await readErc20Metadata(arcRpc, tokenAddress);
+    return { creator, hook, locker, quoteAsset, name: metadata?.name ?? 'Argus token', symbol: metadata?.symbol ?? 'UNKNOWN' };
   } catch {
     return null;
   }
@@ -411,6 +450,32 @@ export async function detectChain(address: string): Promise<DetectedToken | null
   }
 
   if (isEvmAddress(address)) {
+    const argusLaunch = await fetchArgusPortalLaunch(address);
+    if (argusLaunch) {
+      const arcChain = SUPPORTED_CHAINS.find((chain) => chain.id === 5042)!;
+      const market = await fetchGeckoTerminalMarket(address, arcChain);
+      return {
+        address,
+        name: argusLaunch.name,
+        symbol: argusLaunch.symbol,
+        decimals: 18,
+        chainId: arcChain.id,
+        chainType: 'EVM',
+        chainName: arcChain.name,
+        chainColor: arcChain.color,
+        priceUsd: market?.priceUsd ?? 0,
+        liquidity: market?.liquidity ?? 0,
+        volume24h: market?.volume24h ?? 0,
+        fdv: market?.fdv ?? 0,
+        change24h: 0,
+        pairAddress: market?.pairAddress,
+        geckoNetwork: GECKO_NETWORK_SLUGS[arcChain.key],
+        freshDeployment: !market,
+        liquiditySource: market?.source ?? 'Argus Portal #7',
+        launchpad: 'ArgusWorld',
+        pairedAsset: { address: argusLaunch.quoteAsset, symbol: market?.pairedAsset?.symbol ?? 'USDC' },
+      };
+    }
     const pairs = await fetchDexScreener(address);
     const indexedPair = pairs.find((p) => {
       const sameChain = p.chainId.toLowerCase() in DEXSCREENER_CHAIN_SLUGS && p.chainId.toLowerCase() !== 'solana';

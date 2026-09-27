@@ -125,6 +125,8 @@ const TELEGRAM_WALLET_PROMPTS = {
 };
 
 const telegramDetectionMemoryCache = new Map<string, { expiresAt: number; value: Record<string, unknown> }>();
+const ARGUS_PORTAL_7 = '0xB021Be536808f551b31789422Fd28a6c9c6e97Da';
+const ARGUS_LAUNCHES_SELECTOR = '0x1f2d8550';
 
 const TELEGRAM_CHAINS = [
   { id: 1151111081099710, name: 'Solana', symbol: 'SOL' },
@@ -1381,11 +1383,32 @@ async function handleChainDetection(
       };
     }
   } else if (isEvm) {
+    const argusLaunch = await fetchArgusPortalLaunch(address);
+    if (argusLaunch) {
+      result = {
+        address,
+        name: argusLaunch.name,
+        symbol: argusLaunch.symbol,
+        decimals: 18,
+        chainId: 5042,
+        chainType: 'EVM',
+        chainName: 'Arc Chain',
+        chainColor: '#FF6D00',
+        priceUsd: 0,
+        liquidity: 0,
+        fdv: 0,
+        change24h: 0,
+        volume24h: 0,
+        liquiditySource: 'Argus Portal #7',
+        launchpad: 'ArgusWorld',
+        pairedAsset: { address: argusLaunch.quoteAsset, symbol: 'USDC' },
+      };
+    }
     // EVM token detection via DexScreener
-    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    const data = await response.json();
+    const response = result ? null : await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+    const data = response ? await response.json() : {};
     
-    if (data.pairs && data.pairs.length > 0) {
+    if (!result && data.pairs && data.pairs.length > 0) {
       const pair = data.pairs.find((item: { chainId?: string; baseToken?: { address?: string }; quoteToken?: { address?: string } }) => item.chainId === 'robinhood' && (item.baseToken?.address?.toLowerCase() === address.toLowerCase() || item.quoteToken?.address?.toLowerCase() === address.toLowerCase()))
         ?? data.pairs.find((item: { chainId?: string }) => item.chainId === 'robinhood')
         ?? data.pairs[0];
@@ -1506,6 +1529,51 @@ async function fetchGeckoLaunchpadPool(address: string, network: string): Promis
   } catch {
     return null;
   }
+}
+
+async function fetchArgusPortalLaunch(tokenAddress: string): Promise<{ creator: string; hook: string; locker: string; quoteAsset: string; name: string; symbol: string } | null> {
+  try {
+    const response = await fetch('https://rpc.mainnet.arc.io', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: ARGUS_PORTAL_7, data: `${ARGUS_LAUNCHES_SELECTOR}${tokenAddress.slice(2).padStart(64, '0')}` }, 'latest'] }),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { result?: string };
+    const encoded = payload.result ?? '';
+    if (!/^0x[0-9a-fA-F]+$/.test(encoded) || encoded.length !== 2 + 11 * 64) return null;
+    const word = (index: number) => encoded.slice(2 + index * 64, 2 + (index + 1) * 64);
+    const addressFromWord = (index: number) => `0x${word(index).slice(24)}`;
+    const creator = addressFromWord(0);
+    const hook = addressFromWord(4);
+    const locker = addressFromWord(3);
+    const quoteAsset = addressFromWord(10);
+    if (/^0x0+$/.test(creator) || /^0x0+$/.test(hook) || /^0x0+$/.test(locker)) return null;
+    const metadata = await fetchArgusTokenMetadata(tokenAddress);
+    return { creator, hook, locker, quoteAsset, name: metadata.name, symbol: metadata.symbol };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchArgusTokenMetadata(address: string): Promise<{ name: string; symbol: string }> {
+  const calls = [{ sig: '0x06fdde03', key: 'name' }, { sig: '0x95d89b41', key: 'symbol' }];
+  const values = await Promise.all(calls.map(async ({ sig }) => {
+    const response = await fetch('https://rpc.mainnet.arc.io', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: address, data: sig }, 'latest'] }),
+    });
+    const payload = await response.json() as { result?: string };
+    return payload.result ?? '0x';
+  }));
+  const decode = (value: string) => {
+    const clean = value.slice(2);
+    const length = parseInt(clean.slice(64, 128), 16) || 0;
+    const bytes = clean.slice(128, 128 + length * 2).match(/.{1,2}/g) ?? [];
+    return new TextDecoder().decode(Uint8Array.from(bytes.map((byte) => parseInt(byte, 16))));
+  };
+  return { name: decode(values[0]) || 'Argus token', symbol: decode(values[1]) || 'UNKNOWN' };
 }
 
 async function handleWalletBalances(
