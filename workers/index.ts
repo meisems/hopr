@@ -1446,6 +1446,7 @@ async function handleChainDetection(
         pairAddress: hit.pool.pairAddress,
         liquiditySource: hit.pool.source,
         launchpad: hit.pool.launchpad,
+        pairedAsset: hit.pool.pairedAsset,
         dexId: hit.pool.source,
       };
     }
@@ -1466,11 +1467,11 @@ async function handleChainDetection(
   return Response.json(result, { headers: { ...corsHeaders, 'X-Cache': 'MISS' } });
 }
 
-async function fetchGeckoLaunchpadPool(address: string, network: string): Promise<{ name: string; symbol: string; source: string; launchpad?: string; priceUsd: number; liquidity: number; volume24h: number; fdv: number; pairAddress: string } | null> {
+async function fetchGeckoLaunchpadPool(address: string, network: string): Promise<{ name: string; symbol: string; source: string; launchpad?: string; priceUsd: number; liquidity: number; volume24h: number; fdv: number; pairAddress: string; pairedAsset?: { symbol: string } } | null> {
   try {
     const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
     if (!response.ok) return null;
-    const payload = await response.json() as { data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } } } }> };
+    const payload = await response.json() as { data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }> };
     const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
     if (!pool?.attributes || Number(pool.attributes.reserve_in_usd ?? 0) <= 0) return null;
     const attrs = pool.attributes;
@@ -1478,16 +1479,23 @@ async function fetchGeckoLaunchpadPool(address: string, network: string): Promis
     const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
     const launchpad = normalized.includes('pump') ? 'Pump.fun' : normalized.includes('stonk') ? 'StonkFun' : normalized.includes('argus') ? 'ArgusWorld' : normalized.includes('tolly') ? 'TollyLabs' : normalized.includes('pons') ? 'PonsFamily' : undefined;
     const volume = attrs.volume_usd as { h24?: number } | undefined;
+    const pairSymbols = String(attrs.name ?? 'Launchpad token').split(' / ').map((part) => part.replace(/\s+\d+(?:\.\d+)?%$/, '').trim());
+    const baseId = pool.relationships?.base_token?.data?.id?.split('_').pop()?.toLowerCase();
+    const quoteId = pool.relationships?.quote_token?.data?.id?.split('_').pop()?.toLowerCase();
+    const scannedIsQuote = quoteId === address.toLowerCase() && baseId !== address.toLowerCase();
+    const tokenName = scannedIsQuote ? pairSymbols[1] : pairSymbols[0];
+    const tokenSymbol = scannedIsQuote ? pairSymbols[1] : String(attrs.base_token_symbol ?? pairSymbols[0] ?? 'UNKNOWN');
     return {
-      name: String(attrs.name ?? 'Launchpad token').split(' / ')[0],
-      symbol: String(attrs.base_token_symbol ?? 'UNKNOWN'),
+      name: tokenName || 'Token',
+      symbol: tokenSymbol || 'UNKNOWN',
       source,
       launchpad,
-      priceUsd: Number(attrs.base_token_price_usd ?? 0),
+      priceUsd: Number((scannedIsQuote ? attrs.quote_token_price_usd : attrs.base_token_price_usd) ?? attrs.token_price_usd ?? 0),
       liquidity: Number(attrs.reserve_in_usd ?? 0),
       volume24h: Number(volume?.h24 ?? 0),
       fdv: Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0),
       pairAddress: pool.id?.split('_').pop() ?? '',
+      pairedAsset: pairSymbols[scannedIsQuote ? 0 : 1] ? { symbol: pairSymbols[scannedIsQuote ? 0 : 1] } : undefined,
     };
   } catch {
     return null;

@@ -53,6 +53,7 @@ export interface DetectedToken {
   liquiditySource?: string;
   /** Launchpad or pool family when the source exposes one. */
   launchpad?: string;
+  pairedAsset?: { address?: string; symbol: string; name?: string };
 }
 
 const BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -70,6 +71,7 @@ interface DexScreenerPair {
   chainId: string;
   pairAddress?: string;
   baseToken: { address: string; name: string; symbol: string };
+  quoteToken?: { address: string; name: string; symbol: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
   volume?: { h24?: number };
@@ -104,12 +106,16 @@ const GECKO_NETWORKS: Record<string, string> = {
   arc: 'arc',
 };
 
-function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo): DetectedToken {
+function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo, scannedAddress: string): DetectedToken {
   const source = pair.dexId ? formatLiquiditySource(pair.dexId) : 'DexScreener';
+  const scanned = scannedAddress.toLowerCase();
+  const isQuote = pair.quoteToken?.address.toLowerCase() === scanned && pair.baseToken.address.toLowerCase() !== scanned;
+  const token = isQuote && pair.quoteToken ? pair.quoteToken : pair.baseToken;
+  const paired = isQuote ? pair.baseToken : pair.quoteToken;
   return {
-    address: pair.baseToken.address,
-    name: pair.baseToken.name,
-    symbol: pair.baseToken.symbol,
+    address: token.address,
+    name: token.name,
+    symbol: token.symbol,
     decimals: chainInfo.type === 'SVM' ? 9 : 18, // refined by on-chain call where available
     chainId,
     chainType: chainInfo.type,
@@ -125,6 +131,7 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     freshDeployment: false,
     liquiditySource: source,
     launchpad: detectLaunchpad(source),
+    pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : undefined,
   };
 }
 
@@ -147,6 +154,7 @@ interface GeckoPoolMarket {
   volume24h: number;
   fdv: number;
   pairAddress: string;
+  pairedAsset?: { symbol: string; name?: string };
 }
 
 /**
@@ -161,7 +169,7 @@ async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Prom
     const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
     if (!response.ok) return null;
     const payload = await response.json() as {
-      data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } } } }>;
+      data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }>;
     };
     const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
     if (!pool?.attributes) return null;
@@ -169,19 +177,28 @@ async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Prom
     const reserve = Number(attrs.reserve_in_usd ?? 0);
     if (!Number.isFinite(reserve) || reserve <= 0) return null;
     const volume = attrs.volume_usd as { h24?: number } | undefined;
+    const poolName = String(attrs.name ?? 'Launchpad token');
+    const pairSymbols = poolName.split(' / ').map((part) => part.replace(/\s+\d+(?:\.\d+)?%$/, '').trim());
     const fdv = Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0);
     const poolId = pool.id?.split('_').pop() ?? '';
     const source = formatLiquiditySource(pool.relationships?.dex?.data?.id?.split('_').pop() ?? 'GeckoTerminal');
+    const baseId = pool.relationships?.base_token?.data?.id?.split('_').pop()?.toLowerCase();
+    const quoteId = pool.relationships?.quote_token?.data?.id?.split('_').pop()?.toLowerCase();
+    const scannedIsQuote = quoteId === address.toLowerCase() && baseId !== address.toLowerCase();
+    const tokenName = scannedIsQuote ? pairSymbols[1] : pairSymbols[0];
+    const tokenSymbol = scannedIsQuote ? pairSymbols[1] : String(attrs.base_token_symbol ?? pairSymbols[0] ?? 'UNKNOWN');
+    const pairedSymbol = scannedIsQuote ? pairSymbols[0] : pairSymbols[1];
     return {
       address,
-      name: String(attrs.name ?? 'Launchpad token').split(' / ')[0],
-      symbol: String(attrs.base_token_symbol ?? 'UNKNOWN'),
+      name: String(tokenName || attrs.base_token_name || 'Token'),
+      symbol: String(tokenSymbol || 'UNKNOWN'),
       source,
-      priceUsd: Number(attrs.base_token_price_usd ?? 0),
+      priceUsd: Number((scannedIsQuote ? attrs.quote_token_price_usd : attrs.base_token_price_usd) ?? attrs.token_price_usd ?? 0),
       liquidity: reserve,
       volume24h: Number(volume?.h24 ?? 0),
       fdv: Number.isFinite(fdv) ? fdv : 0,
       pairAddress: poolId,
+      pairedAsset: pairedSymbol ? { symbol: pairedSymbol } : undefined,
     };
   } catch {
     return null;
@@ -222,6 +239,7 @@ function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackA
     freshDeployment: true,
     liquiditySource: market.source,
     launchpad: detectLaunchpad(market.source),
+    pairedAsset: market.pairedAsset,
   };
 }
 
@@ -337,9 +355,9 @@ async function probeEvmChains(address: string): Promise<DetectedToken | null> {
 export async function detectChain(address: string): Promise<DetectedToken | null> {
   if (isBase58(address)) {
     const pairs = await fetchDexScreener(address);
-    const solPair = pairs.find((p) => p.chainId === 'solana');
+    const solPair = pairs.find((p) => p.chainId === 'solana' && (p.baseToken.address === address || p.quoteToken?.address === address));
     const solChain = SUPPORTED_CHAINS.find((c) => c.key === 'sol')!;
-    if (solPair) return pairToDetectedToken(solPair, solChain.id, solChain);
+    if (solPair) return pairToDetectedToken(solPair, solChain.id, solChain, address);
 
     const launchpadMarket = await fetchGeckoTerminalMarket(address, solChain);
     if (launchpadMarket) return geckoMarketToToken(launchpadMarket, solChain, address);
@@ -366,11 +384,15 @@ export async function detectChain(address: string): Promise<DetectedToken | null
 
   if (isEvmAddress(address)) {
     const pairs = await fetchDexScreener(address);
-    const indexedPair = pairs.find((p) => p.chainId.toLowerCase() in DEXSCREENER_CHAIN_SLUGS && p.chainId.toLowerCase() !== 'solana');
+    const indexedPair = pairs.find((p) => {
+      const sameChain = p.chainId.toLowerCase() in DEXSCREENER_CHAIN_SLUGS && p.chainId.toLowerCase() !== 'solana';
+      const scanned = address.toLowerCase();
+      return sameChain && (p.baseToken.address.toLowerCase() === scanned || p.quoteToken?.address.toLowerCase() === scanned);
+    });
     if (indexedPair) {
       const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId.toLowerCase()];
       const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
-      if (chainInfo) return pairToDetectedToken(indexedPair, chainId, chainInfo);
+      if (chainInfo) return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
     }
 
     const launchpadMarkets = await Promise.all(

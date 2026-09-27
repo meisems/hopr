@@ -88,6 +88,8 @@ export default function ChartPanel({ token }: ChartPanelProps) {
 
   const priceChange = token?.change24h ?? 0;
   const isPositive = priceChange >= 0;
+  const displaySymbol = token && token.symbol !== 'UNKNOWN' ? token.symbol : token?.name ?? 'Token';
+  const quoteSymbol = token?.pairedAsset?.symbol || 'USD';
 
   if (!token) {
     return (
@@ -107,7 +109,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"><ChainLogo chainKey={getChainKey(token.chainId)} size={32} /></div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-white">{token.symbol}/USD</span><span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>{token.chainName}</span>{token.launchpad && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-200">{token.launchpad}</span>}</div>
+              <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-white">{displaySymbol}/{quoteSymbol}</span><span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: token.chainColor + '22', color: token.chainColor }}>{token.chainName}</span>{token.launchpad && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-200">{token.launchpad}</span>}</div>
               <div className="flex items-center gap-2 mt-0.5 flex-wrap"><span className="text-base sm:text-lg font-bold text-white">{formatTokenPrice(token.priceUsd)}</span><span className={`flex items-center gap-0.5 text-xs sm:text-sm font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>{isPositive ? <TrendingUp className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <TrendingDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}{isPositive ? '+' : ''}{priceChange.toFixed(2)}%</span></div>
             </div>
           </div>
