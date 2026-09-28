@@ -31,7 +31,7 @@ export const NEAR_CHAIN = {
  * rpc.mainnet.near.org is deprecated), so production should set NEAR_RPC_URL
  * to a keyed provider; it is always tried first.
  */
-export const DEFAULT_NEAR_RPC_URLS = ['https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org'];
+export const DEFAULT_NEAR_RPC_URLS = ['https://free.rpc.fastnear.com', 'https://near.drpc.org', 'https://rpc.shitzuapes.xyz', 'https://rpc.mainnet.near.org'];
 
 /** Well-known NEP-141 tokens shown in balances and accepted by symbol in /swap. */
 export const KNOWN_NEAR_TOKENS: Record<string, { id: string; symbol: string; decimals: number }> = {
@@ -332,7 +332,11 @@ export async function getRefSwapQuote(params: { tokenIn: string; tokenOut: strin
     pathDeep: '3',
     slippage: String(slippage),
   });
-  const response = await (params.fetchImpl ?? fetch)(`${REF_SMART_ROUTER}?${query}`, { headers: { Accept: 'application/json' } });
+  const doFetch = params.fetchImpl ?? fetch;
+  const url = `${REF_SMART_ROUTER}?${query}`;
+  // One retry on a network error: the router occasionally drops connections under load.
+  const response = await doFetch(url, { headers: { Accept: 'application/json' } })
+    .catch(() => new Promise<Response>((resolve, reject) => setTimeout(() => doFetch(url, { headers: { Accept: 'application/json' } }).then(resolve, reject), 800)));
   if (!response.ok) throw new Error(`Ref Finance router returned HTTP ${response.status}`);
   const payload = await response.json() as SmartRouterResponse;
   const routes = payload.result_data?.routes ?? [];
@@ -389,8 +393,16 @@ export async function storageDepositNeeded(tokenId: string, accountId: string, o
  *     ft_transfer_call into Ref — all in one transaction to wrap.near;
  *     for token input: ft_transfer_call on the input token.
  * Output NEAR is unwrapped by Ref itself (skip_unwrap_near: false).
+ *
+ * With a Hopr `fee`, the fee is taken from the input token inside the same
+ * transaction as the swap (ft_transfer to the fee account, registering it on
+ * the token first if needed), so it is only ever paid together with a swap.
  */
-export function buildRefSwapPlan(quote: RefSwapQuote, registration: { outputStorageDeposit: bigint; wrapStorageDeposit: bigint }): NearTransactionPlan[] {
+export function buildRefSwapPlan(
+  quote: RefSwapQuote,
+  registration: { outputStorageDeposit: bigint; wrapStorageDeposit: bigint },
+  fee?: RefSwapFee | null,
+): NearTransactionPlan[] {
   const plans: NearTransactionPlan[] = [];
   const outputIsNear = quote.tokenOut === NATIVE_NEAR;
   if (!outputIsNear && registration.outputStorageDeposit > 0n) {
@@ -415,18 +427,62 @@ export function buildRefSwapPlan(quote: RefSwapQuote, registration: { outputStor
     deposit: 1n,
   };
 
+  const feeActions: NearAction[] = [];
+  if (fee && fee.amount > 0n) {
+    if (fee.storageDeposit > 0n) {
+      feeActions.push({ type: 'FunctionCall', methodName: 'storage_deposit', args: { account_id: fee.account, registration_only: true }, gas: 20n * NEAR_TGAS, deposit: fee.storageDeposit });
+    }
+    feeActions.push({ type: 'FunctionCall', methodName: 'ft_transfer', args: { receiver_id: fee.account, amount: fee.amount.toString(), memo: 'hopr fee' }, gas: 15n * NEAR_TGAS, deposit: 1n });
+  }
+  const feeAmount = fee && fee.amount > 0n ? fee.amount : 0n;
+
   if (quote.tokenIn === NATIVE_NEAR) {
     const actions: NearAction[] = [];
     if (registration.wrapStorageDeposit > 0n) {
       actions.push({ type: 'FunctionCall', methodName: 'storage_deposit', args: { registration_only: true }, gas: 20n * NEAR_TGAS, deposit: registration.wrapStorageDeposit });
     }
-    actions.push({ type: 'FunctionCall', methodName: 'near_deposit', args: {}, gas: 10n * NEAR_TGAS, deposit: BigInt(quote.amountIn) });
-    actions.push(transferCall);
+    actions.push({ type: 'FunctionCall', methodName: 'near_deposit', args: {}, gas: 10n * NEAR_TGAS, deposit: BigInt(quote.amountIn) + feeAmount });
+    actions.push(...feeActions, transferCall);
     plans.push({ receiverId: WRAP_NEAR, label: 'Wrap NEAR and swap on Ref Finance', actions });
   } else {
-    plans.push({ receiverId: quote.tokenIn, label: 'Swap on Ref Finance', actions: [transferCall] });
+    plans.push({ receiverId: quote.tokenIn, label: 'Swap on Ref Finance', actions: [...feeActions, transferCall] });
   }
   return plans;
+}
+
+/** Hopr's fee on a Ref swap: paid in the input token (wNEAR for NEAR input). */
+export interface RefSwapFee {
+  account: string;
+  amount: bigint;
+  /** NEP-145 registration of the fee account on the input token, when it isn't registered yet. */
+  storageDeposit: bigint;
+}
+
+/** Hopr platform fees in basis points: 0.5% on trades, 1% on bridges. */
+export const HOPR_FEE_BPS = { swap: 50, bridge: 100 } as const;
+
+/** Split a gross input amount into the fee and the part that is actually swapped. */
+export function splitHoprFee(gross: bigint, bps: number): { net: bigint; fee: bigint } {
+  const fee = bps > 0 ? (gross * BigInt(Math.round(bps))) / 10_000n : 0n;
+  return { net: gross - fee, fee };
+}
+
+/** The contract that holds a Ref swap's input (native NEAR is wrapped first). */
+export const refInputContract = (tokenIn: string) => (tokenIn === NATIVE_NEAR ? WRAP_NEAR : tokenIn);
+
+/**
+ * Transactions that deposit a NEAR-side asset into a NEAR Intents (1Click)
+ * deposit account: register the account on the token if needed, wrap
+ * native NEAR, then ft_transfer. Shared by the dashboard and the bot.
+ */
+export function buildIntentsDepositPlan(params: { token: string; native: boolean; amount: bigint; depositAddress: string; registration: bigint }): NearTransactionPlan[] {
+  const actions: NearAction[] = [];
+  if (params.registration > 0n) {
+    actions.push({ type: 'FunctionCall', methodName: 'storage_deposit', args: { account_id: params.depositAddress, registration_only: true }, gas: 30n * NEAR_TGAS, deposit: params.registration });
+  }
+  if (params.native) actions.push({ type: 'FunctionCall', methodName: 'near_deposit', args: {}, gas: 10n * NEAR_TGAS, deposit: params.amount });
+  actions.push({ type: 'FunctionCall', methodName: 'ft_transfer', args: { receiver_id: params.depositAddress, amount: params.amount.toString() }, gas: 30n * NEAR_TGAS, deposit: 1n });
+  return [{ receiverId: params.token, label: 'Deposit to NEAR Intents', actions }];
 }
 
 /** Total yoctoNEAR the plan attaches (excluding gas). */

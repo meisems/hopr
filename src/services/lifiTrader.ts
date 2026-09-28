@@ -19,6 +19,7 @@ import { decryptPrivateKey, unpackEncryptedSecret, type EncryptedSecret } from '
 
 const LIFI_QUOTE_URL = 'https://li.quest/v1/quote';
 const EVM_NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const SOLANA_LIFI_CHAIN_ID = '1151111081099710';
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -95,7 +96,7 @@ export async function getQuote(req: LifiQuoteRequest, apiKey: string): Promise<L
       executionDuration: data.estimate?.executionDuration ?? 0,
     },
     transactionRequest: data.transactionRequest,
-    transactionRequestSolana: data.transactionRequest?.data && req.fromChain === 'sol'
+    transactionRequestSolana: data.transactionRequest?.data && (req.fromChain === 'sol' || req.fromChain === SOLANA_LIFI_CHAIN_ID)
       ? data.transactionRequest.data
       : undefined,
     raw: data,
@@ -144,6 +145,7 @@ async function executeEvm(params: ExecuteParams, privateKey: string): Promise<Ex
   const wallet = new ethers.Wallet(privateKey, provider);
 
   const approvalAddress = params.quote.estimate.approvalAddress;
+  // Arc's gas USDC (0x3600…) is pulled through its ERC-20 view, so it is approved like a token.
   const isNative = params.fromTokenAddress.toLowerCase() === 'native'
     || params.fromTokenAddress.toLowerCase() === EVM_NATIVE_TOKEN;
 
@@ -202,7 +204,9 @@ export function buildSellQuoteRequest(original: {
   fundingChain: string;
   fundingTokenAddress: string;
   sellAmount: string;
-  walletAddress: string; // same address on both ends for same chain type
+  walletAddress: string; // the seller's address on the token's chain
+  /** Where proceeds land; defaults to walletAddress (only valid when both chains share a VM). */
+  toAddress?: string;
   slippage?: number;
 }): LifiQuoteRequest {
   return {
@@ -212,7 +216,7 @@ export function buildSellQuoteRequest(original: {
     toToken: original.fundingTokenAddress,
     fromAmount: original.sellAmount,
     fromAddress: original.walletAddress,
-    toAddress: original.walletAddress,
+    toAddress: original.toAddress ?? original.walletAddress,
     slippage: original.slippage ?? 0.03,
   };
 }

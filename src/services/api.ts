@@ -1,4 +1,6 @@
-const configuredApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
+/** Vite build-time variables (empty outside Vite, e.g. in Node tests). */
+const viteEnv = (import.meta.env ?? {}) as Record<string, string | undefined>;
+const configuredApiUrl = viteEnv.VITE_API_URL ?? '';
 
 export const API_BASE_URL = configuredApiUrl.replace(/\/$/, '');
 
@@ -7,4 +9,6 @@ export function apiUrl(path: string): string {
 }
 
 /** Public link to the Telegram bot (e.g. https://t.me/HoprBot). Links to it are hidden when unset. */
-export const TELEGRAM_BOT_URL = ((import.meta.env.VITE_TELEGRAM_BOT_URL as string | undefined) ?? '').trim();
+export const TELEGRAM_BOT_URL = (viteEnv.VITE_TELEGRAM_BOT_URL ?? '').trim();
+
+export { viteEnv };

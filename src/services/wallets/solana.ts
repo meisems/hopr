@@ -3,6 +3,7 @@
 // Solana transaction is actually built or signed.
 
 import { getNetwork, SOLANA_CHAIN_ID } from '../chains';
+import { jsonRpc } from '../rpcPool';
 
 interface SolanaPublicKeyLike { toString(): string }
 
@@ -15,6 +16,15 @@ export interface SolanaProvider {
   disconnect?: () => Promise<void>;
   signAndSendTransaction?: (transaction: unknown, options?: unknown) => Promise<{ signature: string } | string>;
   signTransaction?: <T>(transaction: T) => Promise<T>;
+  signMessage?: (message: Uint8Array, display?: 'utf8' | 'hex') => Promise<{ signature: Uint8Array } | Uint8Array>;
+}
+
+/** Sign a UTF-8 message (free, no transaction). Returns the base64 ed25519 signature. */
+export async function signSolanaMessage(provider: SolanaProvider, message: string): Promise<string> {
+  if (!provider.signMessage) throw new Error('This Solana wallet cannot sign messages.');
+  const result = await provider.signMessage(new TextEncoder().encode(message), 'utf8');
+  const signature = result instanceof Uint8Array ? result : result.signature;
+  return btoa(String.fromCharCode(...signature));
 }
 
 export interface SolanaWalletInfo {
@@ -59,19 +69,9 @@ export async function connectSolanaWallet(wallet: SolanaWalletInfo, onlyIfTruste
   return key ? key.toString() : null;
 }
 
-function rpcUrl() {
-  return getNetwork(SOLANA_CHAIN_ID)!.rpcUrl;
-}
-
-async function solanaRpc<T>(method: string, params: unknown[]): Promise<T> {
-  const response = await fetch(rpcUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  const payload = await response.json() as { result?: T; error?: { message?: string } };
-  if (payload.error || payload.result === undefined) throw new Error(payload.error?.message ?? `Solana ${method} failed`);
-  return payload.result;
+/** Solana JSON-RPC through the failover pool (the official endpoint rejects browsers). */
+function solanaRpc<T>(method: string, params: unknown[]): Promise<T> {
+  return jsonRpc<T>(SOLANA_CHAIN_ID, method, params);
 }
 
 export async function getSolBalance(address: string): Promise<bigint> {

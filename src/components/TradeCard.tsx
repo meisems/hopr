@@ -3,15 +3,31 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, ArrowDownUp, CheckCircle2, ExternalLink, Loader2, Rocket, Settings, TrendingDown, Wallet, XCircle, Zap } from 'lucide-react';
 import { DetectedToken, formatUsd } from '../services/chainDetector';
 import { getNetwork, NETWORKS, type Network } from '../services/chains';
-import { executeRoute, getAssetBalance, getRouteQuote, nativeGasReserve, waitForSourceConfirmation, type Asset, type RouteQuote } from '../services/router';
+import {
+  describePlan,
+  executePlan,
+  feeBpsFor,
+  getAssetBalance,
+  nativeGasReserve,
+  planRoute,
+  previewPlan,
+  PROVIDER_LABEL,
+  stepProvider,
+  waitForSourceConfirmation,
+  type Asset,
+  type RouteQuote,
+  type RouteRequest,
+} from '../services/router';
 import { addActivity, updateActivity } from '../services/activity';
 import { formatUnits, getTokenMetadata, parseUnits } from '../services/nearService';
 import { getErc20Decimals } from '../services/wallets/evm';
 import { getSplBalance } from '../services/wallets/solana';
 import { useWallet } from '../context/WalletContext';
 import { notify, usePreferences } from '../services/preferences';
+import { reportReferralTrade } from '../services/referrals';
 import ChainLogo from './ChainLogo';
 import NearTradeCard from './NearTradeCard';
+import HoprWalletTradeCard from './HoprWalletTradeCard';
 
 interface TradeCardProps {
   token: DetectedToken | null;
@@ -64,6 +80,8 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [decimals, setDecimals] = useState<number | null>(null);
   const [fundingBalance, setFundingBalance] = useState<bigint | null>(null);
   const [holdings, setHoldings] = useState<bigint | null>(null);
+  const [routePreview, setRoutePreview] = useState<{ path: string; via: string; steps: number } | null>(null);
+  const [useExternalWallet, setUseExternalWallet] = useState(false);
 
   const tokenNetwork = token ? getNetwork(token.chainId) : undefined;
   // Default funding chain: Settings' choice, else the token's own chain (a same-chain swap is cheapest).
@@ -89,17 +107,54 @@ export default function TradeCard({ token }: TradeCardProps) {
   const tokenAddressOwner = tokenNetwork ? wallet.addressFor(tokenNetwork.vm) : null;
 
   const refreshBalances = useCallback(async () => {
-    setFundingBalance(fundingAddress ? await getAssetBalance(nativeAsset, fundingAddress).catch(() => null) : null);
-    setHoldings(tokenAsset && tokenAddressOwner ? await getAssetBalance(tokenAsset, tokenAddressOwner).catch(() => null) : null);
+    const [paid, held] = await Promise.all([
+      fundingAddress ? getAssetBalance(nativeAsset, fundingAddress).catch(() => undefined) : null,
+      tokenAsset && tokenAddressOwner ? getAssetBalance(tokenAsset, tokenAddressOwner).catch(() => undefined) : null,
+    ]);
+    // undefined = read failed with nothing cached: keep what is on screen rather than blanking it.
+    if (paid !== undefined) setFundingBalance(paid);
+    if (held !== undefined) setHoldings(held);
   }, [fundingAddress, funding.id, tokenAsset, tokenAddressOwner]);
 
+  // A different chain or wallet means a different balance: clear it until the new read lands.
+  useEffect(() => {
+    setFundingBalance(null);
+  }, [funding.id, fundingAddress]);
+
+  // Balances are tracked live: read now, then every 20 s (and after each trade).
   useEffect(() => {
     void refreshBalances();
+    const timer = window.setInterval(() => void refreshBalances(), 20_000);
+    return () => window.clearInterval(timer);
   }, [refreshBalances]);
 
-  // NEAR tokens inside the Telegram Mini App trade with the bot's custodial NEAR wallet.
-  if (token?.chainType === 'NEAR' && window.Telegram?.WebApp?.initData && wallet.telegramWallet?.nearAddress && !wallet.near) {
+  // Preview how the trade will route (e.g. "NEAR → ETH → DEGEN · NEAR Intents + LI.FI").
+  useEffect(() => {
+    if (!tokenAsset) return;
+    let cancelled = false;
+    const from = mode === 'buy' ? nativeAsset : tokenAsset;
+    const to = mode === 'buy' ? tokenAsset : nativeAsset;
+    planRoute({ kind: 'swap', from, to, amount: 1n, fromAddress: '', toAddress: '', slippage: 0.01 })
+      .then((legs) => {
+        if (cancelled) return;
+        const providers = [...new Set(legs.map((leg) => PROVIDER_LABEL[stepProvider(leg)]))];
+        setRoutePreview({ path: describePlan(legs), via: providers.join(' + '), steps: legs.length });
+      })
+      .catch(() => !cancelled && setRoutePreview(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenAsset, funding.id, mode]);
+
+  // Inside the Telegram Mini App, trades default to the user's Hopr (bot) wallet — Telegram's
+  // browser has no wallet extensions. NEAR tokens use Ref Finance; others use LI.FI / NEAR Intents.
+  const inTelegramApp = Boolean(window.Telegram?.WebApp?.initData);
+  if (token?.chainType === 'NEAR' && inTelegramApp && wallet.telegramWallet?.nearAddress && !wallet.near) {
     return <NearTradeCard token={token} />;
+  }
+  if (token && token.chainType !== 'NEAR' && inTelegramApp && wallet.telegramWallet && !useExternalWallet) {
+    return <HoprWalletTradeCard token={token} onUseExternal={() => setUseExternalWallet(true)} />;
   }
 
   if (!token || !tokenNetwork) {
@@ -123,6 +178,7 @@ export default function TradeCard({ token }: TradeCardProps) {
 
   const run = async (side: 'buy' | 'sell', amount: bigint) => {
     if (!tokenAsset) return;
+    const tokenAssetValue = tokenAsset;
     const from = side === 'buy' ? nativeAsset : tokenAsset;
     const to = side === 'buy' ? tokenAsset : nativeAsset;
     const fromNetwork = getNetwork(from.chainId)!;
@@ -142,39 +198,57 @@ export default function TradeCard({ token }: TradeCardProps) {
       if (balance < amount + reserve) {
         throw new Error(`Not enough ${from.symbol} on ${fromNetwork.shortName}. You have ${formatUnits(balance, from.decimals, 6)}${reserve ? ' (keep a little for gas)' : ''}.`);
       }
-      const routeQuote = await getRouteQuote({ kind: 'swap', from, to, amount, fromAddress, toAddress, slippage: slippage / 100 }, { commit: true });
-      setQuote(routeQuote);
+      // One step for most pairs; NEAR ↔ tokens NEAR Intents doesn't list hop through a hub asset.
+      // Every step is quoted up front, so a plan can't strand funds half-way.
+      const { legs } = await previewPlan({ kind: 'swap', from, to, amount, fromAddress, toAddress, slippage: slippage / 100 });
+      const isTraded = (asset: Asset) => asset.chainId === tokenAssetValue.chainId && asset.address.toLowerCase() === tokenAssetValue.address.toLowerCase();
+      let last: { quote: RouteQuote; entryId: string; txHash: string; trackType: string } | null = null;
       setPhase('signing');
-      const result = await executeRoute(routeQuote, wallet.getSigners(), (progress) => {
-        setPhase(/approve/i.test(progress) ? 'approving' : 'signing');
-        setMessage(progress);
+      await executePlan(legs, wallet.getSigners(), {
+        onProgress: (progress) => {
+          setPhase(/approve/i.test(progress) ? 'approving' : /on the way|arrive|waiting/i.test(progress) ? 'bridging' : /finding/i.test(progress) ? 'quoting' : 'signing');
+          setMessage(progress);
+        },
+        onStepSent: (_step, stepQuote, result) => {
+          const leg: RouteRequest = stepQuote.request;
+          setQuote(stepQuote);
+          setExplorerUrl(result.explorerUrl);
+          if (feeBpsFor(leg) > 0) {
+            reportReferralTrade({ wallet: leg.fromAddress, txHash: result.txHash, chainId: leg.from.chainId, provider: stepQuote.provider, depositAddress: stepQuote.intents?.depositAddress });
+          }
+          // The step that buys (or sells) the token is the trade; hub moves are recorded as bridges.
+          const tradeStep = side === 'buy' ? isTraded(leg.to) : isTraded(leg.from);
+          const entry = addActivity({
+            kind: tradeStep ? 'swap' : 'bridge',
+            side: tradeStep ? side : undefined,
+            provider: stepQuote.provider,
+            from: { ...leg.from, amount: leg.amount.toString() },
+            to: { ...leg.to, amount: stepQuote.expectedOut.toString() },
+            amountInUsd: stepQuote.amountInUsd,
+            amountOutUsd: stepQuote.amountOutUsd,
+            wallet: leg.fromAddress,
+            txHash: result.txHash,
+            explorerUrl: result.explorerUrl,
+            track: result.track,
+            status: result.track.type === 'final' ? 'done' : 'pending',
+          });
+          last = { quote: stepQuote, entryId: entry.id, txHash: result.txHash, trackType: result.track.type };
+        },
       });
-      setExplorerUrl(result.explorerUrl);
-      const crossChain = from.chainId !== to.chainId;
-      const entry = addActivity({
-        kind: 'swap',
-        side,
-        provider: routeQuote.provider,
-        from: { ...from, amount: amount.toString() },
-        to: { ...to, amount: routeQuote.expectedOut.toString() },
-        amountInUsd: routeQuote.amountInUsd,
-        amountOutUsd: routeQuote.amountOutUsd,
-        wallet: fromAddress,
-        txHash: result.txHash,
-        explorerUrl: result.explorerUrl,
-        track: result.track,
-        status: result.track.type === 'final' ? 'done' : 'pending',
-      });
+      const final = last as { quote: RouteQuote; entryId: string; txHash: string; trackType: string } | null;
+      if (!final) throw new Error('The trade did not go through.');
+      const finalLeg = final.quote.request;
       setPhase('confirming');
       setMessage('Waiting for the transaction to confirm…');
-      if (result.txHash) await waitForSourceConfirmation(from.chainId, result.txHash).catch(() => undefined);
-      if (crossChain && result.track.type !== 'final') {
+      if (final.txHash) await waitForSourceConfirmation(finalLeg.from.chainId, final.txHash).catch(() => undefined);
+      if (finalLeg.from.chainId !== finalLeg.to.chainId && final.trackType !== 'final') {
         setPhase('bridging');
-        setMessage(`Sent on ${fromNetwork.shortName}. ${toNetwork.shortName} delivery usually takes ~${Math.max(1, Math.round((routeQuote.durationSeconds ?? 60) / 60))} min — track it in History.`);
+        setMessage(`Sent on ${getNetwork(finalLeg.from.chainId)?.shortName}. ${toNetwork.shortName} delivery usually takes ~${Math.max(1, Math.round((final.quote.durationSeconds ?? 60) / 60))} min — track it in History.`);
       } else {
-        if (result.track.type === 'lifi') updateActivity(entry.id, { status: 'done' });
+        if (final.trackType === 'lifi') updateActivity(final.entryId, { status: 'done' });
         setPhase('done');
-        const summary = side === 'buy' ? `Bought ≈ ${formatUnits(routeQuote.expectedOut, to.decimals, 6)} ${to.symbol}.` : `Sold for ≈ ${formatUnits(routeQuote.expectedOut, to.decimals, 6)} ${to.symbol}.`;
+        const out = final.quote.expectedOut;
+        const summary = side === 'buy' ? `Bought ≈ ${formatUnits(out, to.decimals, 6)} ${to.symbol}.` : `Sold for ≈ ${formatUnits(out, to.decimals, 6)} ${to.symbol}.`;
         setMessage(summary);
         notify('Trade complete', summary);
       }
@@ -357,7 +431,11 @@ export default function TradeCard({ token }: TradeCardProps) {
         )}
 
         <div className="space-y-1 border-t border-gray-800/50 pt-3 text-[11px] text-gray-500">
-          <div className="flex justify-between"><span>Route</span><span className="text-gray-400">{crossChain ? `${funding.shortName} → ${tokenNetwork.shortName}` : tokenNetwork.shortName} · {funding.vm === 'near' && tokenNetwork.vm === 'near' ? 'Ref Finance' : funding.vm === 'near' || tokenNetwork.vm === 'near' ? 'NEAR Intents' : 'LI.FI'}</span></div>
+          <div className="flex justify-between gap-3"><span>Route</span><span className="truncate text-right text-gray-400">{crossChain ? `${funding.shortName} → ${tokenNetwork.shortName}` : tokenNetwork.shortName} · {routePreview?.via ?? '…'}</span></div>
+          {routePreview && routePreview.steps > 1 && (
+            <div className="flex justify-between gap-3"><span>Path</span><span className="truncate text-right text-gray-400">{routePreview.path} · {routePreview.steps} steps</span></div>
+          )}
+          <div className="flex justify-between"><span>Hopr fee</span><span className="text-gray-400">0.5% · charged once</span></div>
           <div className="flex justify-between"><span>Slippage</span><span className="text-gray-400">{slippage}%</span></div>
           <div className="flex justify-between"><span>Execution</span><span className="text-gray-400">Signed in your wallet · non-custodial</span></div>
         </div>

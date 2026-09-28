@@ -36,7 +36,7 @@ test('registers webhook, command suggestions, then the native command menu', asy
   assert.ok(TELEGRAM_DESCRIPTION.length <= 512, 'Telegram caps descriptions at 512 characters');
   assert.ok(TELEGRAM_COMMANDS.every(({ description }) => description.length <= 256));
   assert.deepEqual(calls[4].body, { menu_button: { type: 'commands' } });
-  assert.deepEqual(result.commands, ['start', 'menu', 'app', 'help', 'wallet', 'setwallet', 'balances', 'positions', 'swap', 'settings']);
+  assert.deepEqual(result.commands, ['start', 'menu', 'app', 'help', 'wallet', 'setwallet', 'balances', 'positions', 'swap', 'referral', 'settings']);
   assert.equal(calls[0].url.includes(config.token), true);
 });
 

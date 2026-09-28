@@ -136,7 +136,7 @@ test('RPC client fails over on rate limits and surfaces contract errors immediat
     return Response.json({ jsonrpc: '2.0', result: { ok: 1 } });
   };
   assert.deepEqual(await nearRpc('status', [], { urls: ['https://keyed.example'], fetchImpl }), { ok: 1 });
-  assert.deepEqual(seen, ['https://keyed.example', 'https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org']);
+  assert.deepEqual(seen, ['https://keyed.example', 'https://free.rpc.fastnear.com', 'https://near.drpc.org']);
 
   let calls = 0;
   const failing = async () => {

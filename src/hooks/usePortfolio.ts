@@ -32,14 +32,19 @@ async function nativePrices(): Promise<Record<string, number>> {
  * account on NEAR. Real RPC reads — no placeholder rows.
  */
 export function usePortfolio() {
-  const { evm, svm, near } = useWallet();
+  const { evm, svm, near, telegramWallet } = useWallet();
+  // Browser wallets first; in the Telegram Mini App the Hopr (bot) wallet fills in.
+  const evmAddress = evm?.address ?? telegramWallet?.evmAddress;
+  const svmAddress = svm?.address ?? telegramWallet?.solanaAddress;
+  const nearAddress = near?.address ?? telegramWallet?.nearAddress ?? undefined;
+  const [retryTick, setRetryTick] = useState(0);
   const [rows, setRows] = useState<PortfolioRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const targets = NETWORKS.flatMap((network) => {
-      const address = network.vm === 'evm' ? evm?.address : network.vm === 'svm' ? svm?.address : near?.address;
+      const address = network.vm === 'evm' ? evmAddress : network.vm === 'svm' ? svmAddress : nearAddress;
       return address ? [{ network, address }] : [];
     });
     if (!targets.length) {
@@ -64,7 +69,14 @@ export function usePortfolio() {
     }));
     setUpdatedAt(Date.now());
     setLoading(false);
-  }, [evm?.address, svm?.address, near?.address]);
+    // A chain that couldn't be read (and has no last-known value yet) is retried shortly.
+    if (balances.some((row) => row === null)) window.setTimeout(() => setRetryTick((tick) => (tick < 5 ? tick + 1 : tick)), 8000);
+  }, [evmAddress, svmAddress, nearAddress]);
+
+  useEffect(() => {
+    if (retryTick) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryTick]);
 
   useEffect(() => {
     void load();

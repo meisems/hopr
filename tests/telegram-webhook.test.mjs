@@ -93,6 +93,7 @@ test('help command lists working commands and shows navigation buttons', async (
       { text: '⚙️ Settings', callback_data: 'settings' },
     ],
     [
+      { text: '🎁 Refer & Earn', callback_data: 'referral' },
       { text: '🔗 Link wallet', callback_data: 'wallet:link' },
       { text: '❓ Help', callback_data: 'help' },
     ],
@@ -263,7 +264,7 @@ test('settings buttons persist funding-chain and slippage preferences', async ()
   }, { extraEnv: { TELEGRAM_STATE: kv } });
   assert.deepEqual(JSON.parse(kv.values.get('telegram:777')), { fundingChainId: 8453 });
   assert.match(plain(first.calls.at(-1).body.text), /Funding chain: Base/);
-  assert.equal(first.calls.at(-1).body.reply_markup.inline_keyboard.length, 5);
+  assert.equal(first.calls.at(-1).body.reply_markup.inline_keyboard.length, 6); // 7 funding chains (incl. NEAR) + slippage + nav
   assert.deepEqual(first.calls.at(-1).body.reply_markup.inline_keyboard[1][0], { text: '✅ Base', callback_data: 'settings:chain:8453' });
 
   const second = await sendUpdate({
@@ -271,7 +272,7 @@ test('settings buttons persist funding-chain and slippage preferences', async ()
   }, { extraEnv: { TELEGRAM_STATE: kv } });
   assert.deepEqual(JSON.parse(kv.values.get('telegram:777')), { fundingChainId: 8453, slippagePercent: 3 });
   assert.match(plain(second.calls.at(-1).body.text), /Slippage preference: 3%/);
-  assert.deepEqual(second.calls.at(-1).body.reply_markup.inline_keyboard[3][2], { text: '✅ 3%', callback_data: 'settings:slippage:3' });
+  assert.deepEqual(second.calls.at(-1).body.reply_markup.inline_keyboard[4][2], { text: '✅ 3%', callback_data: 'settings:slippage:3' });
 });
 
 test('settings command explains persistence requirement when KV is not bound', async () => {

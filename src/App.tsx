@@ -29,6 +29,7 @@ const loaders = {
   analytics: () => import('./components/AnalyticsPage'),
   settings: () => import('./components/SettingsPage'),
   wallets: () => import('./components/WalletsPage'),
+  rewards: () => import('./components/RewardsPage'),
 };
 
 const SplashScreen = lazy(loaders.splash);
@@ -40,16 +41,18 @@ const BridgePage = lazy(loaders.bridge);
 const AnalyticsPage = lazy(loaders.analytics);
 const SettingsPage = lazy(loaders.settings);
 const WalletsPage = lazy(loaders.wallets);
+const RewardsPage = lazy(loaders.rewards);
 
-type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs' | 'settings' | 'wallets';
-const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs', settings: '/settings', wallets: '/wallets' };
-const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation', settings: 'Settings', wallets: 'Wallet Vault' };
+type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs' | 'settings' | 'wallets' | 'rewards';
+const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs', settings: '/settings', wallets: '/wallets', rewards: '/rewards' };
+const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation', settings: 'Settings', wallets: 'Wallet Vault', rewards: 'Rewards' };
 const NAV_ITEMS: { page: Page; label: string }[] = [
   { page: 'dashboard', label: 'Dashboard' },
   { page: 'analytics', label: 'Analytics' },
   { page: 'positions', label: 'Positions' },
   { page: 'history', label: 'History' },
   { page: 'bridge', label: 'Bridge' },
+  { page: 'rewards', label: 'Rewards' },
   { page: 'wallets', label: 'Wallets' },
   { page: 'settings', label: 'Settings' },
   { page: 'docs', label: 'Docs' },
@@ -344,6 +347,7 @@ function AppContent() {
       case 'analytics': return <AnalyticsPage onBack={goHome} />;
       case 'settings': return <SettingsPage onBack={goHome} onOpenWallets={() => navigate('wallets')} onPreviewBlackHole={previewBlackHole} />;
       case 'wallets': return <WalletsPage onBack={goHome} />;
+      case 'rewards': return <RewardsPage onBack={goHome} />;
       default: return <Dashboard onNavigate={navigate} />;
     }
   };

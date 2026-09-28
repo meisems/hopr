@@ -10,7 +10,9 @@ declare global {
 
   interface TelegramWebApp {
     initData: string;
-    initDataUnsafe?: { user?: TelegramWebAppUser };
+    initDataUnsafe?: { user?: TelegramWebAppUser; start_param?: string };
+    openTelegramLink?: (url: string) => void;
+    openLink?: (url: string) => void;
     colorScheme?: 'light' | 'dark';
     ready: () => void;
     expand?: () => void;

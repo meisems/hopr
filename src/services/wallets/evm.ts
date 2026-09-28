@@ -3,6 +3,7 @@
 // instead of fighting over window.ethereum; window.ethereum is the fallback.
 
 import { getNetwork } from '../chains';
+import { jsonRpc } from '../rpcPool';
 
 export interface Eip1193Provider {
   request: (args: { method: string; params?: unknown[] | Record<string, unknown> }) => Promise<unknown>;
@@ -112,6 +113,12 @@ function toHexQuantity(value: string | bigint | undefined): string | undefined {
   return `0x${big.toString(16)}`;
 }
 
+/** personal_sign a UTF-8 message (free, no transaction). Returns the 0x signature. */
+export async function personalSign(provider: Eip1193Provider, address: string, message: string): Promise<string> {
+  const hex = `0x${Array.from(new TextEncoder().encode(message), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  return await provider.request({ method: 'personal_sign', params: [hex, address] }) as string;
+}
+
 export async function sendEvmTransaction(provider: Eip1193Provider, from: string, chainId: number, tx: EvmTx): Promise<string> {
   await switchEvmChain(provider, chainId);
   return await provider.request({
@@ -132,16 +139,9 @@ export async function sendEvmTransaction(provider: Eip1193Provider, from: string
 // ---------------------------------------------------------------------------
 
 async function rpcCall<T>(chainId: number, method: string, params: unknown[]): Promise<T> {
-  const network = getNetwork(chainId);
-  if (!network) throw new Error(`Unsupported chain ${chainId}`);
-  const response = await fetch(network.rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  const payload = await response.json() as { result?: T; error?: { message?: string } };
-  if (payload.error || payload.result === undefined) throw new Error(payload.error?.message ?? `${method} failed on ${network.name}`);
-  return payload.result;
+  if (!getNetwork(chainId)) throw new Error(`Unsupported chain ${chainId}`);
+  // Fails over across the chain's RPC pool (see rpcPool.ts).
+  return jsonRpc<T>(chainId, method, params);
 }
 
 export async function getEvmNativeBalance(chainId: number, address: string): Promise<bigint> {

@@ -9,6 +9,13 @@ main = "workers/index.ts"
 #   LIFI_API_KEY             Optional LI.FI key for higher quote limits
 #   NEAR_RPC_URL             Keyed NEAR mainnet RPC (e.g. FastNEAR/Lava/Infura). Free public
 #                            RPCs rate-limit quickly; they are only used as fallbacks.
+#   ADMIN_TOKEN              Bearer token for the referral payout admin endpoints
+#   ONECLICK_JWT             NEAR Intents 1Click API key (keeps the full app fee)
+# Variables (plain vars are fine):
+#   HOPR_INTENTS_FEE_ACCOUNT Hopr's NEAR fee account (NEAR Intents + Ref swap fee)
+#   TELEGRAM_BOT_USERNAME    Bot username for invite links (optional; getMe is used otherwise)
+#   PUBLIC_APP_URL           Dashboard URL for web invite links (optional)
+#   REFERRAL_MIN_PAYOUT_USD  Minimum referral claim (default 5)
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"

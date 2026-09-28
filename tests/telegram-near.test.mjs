@@ -81,7 +81,13 @@ function createNearNetwork() {
   const encode = (value) => ({ result: { result: [...Buffer.from(JSON.stringify(value))] } });
   const fetchImpl = async (url, init = {}) => {
     const href = String(url);
-    if (href.includes('smartrouter.ref.finance')) return Response.json(ROUTER_RESPONSE);
+    if (href.includes('smartrouter.ref.finance')) {
+      const amountIn = new URL(href).searchParams.get('amountIn') ?? ROUTER_RESPONSE.result_data.routes[0].amount_in;
+      const response = structuredClone(ROUTER_RESPONSE);
+      response.result_data.routes[0].amount_in = amountIn;
+      response.result_data.routes[0].pools[0].amount_in = amountIn;
+      return Response.json(response);
+    }
     if (href.includes('dexscreener')) {
       const requested = decodeURIComponent(href.split('/').pop());
       return Response.json({ pairs: [{
@@ -213,11 +219,40 @@ test('quick buy on a NEAR token quotes on Ref Finance, then Confirm signs wrap +
   assert.match(plain(replay.at(-1).body.text), /expired/);
 });
 
-test('NEAR quick-buy amounts are only accepted for NEAR tokens', async () => {
+test('✏️ Buy X asks for an amount and quotes exactly what the user replies', async () => {
   const { kv, env } = await custodialSetup();
   await kv.put('telegram:73', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
-  const calls = await sendUpdate({ callback_query: { id: 'x', data: 'trade:buy:0.1', message: { chat: { id: 73, type: 'private' } } } }, env, createNearNetwork());
-  assert.match(plain(calls.at(-1).body.text), /not available for NEAR tokens/);
+  const prompt = await sendUpdate({ callback_query: { id: 'x', data: 'trade:custom', message: { chat: { id: 73, type: 'private' } } } }, env, createNearNetwork());
+  const promptText = prompt.at(-1).body.text;
+  assert.match(promptText, /Buy X — reply with how much NEAR to spend on USDC/);
+  assert.equal(prompt.at(-1).body.reply_markup.force_reply, true);
+
+  const reply = (text) => ({ message: { chat: { id: 73, type: 'private' }, text, reply_to_message: { text: promptText, from: { is_bot: true } } } });
+  const quote = await sendUpdate(reply('2.5'), env, createNearNetwork());
+  assert.match(plain(quote.at(-1).body.text), /You pay  2\.5 NEAR/);
+  const invalid = await sendUpdate(reply('lots'), env, createNearNetwork());
+  assert.match(plain(invalid.at(-1).body.text), /Send just a number/);
+});
+
+test('with a Hopr NEAR fee account, Ref swaps take 0.5% in the same transaction as the swap', async () => {
+  const { kv, env } = await custodialSetup();
+  const network = createNearNetwork();
+  const feeEnv = { ...env, HOPR_INTENTS_FEE_ACCOUNT: 'hopr-fees.near' };
+  await kv.put('telegram:75', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1', message: { message_id: 5, chat: { id: 75, type: 'private' } } } }, feeEnv, network);
+  const confirm = quote.at(-1).body.reply_markup.inline_keyboard[0][0];
+  await sendUpdate({ callback_query: { id: 'c', data: confirm.callback_data, message: { message_id: 6, chat: { id: 75, type: 'private' } } } }, feeEnv, network);
+
+  const swap = network.broadcasts.at(-1).transaction;
+  assert.equal(swap.receiverId, WRAP_NEAR);
+  const calls = swap.actions.map((action) => action.functionCall);
+  assert.deepEqual(calls.map((call) => call.methodName), ['storage_deposit', 'near_deposit', 'storage_deposit', 'ft_transfer', 'ft_transfer_call']);
+  const args = (call) => JSON.parse(Buffer.from(call.args).toString());
+  assert.equal(calls[1].deposit.toString(), (10n ** 24n).toString(), 'the full 1 NEAR is wrapped');
+  assert.deepEqual(args(calls[2]), { account_id: 'hopr-fees.near', registration_only: true });
+  assert.equal(args(calls[3]).receiver_id, 'hopr-fees.near');
+  assert.equal(args(calls[3]).amount, (5n * 10n ** 21n).toString(), '0.5% of 1 NEAR');
+  assert.equal(args(calls[4]).amount, (995n * 10n ** 21n).toString(), 'the rest is swapped');
 });
 
 test('/swap quotes any NEAR pair and shows usage for bad input', async () => {
@@ -279,4 +314,125 @@ test('read-only NEAR quote API needs no wallet', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('paying with NEAR for a Base token: step 1 bridges through NEAR Intents, Continue quotes step 2 with what arrived', async () => {
+  const { kv, env, wallet } = await custodialSetup();
+  const feeEnv = { ...env, HOPR_INTENTS_FEE_ACCOUNT: 'hopr-fees.near' };
+  const DEGEN = '0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed';
+  const DEPOSIT = 'd'.repeat(64);
+  const near = createNearNetwork();
+  const requests = [];
+  let bridgeStatus = 'PENDING_DEPOSIT';
+  const network = {
+    broadcasts: near.broadcasts,
+    fetchImpl: async (url, init = {}) => {
+      const href = String(url);
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      requests.push({ href, body });
+      if (href.endsWith('/v0/tokens')) {
+        return Response.json([
+          { assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 },
+          { assetId: 'nep141:wrap.near', blockchain: 'near', symbol: 'wNEAR', decimals: 24, contractAddress: 'wrap.near' },
+        ]);
+      }
+      if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: DEPOSIT, amountOut: '2100000000000000', minAmountOut: '2050000000000000', timeEstimate: 90 } });
+      if (href.endsWith('/v0/deposit/submit')) return Response.json({});
+      if (href.includes('/v0/status')) return Response.json({ status: bridgeStatus, swapDetails: { amountOut: '2000000000000000' } });
+      if (href.includes('mainnet.base.org')) return Response.json({ result: `0x${(2_500_000_000_000_000n).toString(16)}` });
+      if (href.includes('li.quest/v1/quote')) {
+        return Response.json({ id: 'q', estimate: { fromAmount: '2000000000000000', toAmount: '9000000000000000000000', toAmountMin: '8900000000000000000000', executionDuration: 20 }, transactionRequest: { to: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', data: '0x', value: '0x0' } });
+      }
+      return near.fetchImpl(url, init);
+    },
+  };
+  await kv.put('telegram:76', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: DEGEN, lastTokenChainId: 8453, lastTokenChainType: 'EVM', lastTokenSymbol: 'DEGEN', slippagePercent: 1 }));
+
+  // Step 1 quote: NEAR → ETH on Base (NEAR Intents lists ETH but not DEGEN).
+  const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1.0', message: { message_id: 5, chat: { id: 76, type: 'private' } } } }, feeEnv, network);
+  const quoteText = plain(quote.at(-1).body.text);
+  assert.match(quoteText, /You pay  1\.0 NEAR/);
+  assert.match(quoteText, /Step 1  NEAR → ≈ 0\.0021 ETH on Base · NEAR Intents/);
+  assert.match(quoteText, /Step 2  ETH → DEGEN · LI\.FI/);
+  const intentsRequest = requests.find((request) => request.href.endsWith('/v0/quote')).body;
+  assert.equal(intentsRequest.originAsset, 'nep141:wrap.near');
+  assert.equal(intentsRequest.destinationAsset, 'nep141:base.omft.near');
+  assert.equal(intentsRequest.recipient, wallet.evm);
+  assert.equal(intentsRequest.refundTo, wallet.near.address);
+  assert.deepEqual(intentsRequest.appFees, [{ recipient: 'hopr-fees.near', fee: 50 }], 'Hopr’s fee is charged on step 1');
+  const confirm = quote.at(-1).body.reply_markup.inline_keyboard[0][0];
+  assert.equal(confirm.text, '✅ Confirm step 1');
+
+  // Confirm step 1: wrap + transfer 1 NEAR to the 1Click deposit account, then offer Continue.
+  const sent = await sendUpdate({ callback_query: { id: 'c', data: confirm.callback_data, message: { message_id: 6, chat: { id: 76, type: 'private' } } } }, feeEnv, network);
+  const deposit = network.broadcasts.at(-1).transaction;
+  assert.equal(deposit.receiverId, WRAP_NEAR);
+  const calls = deposit.actions.map((action) => action.functionCall);
+  assert.deepEqual(calls.map((call) => call.methodName), ['storage_deposit', 'near_deposit', 'ft_transfer']);
+  assert.deepEqual(JSON.parse(Buffer.from(calls[2].args).toString()), { receiver_id: DEPOSIT, amount: (10n ** 24n).toString() });
+  assert.ok(requests.some((request) => request.href.endsWith('/v0/deposit/submit')));
+  assert.match(plain(sent.at(-1).body.text), /Step 1 of 2 sent/);
+  const next = sent.at(-1).body.reply_markup.inline_keyboard[0][0];
+  assert.match(next.callback_data, /^trade:cont:[0-9a-f]{8}$/);
+
+  // Continue while the bridge is in flight.
+  const waiting = await sendUpdate({ callback_query: { id: 'w', data: next.callback_data, message: { message_id: 7, chat: { id: 76, type: 'private' } } } }, feeEnv, network);
+  assert.match(plain(waiting.at(-1).body.text), /Still bridging/);
+
+  // Once it lands, step 2 swaps exactly what arrived (0.002 ETH), fee-free.
+  bridgeStatus = 'SUCCESS';
+  const step2 = await sendUpdate({ callback_query: { id: 's', data: next.callback_data, message: { message_id: 7, chat: { id: 76, type: 'private' } } } }, feeEnv, network);
+  const step2Text = plain(step2.at(-1).body.text);
+  assert.match(step2Text, /You pay  0\.002 ETH \(arrived from NEAR\)/);
+  assert.match(step2Text, /already paid in step 1/);
+  assert.equal(step2.at(-1).body.reply_markup.inline_keyboard[0][0].text, '✅ Confirm step 2');
+  const lifi = new URL(requests.filter((request) => request.href.includes('li.quest/v1/quote')).at(-1).href);
+  assert.equal(lifi.searchParams.get('fromAmount'), '2000000000000000');
+  assert.equal(lifi.searchParams.get('fromChain'), '8453');
+  assert.equal(lifi.searchParams.get('toToken'), DEGEN);
+  assert.equal(lifi.searchParams.get('fee'), '0');
+});
+
+test('paying with NEAR for a BNB token falls back to ETH on Base when NEAR Intents cannot reach BNB Chain', async () => {
+  const { kv, env } = await custodialSetup();
+  const CAKE = '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82';
+  const near = createNearNetwork();
+  const requests = [];
+  const network = {
+    broadcasts: near.broadcasts,
+    fetchImpl: async (url, init = {}) => {
+      const href = String(url);
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      requests.push({ href, body });
+      if (href.endsWith('/v0/tokens')) {
+        return Response.json([
+          { assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 },
+          { assetId: 'nep141:bsc.omft.near', blockchain: 'bsc', symbol: 'BNB', decimals: 18 },
+        ]);
+      }
+      if (href.endsWith('/v0/quote')) {
+        return body.destinationAsset === 'nep141:bsc.omft.near'
+          ? Response.json({ message: 'Temporary swap limits: minimum swap amount is $1,000' }, { status: 400 })
+          : Response.json({ quote: { depositAddress: 'e'.repeat(64), amountOut: '2000000000000000', minAmountOut: '1950000000000000' } });
+      }
+      if (href.endsWith('/v0/deposit/submit')) return Response.json({});
+      if (href.includes('/v0/status')) return Response.json({ status: 'SUCCESS', swapDetails: { amountOut: '2000000000000000' } });
+      if (href.includes('mainnet.base.org')) return Response.json({ result: `0x${(3_000_000_000_000_000n).toString(16)}` });
+      if (href.includes('li.quest/v1/quote')) return Response.json({ estimate: { fromAmount: '2000000000000000', toAmount: '1', toAmountMin: '1' }, transactionRequest: { to: '0x1', data: '0x', value: '0x0' } });
+      return near.fetchImpl(url, init);
+    },
+  };
+  await kv.put('telegram:77', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: CAKE, lastTokenChainId: 56, lastTokenChainType: 'EVM', lastTokenSymbol: 'CAKE' }));
+  const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1.0', message: { message_id: 5, chat: { id: 77, type: 'private' } } } }, env, network);
+  assert.match(plain(quote.at(-1).body.text), /Step 1  NEAR → ≈ 0\.002 ETH on Base · NEAR Intents/);
+  assert.match(plain(quote.at(-1).body.text), /Step 2  ETH → CAKE on BNB Chain · LI\.FI/);
+  const confirm = quote.at(-1).body.reply_markup.inline_keyboard[0][0];
+  const sent = await sendUpdate({ callback_query: { id: 'c', data: confirm.callback_data, message: { message_id: 6, chat: { id: 77, type: 'private' } } } }, env, network);
+  const next = sent.at(-1).body.reply_markup.inline_keyboard[0][0];
+  const step2 = await sendUpdate({ callback_query: { id: 's', data: next.callback_data, message: { message_id: 7, chat: { id: 77, type: 'private' } } } }, env, network);
+  assert.match(plain(step2.at(-1).body.text), /Route  Base → BNB Chain · LI\.FI/);
+  const lifi = new URL(requests.filter((request) => request.href.includes('li.quest/v1/quote')).at(-1).href);
+  assert.equal(lifi.searchParams.get('fromChain'), '8453');
+  assert.equal(lifi.searchParams.get('toChain'), '56');
+  assert.equal(lifi.searchParams.get('toToken'), CAKE);
 });

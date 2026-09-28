@@ -4,6 +4,7 @@ import { Check, Copy, ExternalLink, Loader2, LogOut, X } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
 import type { Vm } from '../services/chains';
 import type { NearWalletOption } from '../services/wallets/near';
+import { isMobileDevice, walletAppLinks, walletConnectEnabled } from '../services/wallets/mobile';
 import ChainLogo from './ChainLogo';
 
 const SECTIONS: Array<{ vm: Vm; title: string; logo: string; hint: string; install: { name: string; url: string } }> = [
@@ -73,6 +74,8 @@ export default function ConnectWalletModal() {
     window.setTimeout(() => setCopied(null), 1500);
   };
 
+  const mobile = isMobileDevice();
+  const appLinks = walletModal.open ? walletAppLinks() : { evm: [], svm: [] };
   const connected: Record<Vm, { address: string; walletName: string } | null> = { evm: wallet.evm, svm: wallet.svm, near: wallet.near };
   const sections = walletModal.focus ? [...SECTIONS].sort((a, b) => (a.vm === walletModal.focus ? -1 : b.vm === walletModal.focus ? 1 : 0)) : SECTIONS;
 
@@ -130,9 +133,13 @@ export default function ConnectWalletModal() {
                       </div>
                     ) : (
                       <div className="grid gap-2">
-                        {section.vm === 'evm' && (wallet.evmWallets.length ? wallet.evmWallets.map((item) => (
+                        {section.vm === 'evm' && wallet.evmWallets.map((item) => (
                           <WalletButton key={item.id} name={item.name} icon={item.icon} busy={busy === item.id} onClick={() => void run(item.id, () => wallet.connectEvm(item.id))} />
-                        )) : null)}
+                        ))}
+                        {section.vm === 'evm' && walletConnectEnabled && (
+                          <WalletButton name="WalletConnect" icon="/brand/walletconnect.svg" badge={mobile ? 'Any mobile wallet' : 'QR code'} busy={busy === 'walletconnect'}
+                            onClick={() => { closeWalletModal(); void run('walletconnect', () => wallet.connectEvm('walletconnect')); }} />
+                        )}
                         {section.vm === 'svm' && wallet.solanaWallets.filter((item) => item.provider).map((item) => (
                           <WalletButton key={item.id} name={item.name} busy={busy === item.id} onClick={() => void run(item.id, () => wallet.connectSolana(item.id))} />
                         ))}
@@ -141,7 +148,19 @@ export default function ConnectWalletModal() {
                           : nearWallets.map((item) => (
                             <WalletButton key={item.id} name={item.name} icon={item.iconUrl} busy={busy === item.id} disabled={!item.available} badge={item.available ? undefined : 'Not installed'} onClick={() => void run(item.id, () => wallet.connectNear(item.id))} />
                           )))}
-                        {((section.vm === 'evm' && !wallet.evmWallets.length) || (section.vm === 'svm' && !wallet.solanaWallets.some((item) => item.provider))) && (
+                        {mobile && ((section.vm === 'evm' && !wallet.evmWallets.length) || (section.vm === 'svm' && !wallet.solanaWallets.some((item) => item.provider))) && (
+                          <div className="rounded-xl border border-gray-800/70 p-2.5">
+                            <p className="mb-2 text-[11px] text-gray-500">Open Hopr inside your wallet app to connect and trade:</p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {appLinks[section.vm === 'evm' ? 'evm' : 'svm'].map((link) => (
+                                <a key={link.id} href={link.href} className="pressable flex items-center justify-between rounded-lg bg-gray-800/60 px-2.5 py-2 text-xs font-medium text-white hover:bg-gray-800">
+                                  {link.name} <ExternalLink className="h-3 w-3 text-gray-500" />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {!mobile && ((section.vm === 'evm' && !wallet.evmWallets.length) || (section.vm === 'svm' && !wallet.solanaWallets.some((item) => item.provider))) && (
                           <a href={section.install.url} target="_blank" rel="noreferrer" className="flex items-center justify-between rounded-xl border border-dashed border-gray-700 px-3 py-2.5 text-sm text-gray-400 hover:text-white">
                             No {section.title} wallet detected — install {section.install.name}
                             <ExternalLink className="h-3.5 w-3.5" />

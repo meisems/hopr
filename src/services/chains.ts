@@ -26,11 +26,17 @@ export interface Network {
   quickBuy: string[];
   /** Canonical USDC on this chain, for bridging stablecoins. */
   usdc?: { address: string; decimals: number };
+  /**
+   * How LI.FI denotes this chain's gas coin when it isn't the usual 0x000…0
+   * placeholder. Arc pays gas in USDC: LI.FI quotes it as the 6-decimal
+   * ERC-20 view (0x3600…) while balances and tx values use 18 decimals.
+   */
+  lifiNative?: { address: string; decimals: number };
   /** EIP-3085 parameters so wallets can add the chain on first use. */
   addChain?: { chainName: string; rpcUrls: string[]; blockExplorerUrls?: string[] };
 }
 
-const env = import.meta.env as Record<string, string | undefined>;
+const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
 const rpc = (key: string, fallback: string) => env[`VITE_RPC_${key}`]?.trim() || fallback;
 
 export const SOLANA_CHAIN_ID = 1151111081099710;
@@ -59,19 +65,20 @@ export const NETWORKS: Network[] = [
   },
   {
     id: 4663, key: 'rhc', name: 'Robinhood Chain', shortName: 'Robinhood', vm: 'evm', nativeSymbol: 'ETH', nativeDecimals: 18, color: '#00C853',
-    rpcUrl: rpc('RHC', 'https://rpc.mainnet.chain.robinhood.com'),
+    rpcUrl: rpc('RHC', 'https://rpc.mainnet.chain.robinhood.com'), explorerTxUrl: 'https://robin.etherscan.io/tx/', explorerAddressUrl: 'https://robin.etherscan.io/address/',
     lifiChainId: 4663, intentsChain: 'hood', quickBuy: ['0.005', '0.01', '0.05', '0.1'],
-    addChain: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'] },
+    addChain: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robin.etherscan.io'] },
   },
   {
     id: 5042, key: 'arc', name: 'Arc Chain', shortName: 'Arc', vm: 'evm', nativeSymbol: 'USDC', nativeDecimals: 18, color: '#FF6D00',
-    rpcUrl: rpc('ARC', 'https://rpc.mainnet.arc.io'),
+    rpcUrl: rpc('ARC', 'https://rpc.mainnet.arc.io'), explorerTxUrl: 'https://explorer.arc.io/tx/', explorerAddressUrl: 'https://explorer.arc.io/address/',
     lifiChainId: 5042, quickBuy: ['10', '25', '50', '100'],
-    addChain: { chainName: 'Arc', rpcUrls: ['https://rpc.mainnet.arc.io'] },
+    lifiNative: { address: '0x3600000000000000000000000000000000000000', decimals: 6 },
+    addChain: { chainName: 'Arc', rpcUrls: ['https://rpc.mainnet.arc.io'], blockExplorerUrls: ['https://explorer.arc.io'] },
   },
   {
     id: SOLANA_CHAIN_ID, key: 'sol', name: 'Solana', shortName: 'Solana', vm: 'svm', nativeSymbol: 'SOL', nativeDecimals: 9, color: '#9945FF',
-    rpcUrl: rpc('SOL', 'https://api.mainnet-beta.solana.com'), explorerTxUrl: 'https://solscan.io/tx/', explorerAddressUrl: 'https://solscan.io/account/',
+    rpcUrl: rpc('SOL', 'https://public.rpc.solanavibestation.com'), explorerTxUrl: 'https://solscan.io/tx/', explorerAddressUrl: 'https://solscan.io/account/',
     lifiChainId: SOLANA_CHAIN_ID, intentsChain: 'sol', quickBuy: ['0.05', '0.1', '0.5', '1'],
     usdc: { address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
   },

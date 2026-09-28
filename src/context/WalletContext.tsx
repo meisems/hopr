@@ -6,12 +6,16 @@ import {
   connectEvmWallet,
   findEvmWallet,
   listEvmWallets,
+  personalSign,
   restoreEvmWallet,
   startEvmDiscovery,
   subscribeEvmWallets,
   type EvmWalletInfo,
 } from '../services/wallets/evm';
-import { connectSolanaWallet, findSolanaWallet, listSolanaWallets, type SolanaWalletInfo } from '../services/wallets/solana';
+import { connectSolanaWallet, findSolanaWallet, listSolanaWallets, signSolanaMessage, type SolanaWalletInfo } from '../services/wallets/solana';
+import { connectWalletConnect, disconnectWalletConnect, restoreWalletConnect } from '../services/wallets/mobile';
+import { bindReferral, syncTelegramReferral, type WalletProof } from '../services/referrals';
+import { REFERRAL_PROOF_RECIPIENT } from '../services/referralMessage';
 
 interface ConnectedWallet {
   address: string;
@@ -49,6 +53,8 @@ interface WalletContextValue {
   disconnectSolana: () => void;
   disconnectNear: () => Promise<void>;
   createTelegramWallet: () => Promise<void>;
+  /** Accept the pending referral invite with the connected wallet of `vm` (asks for a free signature). */
+  acceptReferralInvite: (vm: Vm) => Promise<boolean>;
   /** Signers for the router, from the currently connected wallets. */
   getSigners: () => Signers;
   addressFor: (vm: Vm) => string | null;
@@ -103,7 +109,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
     const saved = readRemembered();
     const restoreTimer = window.setTimeout(async () => {
-      if (saved.evmWalletId) {
+      if (saved.evmWalletId === 'walletconnect') {
+        const session = await restoreWalletConnect();
+        if (session) {
+          evmProviderRef.current = { id: 'walletconnect', name: 'WalletConnect', provider: session.provider };
+          setEvm({ address: session.address, walletId: 'walletconnect', walletName: 'WalletConnect' });
+        }
+      } else if (saved.evmWalletId) {
         const wallet = findEvmWallet(saved.evmWalletId);
         const address = wallet ? await restoreEvmWallet(wallet) : null;
         if (wallet && address) {
@@ -131,6 +143,48 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       window.clearTimeout(restoreTimer);
     };
   }, []);
+
+  // Referral invites. In the Mini App the Telegram user is bound first (same account as the bot);
+  // then each connected wallet accepts the invite with a free signature, one wallet at a time.
+  const telegramReferralSync = useRef<Promise<void> | null>(null);
+  const referralSigner = useCallback((vm: Vm) => async (message: string): Promise<WalletProof> => {
+    if (vm === 'evm') {
+      const wallet = evmProviderRef.current;
+      if (!wallet || !evm) throw new Error('No EVM wallet connected');
+      return { message, signature: await personalSign(wallet.provider, evm.address, message) };
+    }
+    if (vm === 'svm') {
+      const provider = svmProviderRef.current?.provider;
+      if (!provider) throw new Error('No Solana wallet connected');
+      return { message, signature: await signSolanaMessage(provider, message) };
+    }
+    const { signNearMessage } = await import('../services/wallets/near');
+    const signed = await signNearMessage(message, REFERRAL_PROOF_RECIPIENT);
+    return { message, signature: signed.signature, publicKey: signed.publicKey, nonce: signed.nonce };
+  }, [evm, svm]);
+
+  useEffect(() => {
+    telegramReferralSync.current ??= syncTelegramReferral();
+    const connected: Array<[Vm, string | undefined]> = [['evm', evm?.address], ['svm', svm?.address], ['near', near?.address]];
+    let cancelled = false;
+    // A short pause lets the connect dialog close before the wallet asks to sign.
+    const timer = window.setTimeout(async () => {
+      await telegramReferralSync.current;
+      for (const [vm, address] of connected) {
+        if (cancelled) return;
+        if (address) await bindReferral(address, referralSigner(vm));
+      }
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [evm?.address, svm?.address, near?.address, referralSigner]);
+
+  const acceptReferralInvite = useCallback(async (vm: Vm) => {
+    const address = vm === 'evm' ? evm?.address : vm === 'svm' ? svm?.address : near?.address;
+    return address ? bindReferral(address, referralSigner(vm), { force: true }) : false;
+  }, [evm?.address, svm?.address, near?.address, referralSigner]);
 
   // Follow account / disconnect changes made inside the EVM wallet.
   useEffect(() => {
@@ -194,6 +248,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connectEvm = useCallback(async (walletId?: string) => {
+    if (walletId === 'walletconnect') {
+      const { provider, address } = await connectWalletConnect();
+      evmProviderRef.current = { id: 'walletconnect', name: 'WalletConnect', provider };
+      setEvm({ address, walletId: 'walletconnect', walletName: 'WalletConnect' });
+      remember({ evmWalletId: 'walletconnect' });
+      return address;
+    }
     const wallets = listEvmWallets();
     const wallet = (walletId ? wallets.find((item) => item.id === walletId) : undefined) ?? wallets[0];
     if (!wallet) throw new Error('No EVM wallet found. Install MetaMask, Rabby, or Coinbase Wallet.');
@@ -226,6 +287,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const disconnectEvm = useCallback(() => {
+    if (evmProviderRef.current?.id === 'walletconnect') void disconnectWalletConnect();
     evmProviderRef.current = null;
     setEvm(null);
     remember({ evmWalletId: undefined });
@@ -290,12 +352,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     disconnectSolana,
     disconnectNear,
     createTelegramWallet,
+    acceptReferralInvite,
     getSigners,
     addressFor: (vm: Vm) => (vm === 'evm' ? evm?.address : vm === 'svm' ? svm?.address : near?.address) ?? null,
     walletModal,
     openWalletModal: (focus?: Vm) => setWalletModal({ open: true, focus: focus ?? null }),
     closeWalletModal: () => setWalletModal({ open: false, focus: null }),
-  }), [evm, svm, near, telegramWallet, telegramUser, isTelegramSyncing, evmWallets, solanaWallets, connectEvm, connectSolana, connectNear, disconnectEvm, disconnectSolana, disconnectNear, createTelegramWallet, getSigners, walletModal]);
+  }), [evm, svm, near, telegramWallet, telegramUser, isTelegramSyncing, evmWallets, solanaWallets, connectEvm, connectSolana, connectNear, disconnectEvm, disconnectSolana, disconnectNear, createTelegramWallet, acceptReferralInvite, getSigners, walletModal]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

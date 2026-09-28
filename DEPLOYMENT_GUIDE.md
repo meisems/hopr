@@ -205,6 +205,32 @@ This creates `telegram_profiles`, which stores public Telegram wallet addresses,
 npx wrangler secret put NEAR_RPC_URL
 ```
 
+### Fees, NEAR routes and referrals
+
+Hopr charges 0.5% on trades and 1% on bridges. `migrations/0005_referrals.sql` and `0006_referral_fee_share.sql` (applied by the command above) enable the referral program: referrers earn 25% of the fees their friends pay, synced across the bot, the Mini App and the web.
+
+```bash
+# LI.FI API key (partner portal) — required: without it all users share the worker's small anonymous quota.
+npx wrangler secret put LIFI_API_KEY
+# Hopr's NEAR account (must exist on mainnet): receives the NEAR Intents and Ref Finance fees.
+npx wrangler secret put HOPR_INTENTS_FEE_ACCOUNT
+# NEAR Intents 1Click API key — without it 1Click keeps half of every NEAR Intents fee.
+npx wrangler secret put ONECLICK_JWT
+# Bearer token for the referral payout queue.
+npx wrangler secret put ADMIN_TOKEN
+```
+
+Optional plain variables: `TELEGRAM_BOT_USERNAME` (invite links; otherwise read from getMe), `PUBLIC_APP_URL` (web invite links; defaults to `TELEGRAM_MINI_APP_URL`), `REFERRAL_MIN_PAYOUT_USD` (default 5). Build the dashboard with `VITE_API_URL` pointing at the worker so it uses the LI.FI / NEAR Intents proxies, `/api/config` and the referral API.
+
+Payouts are manual: claims create `requested` rows. List them and mark them paid after sending USDC:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" https://<worker>/api/admin/referral-payouts
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json'   -d '{"id":"<payout id>","txHash":"<usdc transfer hash>"}' https://<worker>/api/admin/referral-payouts/paid
+```
+
+The LI.FI integrator fee is collected in the LI.FI Partner Portal for the `hopr` integrator — set the fee wallet there.
+
 ### Rate-limit storage (optional)
 
 ```bash

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, CheckCircle2, Clock, ExternalLink, Loader2, Wallet, XCircle, Zap } from 'lucide-react';
 import { formatUsd } from '../services/chainDetector';
 import { getNetwork, NETWORKS, explorerTxLink, type Network } from '../services/chains';
-import { executeRoute, getAssetBalance, getRouteQuote, nativeGasReserve, waitForSourceConfirmation, type Asset, type RouteQuote } from '../services/router';
+import { executePlan, feeBpsFor, getAssetBalance, nativeGasReserve, previewPlan, waitForSourceConfirmation, type Asset, type RouteQuote } from '../services/router';
 import { addActivity, useActivity } from '../services/activity';
 import { formatUnits, isNearAccountId, parseUnits } from '../services/nearService';
 import { useWallet } from '../context/WalletContext';
 import { getPreferences } from '../services/preferences';
+import { reportReferralTrade } from '../services/referrals';
 import ChainLogo from './ChainLogo';
 import PageHeader from './PageHeader';
 
@@ -123,7 +124,8 @@ export default function BridgePage({ onBack }: { onBack: () => void }) {
       setPreviewState('loading');
       setPreviewError('');
       try {
-        const quote = await getRouteQuote({
+        // Routes NEAR Intents can't take directly (e.g. Arc ↔ NEAR) are previewed end to end across their steps.
+        const quote = await previewPlan({
           kind: 'bridge', from, to, amount: amountUnits, slippage: slippage / 100,
           fromAddress: fromAddress ?? PREVIEW_ADDRESS[fromNetwork.vm],
           toAddress: recipientValid ? recipient : PREVIEW_ADDRESS[toNetwork.vm],
@@ -172,24 +174,36 @@ export default function BridgePage({ onBack }: { onBack: () => void }) {
       const current = await getAssetBalance(from, fromAddress);
       const reserve = from.address === 'native' ? nativeGasReserve(from.chainId) : 0n;
       if (current < amountUnits + reserve) throw new Error(`Not enough ${from.symbol} on ${fromNetwork.shortName}.`);
-      const quote = await getRouteQuote({ kind: 'bridge', from, to, amount: amountUnits, fromAddress, toAddress: recipient, slippage: slippage / 100 }, { commit: true });
-      const result = await executeRoute(quote, wallet.getSigners(), setMessage);
-      const entry = addActivity({
-        kind: 'bridge',
-        provider: quote.provider,
-        from: { ...from, amount: amountUnits.toString() },
-        to: { ...to, amount: quote.expectedOut.toString() },
-        amountInUsd: quote.amountInUsd,
-        amountOutUsd: quote.amountOutUsd,
-        wallet: fromAddress,
-        txHash: result.txHash,
-        explorerUrl: result.explorerUrl,
-        track: result.track,
-        status: result.track.type === 'final' ? 'done' : 'pending',
+      // Quote every step first (with the via-Base fallback) so nothing is sent unless the whole route works.
+      const { legs } = await previewPlan({ kind: 'bridge', from, to, amount: amountUnits, fromAddress, toAddress: recipient, slippage: slippage / 100 });
+      let last: { chainId: number; txHash: string } | null = null;
+      await executePlan(legs, wallet.getSigners(), {
+        onProgress: (progress) => setMessage(progress),
+        onStepSent: (_step, quote, result) => {
+          const leg = quote.request;
+          if (feeBpsFor(leg) > 0) {
+            reportReferralTrade({ wallet: leg.fromAddress, txHash: result.txHash, chainId: leg.from.chainId, provider: quote.provider, depositAddress: quote.intents?.depositAddress });
+          }
+          const entry = addActivity({
+            kind: 'bridge',
+            provider: quote.provider,
+            from: { ...leg.from, amount: leg.amount.toString() },
+            to: { ...leg.to, amount: quote.expectedOut.toString() },
+            amountInUsd: quote.amountInUsd,
+            amountOutUsd: quote.amountOutUsd,
+            wallet: leg.fromAddress,
+            txHash: result.txHash,
+            explorerUrl: result.explorerUrl,
+            track: result.track,
+            status: result.track.type === 'final' ? 'done' : 'pending',
+          });
+          setActiveEntryId(entry.id);
+          last = { chainId: leg.from.chainId, txHash: result.txHash };
+        },
       });
-      setActiveEntryId(entry.id);
       setMessage('Waiting for the source transaction to confirm…');
-      if (result.txHash) await waitForSourceConfirmation(from.chainId, result.txHash).catch(() => undefined);
+      const sent = last as { chainId: number; txHash: string } | null;
+      if (sent?.txHash) await waitForSourceConfirmation(sent.chainId, sent.txHash).catch(() => undefined);
       setPhase('idle');
       setMessage('');
       setAmount('');

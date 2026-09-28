@@ -21,18 +21,23 @@ import {
 import { getQuote, execute, buildSellQuoteRequest, type LifiQuote } from '../src/services/lifiTrader';
 import { getChainById, getChainByKey, SUPPORTED_CHAINS } from '../src/services/chainDetector';
 import {
+  buildIntentsDepositPlan,
   buildRefSwapPlan,
   getNearBalance,
   getRefSwapQuote,
+  HOPR_FEE_BPS,
   NATIVE_NEAR,
   NEAR_CHAIN_ID,
   NEAR_GAS_RESERVE_YOCTO,
   formatNearAmount,
   planAttachedDeposit,
+  refInputContract,
+  splitHoprFee,
   storageDepositNeeded,
   viewFunction,
   WRAP_NEAR,
   type NearRpcOptions,
+  type RefSwapFee,
   type RefSwapQuote,
 } from '../src/services/nearService';
 import { executeNearTransactions, generateNearWallet } from '../src/services/nearSigner';
@@ -44,6 +49,10 @@ export interface TradingEnv {
   LIFI_API_KEY?: string;
   /** Keyed NEAR RPC endpoint; public fallbacks are tried after it. */
   NEAR_RPC_URL?: string;
+  /** Hopr's NEAR account: NEAR Intents app fee + Ref swap fee. */
+  HOPR_INTENTS_FEE_ACCOUNT?: string;
+  /** NEAR Intents 1Click API key (JWT). Without it 1Click keeps half of the app fee. */
+  ONECLICK_JWT?: string;
 }
 
 export interface CustodialWallet {
@@ -73,6 +82,9 @@ async function firstWithNearFallback<T>(env: TradingEnv, sql: string, legacySql:
 const PENDING_TRADE_TTL_SECONDS = 90;
 const EVM_NATIVE_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const SOLANA_NATIVE_TOKEN = '11111111111111111111111111111111';
+/** Arc pays gas in USDC; LI.FI quotes it as this 6-decimal ERC-20 view (balances/values stay 18-decimal). */
+export const ARC_CHAIN_ID = 5042;
+export const ARC_NATIVE_USDC = '0x3600000000000000000000000000000000000000';
 
 function nativeTokenAddress(chainKey: string): string {
   return chainKey === 'sol' ? SOLANA_NATIVE_TOKEN : EVM_NATIVE_TOKEN;
@@ -254,8 +266,25 @@ export interface PendingTrade {
   userId: string;
   kind: 'buy' | 'sell';
   /** Execution venue; absent on quotes stored before NEAR support (treated as LI.FI). */
-  venue?: 'lifi' | 'ref';
+  venue?: 'lifi' | 'ref' | 'intents';
   quote: LifiQuote;
+  /** Address that signs (and pays) — recorded for referral verification. */
+  fromAddress?: string;
+  /** Hopr fee on this quote in bps (0 on step 2 of a NEAR-funded buy). */
+  feeBps?: number;
+  /** NEAR → another chain through NEAR Intents (step 1 of a NEAR-funded buy). */
+  intents?: {
+    accountId: string;
+    depositAddress: string;
+    amountIn: string;
+    expectedOut: string;
+    minOut: string;
+    outSymbol: string;
+    outDecimals: number;
+    feeBps: number;
+    /** Set when the delivered coin still has to be swapped into the token (step 2). */
+    continuation?: { targetChainId: number; targetTokenAddress: string; targetSymbol: string; slippage: number; hubChainId?: number };
+  };
   /** Ref Finance route + registration deposits; the transaction plan is rebuilt from these at confirm time. */
   nearSwap?: {
     accountId: string;
@@ -266,6 +295,8 @@ export interface PendingTrade {
     tokenOutSymbol: string;
     tokenInDecimals: number;
     tokenOutDecimals: number;
+    /** Hopr's fee, paid in the input token inside the swap transaction (absent when not configured). */
+    fee?: { account: string; amount: string; storageDeposit: string };
   };
   fromChainType: 'EVM' | 'SVM' | 'NEAR';
   fromChainKey: string;
@@ -311,6 +342,8 @@ export async function prepareBuy(params: {
   targetChainId: number;
   targetTokenAddress: string;
   slippage: number;
+  /** Hopr fee fraction; 0 for the second step of a NEAR-funded buy (fee already paid in step 1). */
+  fee?: number;
 }, env: TradingEnv): Promise<PendingTrade> {
   const fundingChain = getChainByKey(params.fundingChainKey);
   const targetChain = getChainById(params.targetChainId);
@@ -318,20 +351,25 @@ export async function prepareBuy(params: {
 
   const fromAddress = fundingChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
   const toAddress = targetChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const arcNative = fundingChain.id === ARC_CHAIN_ID && params.fundingTokenAddress === 'native';
   const fundingTokenAddress = params.fundingTokenAddress === 'native'
-    ? nativeTokenAddress(fundingChain.key)
+    ? (arcNative ? ARC_NATIVE_USDC : nativeTokenAddress(fundingChain.key))
     : params.fundingTokenAddress;
+  // Amounts arrive in native units (18 decimals); LI.FI wants Arc's gas USDC in 6.
+  const quoteAmount = arcNative ? (BigInt(params.fundingAmountUnits) / 10n ** 12n).toString() : params.fundingAmountUnits;
 
   const quote = await getQuote(
     {
-      fromChain: fundingChain.key,
-      toChain: targetChain.key,
+      // Numeric chain ids: LI.FI's keys differ from ours for some chains (e.g. Robinhood).
+      fromChain: String(fundingChain.id),
+      toChain: String(targetChain.id),
       fromToken: fundingTokenAddress,
       toToken: params.targetTokenAddress,
-      fromAmount: params.fundingAmountUnits,
+      fromAmount: quoteAmount,
       fromAddress,
       toAddress,
       slippage: params.slippage,
+      fee: params.fee ?? HOPR_FEE_BPS.swap / 10_000,
     },
     env.LIFI_API_KEY ?? ''
   );
@@ -341,6 +379,8 @@ export async function prepareBuy(params: {
     userId: params.userId,
     kind: 'buy',
     quote,
+    fromAddress,
+    feeBps: Math.round((params.fee ?? HOPR_FEE_BPS.swap / 10_000) * 10_000),
     fromChainType: fundingChain.type,
     fromChainKey: fundingChain.key,
     toChainId: targetChain.id,
@@ -388,14 +428,17 @@ export async function prepareSell(params: {
   if (!targetChain || !fundingChain) throw new Error('Unsupported chain on original trade');
 
   const walletAddress = targetChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  // Proceeds land on the funding chain, so they need that chain's address (EVM ≠ Solana).
+  const proceedsAddress = fundingChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
 
   const req = buildSellQuoteRequest({
-    targetChain: targetChain.key,
+    targetChain: String(targetChain.id),
     targetTokenAddress: original.target_token_address,
-    fundingChain: fundingChain.key,
+    fundingChain: String(fundingChain.id),
     fundingTokenAddress: original.funding_token_address,
     sellAmount: params.sellAmountUnits,
     walletAddress,
+    toAddress: proceedsAddress,
     slippage: params.slippage,
   });
   const quote = await getQuote(req, env.LIFI_API_KEY ?? '');
@@ -405,6 +448,8 @@ export async function prepareSell(params: {
     userId: params.userId,
     kind: 'sell',
     quote,
+    fromAddress: walletAddress,
+    feeBps: HOPR_FEE_BPS.swap,
     fromChainType: targetChain.type,
     fromChainKey: targetChain.key,
     toChainId: fundingChain.id,
@@ -437,14 +482,19 @@ export async function prepareNearSwap(params: {
 }, env: TradingEnv): Promise<PendingTrade> {
   const rpc = nearRpcOptions(env);
   const accountId = await ensureNearWallet(params.userId, env);
-  const quote = await getRefSwapQuote({ tokenIn: params.tokenIn.id, tokenOut: params.tokenOut.id, amountIn: params.amountInUnits, slippage: params.slippage });
+  // Hopr's 0.5% is taken from the input inside the swap transaction; the rest is swapped.
+  const feeAccount = env.HOPR_INTENTS_FEE_ACCOUNT?.trim() ?? '';
+  const { net, fee } = splitHoprFee(BigInt(params.amountInUnits), feeAccount ? HOPR_FEE_BPS.swap : 0);
+  const quote = await getRefSwapQuote({ tokenIn: params.tokenIn.id, tokenOut: params.tokenOut.id, amountIn: net.toString(), slippage: params.slippage });
 
-  const [outputStorageDeposit, wrapStorageDeposit, balance] = await Promise.all([
+  const [outputStorageDeposit, wrapStorageDeposit, feeStorageDeposit, balance] = await Promise.all([
     params.tokenOut.id === NATIVE_NEAR ? 0n : storageDepositNeeded(params.tokenOut.id, accountId, rpc),
     params.tokenIn.id === NATIVE_NEAR ? storageDepositNeeded(WRAP_NEAR, accountId, rpc) : 0n,
+    fee > 0n ? storageDepositNeeded(refInputContract(params.tokenIn.id), feeAccount, rpc) : 0n,
     getNearBalance(accountId, [], rpc),
   ]);
-  const needed = planAttachedDeposit(buildRefSwapPlan(quote, { outputStorageDeposit, wrapStorageDeposit })) + NEAR_GAS_RESERVE_YOCTO;
+  const hoprFee: RefSwapFee | null = fee > 0n ? { account: feeAccount, amount: fee, storageDeposit: feeStorageDeposit } : null;
+  const needed = planAttachedDeposit(buildRefSwapPlan(quote, { outputStorageDeposit, wrapStorageDeposit }, hoprFee)) + NEAR_GAS_RESERVE_YOCTO;
   if (!balance.exists || BigInt(balance.availableYocto) < needed) {
     throw new Error(`Not enough NEAR: this swap needs about ${formatNearAmount(needed)} NEAR including storage and gas, and your wallet has ${formatNearAmount(balance.availableYocto)} NEAR available.`);
   }
@@ -472,7 +522,9 @@ export async function prepareNearSwap(params: {
       tokenOutSymbol: params.tokenOut.symbol,
       tokenInDecimals: params.tokenIn.decimals,
       tokenOutDecimals: params.tokenOut.decimals,
+      ...(hoprFee ? { fee: { account: hoprFee.account, amount: hoprFee.amount.toString(), storageDeposit: hoprFee.storageDeposit.toString() } } : {}),
     },
+    fromAddress: accountId,
     fromChainType: 'NEAR',
     fromChainKey: 'near',
     toChainId: NEAR_CHAIN_ID,
@@ -489,12 +541,268 @@ export async function prepareNearSwap(params: {
   return trade;
 }
 
+// ---------------------------------------------------------------------------
+// NEAR-funded buys of tokens on other chains (NEAR Intents, then LI.FI)
+// ---------------------------------------------------------------------------
+
+const ONECLICK_API = 'https://1click.chaindefuser.com/v0';
+const BASE_CHAIN_ID = 8453;
+const INTENTS_CHAIN: Record<number, string> = { 8453: 'base', 42161: 'arb', 56: 'bsc', 4663: 'hood', 1151111081099710: 'sol' };
+interface IntentsToken { assetId: string; blockchain: string; symbol: string; decimals: number; contractAddress?: string }
+let intentsTokenCache: { at: number; tokens: IntentsToken[] } | null = null;
+
+async function intentsTokens(): Promise<IntentsToken[]> {
+  if (intentsTokenCache && Date.now() - intentsTokenCache.at < 10 * 60_000) return intentsTokenCache.tokens;
+  const response = await fetch(`${ONECLICK_API}/tokens`);
+  if (!response.ok) throw new Error('NEAR Intents is unavailable right now.');
+  intentsTokenCache = { at: Date.now(), tokens: await response.json() as IntentsToken[] };
+  return intentsTokenCache.tokens;
+}
+
+/** 1Click asset for a token (or the native coin) on an EVM/Solana chain, or null if 1Click doesn't list it. */
+async function intentsAsset(chainId: number, tokenAddress: string | 'native'): Promise<IntentsToken | null> {
+  const chain = INTENTS_CHAIN[chainId];
+  if (!chain) return null;
+  const tokens = (await intentsTokens()).filter((token) => token.blockchain === chain);
+  if (tokenAddress === 'native') {
+    const symbol = getChainById(chainId)?.nativeSymbol.toUpperCase();
+    return tokens.find((token) => !token.contractAddress && token.symbol.toUpperCase() === symbol) ?? null;
+  }
+  return tokens.find((token) => token.contractAddress?.toLowerCase() === tokenAddress.toLowerCase()) ?? null;
+}
+
+/**
+ * Ask 1Click for a quote. Hopr's app fee is added here (server-side) when the
+ * fee account is configured; the 1Click JWT, when set, keeps the whole fee.
+ */
+export async function requestIntentsQuote(body: Record<string, unknown>, feeBps: number, env: TradingEnv): Promise<{ status: number; data: Record<string, unknown> }> {
+  const feeAccount = env.HOPR_INTENTS_FEE_ACCOUNT?.trim();
+  const payload = { ...body, ...(feeAccount && feeBps > 0 ? { appFees: [{ recipient: feeAccount, fee: feeBps }] } : {}) };
+  const response = await fetch(`${ONECLICK_API}/quote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(env.ONECLICK_JWT ? { Authorization: `Bearer ${env.ONECLICK_JWT}` } : {}) },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+  return { status: response.status, data };
+}
+
+/**
+ * Step 1 of buying an EVM/Solana token with NEAR: bridge NEAR through NEAR
+ * Intents to the token itself when 1Click lists it, otherwise to the chain's
+ * native coin, which step 2 (continueNearFundedBuy) swaps into the token.
+ */
+export async function prepareNearIntentsBuy(params: {
+  userId: string;
+  wallet: CustodialWallet;
+  amountYocto: string;
+  targetChainId: number;
+  targetTokenAddress: string;
+  targetSymbol: string;
+  slippage: number;
+}, env: TradingEnv): Promise<PendingTrade> {
+  const targetChain = getChainById(params.targetChainId);
+  if (!targetChain) throw new Error('Unsupported chain');
+  const accountId = await ensureNearWallet(params.userId, env);
+  const rpc = nearRpcOptions(env);
+  const balance = await getNearBalance(accountId, [], rpc);
+  const amount = BigInt(params.amountYocto);
+  if (!balance.exists || BigInt(balance.availableYocto) < amount + NEAR_GAS_RESERVE_YOCTO) {
+    throw new Error(`Not enough NEAR: you have ${formatNearAmount(balance.availableYocto)} NEAR available (keep ~0.05 for gas).`);
+  }
+  const quoteTo = async (destinationAsset: string, recipient: string) => {
+    const { status, data } = await requestIntentsQuote({
+      dry: false,
+      swapType: 'EXACT_INPUT',
+      slippageTolerance: Math.round(params.slippage * 10_000),
+      originAsset: `nep141:${WRAP_NEAR}`,
+      depositType: 'ORIGIN_CHAIN',
+      destinationAsset,
+      amount: amount.toString(),
+      refundTo: accountId,
+      refundType: 'ORIGIN_CHAIN',
+      recipient,
+      recipientType: 'DESTINATION_CHAIN',
+      deadline: new Date(Date.now() + 30 * 60_000).toISOString(),
+    }, HOPR_FEE_BPS.swap, env);
+    const quote = data.quote as { depositAddress?: string; amountOut?: string; minAmountOut?: string; timeEstimate?: number } | undefined;
+    if (status >= 400 || !quote?.depositAddress || !quote.amountOut) {
+      throw new Error(typeof data.message === 'string' ? `NEAR Intents: ${data.message}` : 'NEAR Intents could not quote this route.');
+    }
+    return { data, quote: quote as Required<Pick<typeof quote, 'depositAddress' | 'amountOut'>> & typeof quote };
+  };
+  const addressOn = (type: 'EVM' | 'SVM' | 'NEAR') => (type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress);
+
+  let direct = await intentsAsset(params.targetChainId, params.targetTokenAddress);
+  let destination = direct ?? await intentsAsset(params.targetChainId, 'native');
+  let hubChainId = params.targetChainId;
+  let result: Awaited<ReturnType<typeof quoteTo>> | null = null;
+  let firstError: unknown = null;
+  if (destination) {
+    result = await quoteTo(destination.assetId, addressOn(targetChain.type)).catch((error) => { firstError = error; return null; });
+  }
+  if (!result && params.targetChainId !== BASE_CHAIN_ID) {
+    // NEAR Intents can't serve this chain right now (minimums, liquidity): land ETH on Base, then LI.FI crosses over.
+    const base = await intentsAsset(BASE_CHAIN_ID, 'native');
+    if (base) {
+      result = await quoteTo(base.assetId, params.wallet.evmAddress).catch(() => null);
+      if (result) {
+        direct = null;
+        destination = base;
+        hubChainId = BASE_CHAIN_ID;
+      }
+    }
+  }
+  if (!result || !destination) {
+    if (firstError) throw firstError;
+    throw new Error(`NEAR Intents doesn't reach ${targetChain.name} yet. Pick another funding chain in /settings.`);
+  }
+  const { data, quote } = result;
+  const hubChain = getChainById(hubChainId)!;
+  const trade: PendingTrade = {
+    id: crypto.randomUUID(),
+    userId: params.userId,
+    kind: 'buy',
+    venue: 'intents',
+    quote: {
+      id: `intents:${quote.depositAddress}`,
+      estimate: { fromAmount: amount.toString(), toAmount: quote.amountOut, toAmountMin: quote.minAmountOut ?? quote.amountOut, executionDuration: quote.timeEstimate ?? 120 },
+      raw: data,
+    },
+    fromAddress: accountId,
+    intents: {
+      accountId,
+      depositAddress: quote.depositAddress,
+      amountIn: amount.toString(),
+      expectedOut: quote.amountOut,
+      minOut: quote.minAmountOut ?? quote.amountOut,
+      outSymbol: direct ? params.targetSymbol : hubChain.nativeSymbol,
+      outDecimals: destination.decimals,
+      feeBps: env.HOPR_INTENTS_FEE_ACCOUNT ? HOPR_FEE_BPS.swap : 0,
+      ...(direct ? {} : {
+        continuation: { targetChainId: params.targetChainId, targetTokenAddress: params.targetTokenAddress, targetSymbol: params.targetSymbol, slippage: params.slippage, hubChainId },
+      }),
+    },
+    fromChainType: 'NEAR',
+    fromChainKey: 'near',
+    toChainId: hubChainId,
+    toChainType: hubChain.type,
+    fromTokenAddress: NATIVE_NEAR,
+    toTokenAddress: direct ? params.targetTokenAddress : 'native',
+    fundingChainId: NEAR_CHAIN_ID,
+    fundingTokenAddress: NATIVE_NEAR,
+    displayAmount: amount.toString(),
+    displaySymbol: 'NEAR',
+    createdAt: Date.now(),
+  };
+  await storePendingTrade(trade, env);
+  return trade;
+}
+
+export interface Continuation {
+  id: string;
+  depositAddress: string;
+  /** Chain the bridged coin landed on (the target chain, or Base as a fallback hub). */
+  hubChainId?: number;
+  targetChainId: number;
+  targetTokenAddress: string;
+  targetSymbol: string;
+  slippage: number;
+  createdAt: number;
+}
+
+const continuationKey = (userId: string, id: string) => `near_continuation:${userId}:${id}`;
+
+export async function loadContinuation(userId: string, id: string, env: TradingEnv): Promise<Continuation | null> {
+  const raw = await env.TELEGRAM_STATE?.get(continuationKey(userId, id));
+  return raw ? JSON.parse(raw) as Continuation : null;
+}
+
+/**
+ * Step 2 of a NEAR-funded buy. Once NEAR Intents has delivered the native
+ * coin, quote swapping exactly what arrived (keeping gas) into the token.
+ * Returns { status: 'pending' } while the bridge is still in flight.
+ */
+export async function continueNearFundedBuy(userId: string, id: string, wallet: CustodialWallet, balanceOf: (chainId: number, address: string) => Promise<bigint>, env: TradingEnv): Promise<
+  | { status: 'pending'; detail: string }
+  | { status: 'failed'; detail: string }
+  | { status: 'ready'; trade: PendingTrade; continuation: Continuation; delivered: bigint }
+> {
+  const continuation = await loadContinuation(userId, id, env);
+  if (!continuation) return { status: 'failed', detail: 'This step expired. Your coins are in your Hopr wallet — buy with them directly.' };
+  const response = await fetch(`${ONECLICK_API}/status?depositAddress=${encodeURIComponent(continuation.depositAddress)}`);
+  const data = await response.json().catch(() => ({})) as { status?: string; swapDetails?: { amountOut?: string } };
+  if (data.status === 'REFUNDED' || data.status === 'FAILED') {
+    await env.TELEGRAM_STATE?.delete(continuationKey(userId, id));
+    return { status: 'failed', detail: data.status === 'REFUNDED' ? 'NEAR Intents refunded the NEAR to your wallet.' : 'NEAR Intents could not complete the bridge.' };
+  }
+  if (data.status !== 'SUCCESS') return { status: 'pending', detail: (data.status ?? 'PENDING_DEPOSIT').replace(/_/g, ' ').toLowerCase() };
+
+  const hubChainId = continuation.hubChainId ?? continuation.targetChainId;
+  const chain = getChainById(hubChainId)!;
+  const owner = chain.type === 'EVM' ? wallet.evmAddress : wallet.solanaAddress;
+  const delivered = BigInt(data.swapDetails?.amountOut ?? '0');
+  const reserve = chain.type === 'SVM' ? 5_000_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
+  const balance = await balanceOf(hubChainId, owner).catch(() => delivered);
+  const spend = delivered < balance - reserve ? delivered : balance - reserve;
+  if (spend <= 0n) return { status: 'failed', detail: `The ${chain.nativeSymbol} arrived but isn't enough to cover gas for the swap.` };
+  // Hopr's fee was paid on step 1, so step 2 is fee-free.
+  const trade = await prepareBuy({
+    userId,
+    wallet,
+    fundingChainKey: chain.key,
+    fundingTokenAddress: 'native',
+    fundingAmountUnits: spend.toString(),
+    targetChainId: continuation.targetChainId,
+    targetTokenAddress: continuation.targetTokenAddress,
+    slippage: continuation.slippage,
+    fee: 0,
+  }, env);
+  return { status: 'ready', trade, continuation, delivered: spend };
+}
+
+async function confirmNearIntents(userId: string, trade: PendingTrade, env: TradingEnv): Promise<ConfirmResult> {
+  const intents = trade.intents;
+  if (!intents) throw new Error('This NEAR quote is incomplete. Request a new quote.');
+  const signer = await getNearSigner(userId, env);
+  if (signer.accountId !== intents.accountId) throw new Error('Your active wallet changed since this quote. Request a new quote.');
+  const rpc = nearRpcOptions(env);
+  const registration = await storageDepositNeeded(WRAP_NEAR, intents.depositAddress, rpc);
+  const plans = buildIntentsDepositPlan({ token: WRAP_NEAR, native: true, amount: BigInt(intents.amountIn), depositAddress: intents.depositAddress, registration });
+  const privateKey = await decryptPrivateKey(signer.encryptedKey, env.ENCRYPTION_KEY!);
+  const result = await executeNearTransactions(signer.accountId, privateKey, plans, rpc);
+  const txHash = result.hashes[result.hashes.length - 1];
+  // Let 1Click start right away (it also watches the chain).
+  await fetch(`${ONECLICK_API}/deposit/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ txHash, depositAddress: intents.depositAddress }),
+  }).catch(() => undefined);
+
+  let continuationId: string | undefined;
+  if (intents.continuation && env.TELEGRAM_STATE) {
+    continuationId = crypto.randomUUID().slice(0, 8);
+    const continuation: Continuation = { id: continuationId, depositAddress: intents.depositAddress, ...intents.continuation, createdAt: Date.now() };
+    await env.TELEGRAM_STATE.put(continuationKey(userId, continuationId), JSON.stringify(continuation), { expirationTtl: 24 * 60 * 60 });
+  }
+  return { txHash, confirmed: result.confirmed, venue: 'intents', fromAddress: signer.accountId, fromChainId: NEAR_CHAIN_ID, depositAddress: intents.depositAddress, continuationId };
+}
+
 export interface ConfirmResult {
   txHash: string;
   dbTradeId?: string;
   /** false when NEAR's RPC timed out before execution finished; the swap may still complete. */
   confirmed?: boolean;
-  venue?: 'lifi' | 'ref';
+  venue?: 'lifi' | 'ref' | 'intents';
+  /** Signing wallet and source chain (for referral verification). */
+  fromAddress?: string;
+  fromChainId?: number;
+  /** NEAR Intents deposit account (intents venue). */
+  depositAddress?: string;
+  /** Step 2 of a NEAR-funded buy, continued with continueNearFundedBuy(). */
+  continuationId?: string;
+  /** Hopr fee charged on this trade, in bps (0 = none, so no referral reward). */
+  feeBps?: number;
 }
 
 /**
@@ -515,6 +823,7 @@ export async function confirmTrade(
   if (env.TELEGRAM_STATE) await env.TELEGRAM_STATE.delete(pendingTradeKey(userId, tradeId));
 
   if (trade.venue === 'ref') return confirmNearSwap(userId, trade, env);
+  if (trade.venue === 'intents') return { ...await confirmNearIntents(userId, trade, env), feeBps: trade.intents?.feeBps ?? 0 };
   if (trade.fromChainType === 'NEAR') throw new Error('Unsupported NEAR quote. Request a new quote.');
 
   const encryptedKey = await getEncryptedKey(userId, trade.fromChainType, env);
@@ -561,7 +870,16 @@ export async function confirmTrade(
     }
   }
 
-  return { txHash: result.txHash, dbTradeId, confirmed: true, venue: 'lifi' };
+  const fromChain = SUPPORTED_CHAINS.find((chain) => chain.key === trade.fromChainKey);
+  return {
+    txHash: result.txHash,
+    dbTradeId,
+    confirmed: true,
+    venue: 'lifi',
+    fromAddress: trade.fromAddress,
+    fromChainId: fromChain?.id,
+    feeBps: trade.feeBps ?? HOPR_FEE_BPS.swap,
+  };
 }
 
 async function confirmNearSwap(userId: string, trade: PendingTrade, env: TradingEnv): Promise<ConfirmResult> {
@@ -573,7 +891,7 @@ async function confirmNearSwap(userId: string, trade: PendingTrade, env: Trading
   const plans = buildRefSwapPlan(swap.quote, {
     outputStorageDeposit: BigInt(swap.outputStorageDeposit),
     wrapStorageDeposit: BigInt(swap.wrapStorageDeposit),
-  });
+  }, swap.fee ? { account: swap.fee.account, amount: BigInt(swap.fee.amount), storageDeposit: BigInt(swap.fee.storageDeposit) } : null);
   const privateKey = await decryptPrivateKey(signer.encryptedKey, env.ENCRYPTION_KEY!);
   const result = await executeNearTransactions(signer.accountId, privateKey, plans, nearRpcOptions(env));
   const txHash = result.hashes[result.hashes.length - 1];
@@ -602,5 +920,13 @@ async function confirmNearSwap(userId: string, trade: PendingTrade, env: Trading
       }
     }
   }
-  return { txHash, dbTradeId, confirmed: result.confirmed, venue: 'ref' };
+  return {
+    txHash,
+    dbTradeId,
+    confirmed: result.confirmed,
+    venue: 'ref',
+    fromAddress: signer.accountId,
+    fromChainId: NEAR_CHAIN_ID,
+    feeBps: swap.fee ? HOPR_FEE_BPS.swap : 0,
+  };
 }

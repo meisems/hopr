@@ -72,6 +72,22 @@ export async function connectNearWallet(walletId: string): Promise<string | null
   return accounts?.[0]?.accountId ?? (await getNearAccount())?.accountId ?? null;
 }
 
+/**
+ * NEP-413 signMessage (free, no transaction). Returns the signing key and
+ * base64 signature/nonce. Redirect-based wallets can't return a result here.
+ */
+export async function signNearMessage(message: string, recipient: string): Promise<{ accountId: string; publicKey: string; signature: string; nonce: string }> {
+  const selector = await getNearSelector();
+  const wallet = await selector.wallet();
+  const nonce = crypto.getRandomValues(new Uint8Array(32));
+  const { Buffer } = await import('buffer');
+  const signMessage = (wallet as { signMessage?: (params: { message: string; recipient: string; nonce: Buffer }) => Promise<{ accountId: string; publicKey: string; signature: string } | void> }).signMessage;
+  if (!signMessage) throw new Error('This NEAR wallet cannot sign messages.');
+  const signed = await signMessage({ message, recipient, nonce: Buffer.from(nonce) });
+  if (!signed) throw new Error('The NEAR wallet did not return a signature.');
+  return { ...signed, nonce: btoa(String.fromCharCode(...nonce)) };
+}
+
 export async function disconnectNearWallet(): Promise<void> {
   const selector = await getNearSelector();
   if (!selector.isSignedIn()) return;

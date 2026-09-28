@@ -24,7 +24,7 @@ export default function WalletPanel() {
     { vm: 'svm' as const, label: 'Solana', logo: 'sol', info: wallet.svm },
     { vm: 'near' as const, label: 'NEAR', logo: 'near', info: wallet.near },
   ];
-  const anyConnected = connections.some((item) => item.info);
+  const anyConnected = connections.some((item) => item.info) || Boolean(wallet.telegramWallet);
   const funded = rows.filter((row) => row.balance > 0n);
   const empty = rows.filter((row) => row.balance === 0n);
 
