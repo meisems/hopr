@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { configureTelegram, TELEGRAM_COMMANDS } from '../scripts/configure-telegram.mjs';
+import { configureTelegram, TELEGRAM_COMMANDS, TELEGRAM_DESCRIPTION, TELEGRAM_SHORT_DESCRIPTION } from '../scripts/configure-telegram.mjs';
 
 const config = {
   token: '123456:example-token',
@@ -22,16 +22,21 @@ test('registers webhook, command suggestions, then the native command menu', asy
   const result = await configureTelegram({ ...config, fetchImpl });
 
   assert.deepEqual(calls.map(({ url }) => url.split('/').at(-1)), [
-    'setWebhook', 'setMyCommands', 'setChatMenuButton',
+    'setWebhook', 'setMyCommands', 'setMyShortDescription', 'setMyDescription', 'setChatMenuButton',
   ]);
   assert.deepEqual(calls[0].body, {
     url: config.webhookUrl,
     secret_token: config.webhookSecret,
     allowed_updates: ['message', 'callback_query'],
   });
-  assert.deepEqual(calls[1].body, TELEGRAM_COMMANDS);
-  assert.deepEqual(calls[2].body, { menu_button: { type: 'commands' } });
-  assert.deepEqual(result.commands, ['start', 'menu', 'app', 'help', 'wallet', 'setwallet', 'balances', 'settings']);
+  assert.deepEqual(calls[1].body, { commands: TELEGRAM_COMMANDS });
+  assert.deepEqual(calls[2].body, { short_description: TELEGRAM_SHORT_DESCRIPTION });
+  assert.deepEqual(calls[3].body, { description: TELEGRAM_DESCRIPTION });
+  assert.ok(TELEGRAM_SHORT_DESCRIPTION.length <= 120, 'Telegram caps short descriptions at 120 characters');
+  assert.ok(TELEGRAM_DESCRIPTION.length <= 512, 'Telegram caps descriptions at 512 characters');
+  assert.ok(TELEGRAM_COMMANDS.every(({ description }) => description.length <= 256));
+  assert.deepEqual(calls[4].body, { menu_button: { type: 'commands' } });
+  assert.deepEqual(result.commands, ['start', 'menu', 'app', 'help', 'wallet', 'setwallet', 'balances', 'positions', 'swap', 'settings']);
   assert.equal(calls[0].url.includes(config.token), true);
 });
 
@@ -40,7 +45,7 @@ test('registers the Mini App as the native menu button when configured', async (
   const miniAppUrl = 'https://hopr.example/';
   const result = await configureTelegram({ ...config, miniAppUrl, fetchImpl });
 
-  assert.deepEqual(calls[2].body, { menu_button: { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } });
+  assert.deepEqual(calls.at(-1).body, { menu_button: { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } });
   assert.equal(result.menuButton, 'web_app');
 });
 

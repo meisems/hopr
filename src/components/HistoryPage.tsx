@@ -1,202 +1,168 @@
 import { useMemo, useState } from 'react';
-import { ArrowLeft, Clock, CheckCircle2, XCircle, Loader2, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Search } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { mockTradeHistory } from '../data/mockData';
-import { formatAddress, formatNumber, formatUsd } from '../services/chainDetector';
-import ThemeToggle from './ThemeToggle';
+import { ArrowDownToLine, ArrowRightLeft, ArrowUpFromLine, CheckCircle2, Clock, Download, ExternalLink, Loader2, RotateCcw, Search, XCircle } from 'lucide-react';
+import { formatUsd } from '../services/chainDetector';
+import { explorerTxLink, getNetwork } from '../services/chains';
+import { formatUnits } from '../services/nearService';
+import { useActivity, type ActivityEntry } from '../services/activity';
+import ChainLogo from './ChainLogo';
+import PageHeader from './PageHeader';
 
-interface HistoryPageProps {
-  onBack: () => void;
-}
-
-type FilterType = 'ALL' | 'BUY' | 'SELL';
+type Filter = 'all' | 'buy' | 'sell' | 'bridge';
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
-  const hours = Math.floor(diff / 3600000);
-  if (hours < 1) return `${Math.max(1, Math.floor(diff / 60000))}m ago`;
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-const STATUS_STYLES: Record<string, { icon: typeof CheckCircle2; className: string }> = {
-  COMPLETED: { icon: CheckCircle2, className: 'text-green-400' },
-  PENDING: { icon: Loader2, className: 'text-yellow-400' },
-  FAILED: { icon: XCircle, className: 'text-red-400' },
-};
+const STATUS = {
+  done: { icon: CheckCircle2, label: 'Completed', className: 'text-green-400' },
+  pending: { icon: Loader2, label: 'Pending', className: 'text-yellow-400' },
+  failed: { icon: XCircle, label: 'Failed', className: 'text-red-400' },
+  refunded: { icon: RotateCcw, label: 'Refunded', className: 'text-orange-300' },
+} as const;
 
-export default function HistoryPage({ onBack }: HistoryPageProps) {
-  const [filter, setFilter] = useState<FilterType>('ALL');
+function kindOf(entry: ActivityEntry): Exclude<Filter, 'all'> {
+  return entry.kind === 'bridge' ? 'bridge' : entry.side ?? 'buy';
+}
+
+function exportCsv(entries: ActivityEntry[]) {
+  const header = ['time', 'type', 'from_chain', 'from_amount', 'from_symbol', 'to_chain', 'to_amount_est', 'to_symbol', 'usd', 'status', 'provider', 'tx'];
+  const rows = entries.map((entry) => [
+    new Date(entry.createdAt).toISOString(), kindOf(entry),
+    getNetwork(entry.from.chainId)?.name ?? entry.from.chainId, formatUnits(entry.from.amount, entry.from.decimals, 8).replace(/,/g, ''), entry.from.symbol,
+    getNetwork(entry.to.chainId)?.name ?? entry.to.chainId, formatUnits(entry.to.amount, entry.to.decimals, 8).replace(/,/g, ''), entry.to.symbol,
+    entry.amountInUsd?.toFixed(2) ?? '', entry.status, entry.provider, entry.txHash,
+  ]);
+  const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `hopr-history-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Every swap and bridge executed from this browser, with live cross-chain status. */
+export default function HistoryPage({ onBack }: { onBack: () => void }) {
+  const activity = useActivity();
+  const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
 
-  const filtered = useMemo(() => {
-    return mockTradeHistory.filter((t) => {
-      if (filter !== 'ALL' && t.type !== filter) return false;
-      if (query && !t.symbol.toLowerCase().includes(query.toLowerCase())) return false;
-      return true;
-    });
-  }, [filter, query]);
+  const filtered = useMemo(() => activity.filter((entry) => {
+    if (filter !== 'all' && kindOf(entry) !== filter) return false;
+    if (!query) return true;
+    const needle = query.toLowerCase();
+    return [entry.from.symbol, entry.to.symbol, entry.txHash, entry.to.address].some((value) => value.toLowerCase().includes(needle));
+  }), [activity, filter, query]);
 
-  const totalBuys = mockTradeHistory.filter((t) => t.type === 'BUY').length;
-  const totalSells = mockTradeHistory.filter((t) => t.type === 'SELL').length;
+  const counts = {
+    all: activity.length,
+    buy: activity.filter((entry) => kindOf(entry) === 'buy').length,
+    sell: activity.filter((entry) => kindOf(entry) === 'sell').length,
+    bridge: activity.filter((entry) => entry.kind === 'bridge').length,
+  };
+  const pending = activity.filter((entry) => entry.status === 'pending').length;
 
   return (
-    <div className="min-h-screen bg-[#0a0b0f] text-white">
-      {/* Header */}
-      <header className="navbar-dark sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl safe-area-top">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-2 sm:gap-4">
-              <button
-                onClick={onBack}
-                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-xs sm:text-sm text-gray-400 hover:text-white hover:bg-gray-800/50 rounded-lg transition-all"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">Back to Dashboard</span>
-              </button>
-              <div className="h-6 w-px bg-gray-800 hidden sm:block" />
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-brand-400" />
-                <h1 className="text-base sm:text-lg font-semibold text-white">Trade History</h1>
-              </div>
-            </div>
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
-
+    <div className="text-white">
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
-            <div className="text-xs text-gray-500 mb-1">Total Trades</div>
-            <div className="text-xl font-bold text-white">{mockTradeHistory.length}</div>
-          </div>
-          <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
-            <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><ArrowDownToLine className="w-3 h-3 text-green-400" /> Buys</div>
-            <div className="text-xl font-bold text-green-400">{totalBuys}</div>
-          </div>
-          <div className="bg-gray-900/60 rounded-xl border border-gray-800/50 p-4">
-            <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><ArrowUpFromLine className="w-3 h-3 text-red-400" /> Sells</div>
-            <div className="text-xl font-bold text-red-400">{totalSells}</div>
-          </div>
-        </div>
+        <PageHeader
+          icon={Clock}
+          title="Trade History"
+          subtitle="Every swap and bridge signed from this browser"
+          onBack={onBack}
+          actions={activity.length > 0 && (
+            <button onClick={() => exportCsv(filtered)} className="pressable flex items-center gap-1.5 rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-2 text-xs font-medium text-gray-300 hover:text-white">
+              <Download className="h-3.5 w-3.5" /> Export CSV
+            </button>
+          )}
+        />
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-          <div className="flex gap-1.5">
-            {(['ALL', 'BUY', 'SELL'] as FilterType[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  filter === f
-                    ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                    : 'bg-gray-800/30 border-gray-800/30 text-gray-400 hover:text-white hover:bg-gray-800/50'
-                }`}
-              >
-                {f === 'ALL' ? 'All' : f === 'BUY' ? 'Buys' : 'Sells'}
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { label: 'Total', value: counts.all },
+            { label: 'Buys', value: counts.buy },
+            { label: 'Sells', value: counts.sell },
+            { label: 'Pending', value: pending },
+          ].map((stat) => (
+            <div key={stat.label} className="rounded-2xl border border-gray-800/50 bg-gray-900/60 p-4">
+              <div className="text-xs text-gray-500">{stat.label}</div>
+              <div className="mt-1 font-mono text-xl font-semibold text-white">{stat.value}</div>
+            </div>
+          ))}
+        </section>
+
+        <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-1 rounded-xl border border-gray-800/60 bg-gray-900/50 p-1">
+            {(['all', 'buy', 'sell', 'bridge'] as const).map((option) => (
+              <button key={option} onClick={() => setFilter(option)} className={`rounded-lg px-3 py-1.5 text-xs font-medium capitalize ${filter === option ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'}`}>
+                {option} <span className="text-gray-500">{counts[option]}</span>
               </button>
             ))}
           </div>
-          <div className="relative w-full sm:w-56">
-            <Search className="w-3.5 h-3.5 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter by symbol..."
-              className="w-full pl-8 pr-3 py-2 bg-gray-900/60 border border-gray-800/50 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500/40"
-            />
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search token or tx" className="w-full rounded-xl border border-gray-800 bg-gray-900/60 py-2 pl-9 pr-3 text-sm text-white placeholder-gray-500 focus:border-brand-500/50 focus:outline-none sm:w-64" />
           </div>
-        </div>
+        </section>
 
-        {/* Desktop table */}
-        <div className="hidden sm:block bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px]">
-              <thead>
-                <tr className="text-xs text-gray-500 border-b border-gray-800/30">
-                  <th className="text-left px-4 py-3 font-medium">Type</th>
-                  <th className="text-left px-4 py-3 font-medium">Token</th>
-                  <th className="text-left px-4 py-3 font-medium">Chain</th>
-                  <th className="text-right px-4 py-3 font-medium">Amount</th>
-                  <th className="text-right px-4 py-3 font-medium hidden sm:table-cell">Price</th>
-                  <th className="text-right px-4 py-3 font-medium">Status</th>
-                  <th className="text-right px-4 py-3 font-medium hidden md:table-cell">When</th>
-                  <th className="text-right px-4 py-3 font-medium">Tx</th>
-                </tr>
-              </thead>
-              <tbody>
-                <AnimatePresence>
-                  {filtered.map((t) => {
-                    const status = STATUS_STYLES[t.status];
-                    const StatusIcon = status.icon;
-                    return (
-                      <motion.tr
-                        key={t.id}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="border-b border-gray-800/20 hover:bg-gray-800/20 transition-colors"
-                      >
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                            t.type === 'BUY' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
-                          }`}>
-                            {t.type === 'BUY' ? <ArrowDownToLine className="w-3 h-3" /> : <ArrowUpFromLine className="w-3 h-3" />}
-                            {t.type}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm font-medium text-white">{t.symbol}</div>
-                          <div className="text-xs text-gray-500 font-mono">{formatAddress(t.token)}</div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-300">{t.chain}</td>
-                        <td className="px-4 py-3 text-right text-sm text-white">{formatNumber(t.amount)}</td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-300 hidden sm:table-cell">{formatUsd(t.price)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={`inline-flex items-center gap-1 text-xs font-medium ${status.className}`}>
-                            <StatusIcon className={`w-3.5 h-3.5 ${t.status === 'PENDING' ? 'animate-spin' : ''}`} />
-                            {t.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right text-xs text-gray-500 hidden md:table-cell">{timeAgo(t.timestamp)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <a href="#" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 font-mono">
-                            {t.txHash} <ExternalLink className="w-3 h-3" />
-                          </a>
-                        </td>
-                      </motion.tr>
-                    );
-                  })}
-                </AnimatePresence>
-              </tbody>
-            </table>
-          </div>
-          {filtered.length === 0 && (
-            <div className="p-10 text-center text-sm text-gray-500">No trades match this filter.</div>
+        <section className="overflow-hidden rounded-2xl border border-gray-800/50 bg-gray-900/60">
+          {filtered.length === 0 ? (
+            <div className="px-6 py-16 text-center">
+              <Clock className="mx-auto mb-3 h-10 w-10 text-gray-600" />
+              <p className="text-sm text-gray-400">{activity.length ? 'No trades match this filter.' : 'No trades yet.'}</p>
+              <p className="mt-1 text-xs text-gray-500">Swaps and bridges you sign on the dashboard appear here with live status.</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-800/50">
+              {filtered.map((entry) => {
+                const kind = kindOf(entry);
+                const status = STATUS[entry.status];
+                const StatusIcon = status.icon;
+                const fromNet = getNetwork(entry.from.chainId);
+                const toNet = getNetwork(entry.to.chainId);
+                const receiving = entry.receivingTxHash ? explorerTxLink(entry.to.chainId, entry.receivingTxHash) : undefined;
+                return (
+                  <li key={entry.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${kind === 'buy' ? 'bg-green-500/10 text-green-400' : kind === 'sell' ? 'bg-red-500/10 text-red-400' : 'bg-brand-500/10 text-brand-300'}`}>
+                        {kind === 'buy' ? <ArrowDownToLine className="h-4 w-4" /> : kind === 'sell' ? <ArrowUpFromLine className="h-4 w-4" /> : <ArrowRightLeft className="h-4 w-4" />}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-white">
+                          <span className="capitalize">{kind}</span>
+                          <span className="font-mono text-gray-300">{formatUnits(entry.from.amount, entry.from.decimals, 5)} {entry.from.symbol}</span>
+                          <span className="text-gray-500">→</span>
+                          <span className="font-mono text-gray-300">≈ {formatUnits(entry.to.amount, entry.to.decimals, 5)} {entry.to.symbol}</span>
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-gray-500">
+                          <ChainLogo chainKey={fromNet?.key ?? ''} size={14} /> {fromNet?.shortName}
+                          {entry.from.chainId !== entry.to.chainId && <><span>→</span><ChainLogo chainKey={toNet?.key ?? ''} size={14} /> {toNet?.shortName}</>}
+                          <span>· {timeAgo(entry.createdAt)} · {entry.provider === 'lifi' ? 'LI.FI' : entry.provider === 'ref' ? 'Ref Finance' : 'NEAR Intents'}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 sm:justify-end">
+                      {entry.amountInUsd ? <span className="font-mono text-sm text-gray-300">{formatUsd(entry.amountInUsd)}</span> : null}
+                      <span className={`flex items-center gap-1 text-xs font-medium ${status.className}`} title={entry.statusDetail}>
+                        <StatusIcon className={`h-3.5 w-3.5 ${entry.status === 'pending' ? 'animate-spin' : ''}`} /> {status.label}
+                      </span>
+                      <span className="flex items-center gap-2">
+                        {entry.explorerUrl && <a href={entry.explorerUrl} target="_blank" rel="noreferrer" className="text-gray-500 hover:text-white" title="Source transaction"><ExternalLink className="h-4 w-4" /></a>}
+                        {receiving && <a href={receiving} target="_blank" rel="noreferrer" className="text-brand-300 hover:text-brand-200" title="Destination transaction"><ExternalLink className="h-4 w-4" /></a>}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-        </div>
-
-        {/* Mobile cards: keep token, amount, status, and transaction readable without horizontal scrolling. */}
-        <div className="sm:hidden bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden divide-y divide-gray-800/30">
-          {filtered.length === 0 ? <div className="p-10 text-center text-sm text-gray-500">No trades match this filter.</div> : filtered.map((t) => {
-            const status = STATUS_STYLES[t.status];
-            const StatusIcon = status.icon;
-            return (
-              <div key={t.id} className="p-4 space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2"><span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${t.type === 'BUY' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>{t.type}</span><span className="text-sm font-medium text-white">{t.symbol}</span></div>
-                    <div className="text-xs text-gray-500 font-mono mt-1">{formatAddress(t.token)}</div>
-                  </div>
-                  <span className={`inline-flex items-center gap-1 text-xs font-medium ${status.className}`}><StatusIcon className={`w-3.5 h-3.5 ${t.status === 'PENDING' ? 'animate-spin' : ''}`} />{t.status}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3 text-xs"><div><div className="text-gray-500">Chain</div><div className="text-gray-300 mt-0.5">{t.chain}</div></div><div><div className="text-gray-500">Amount</div><div className="text-white mt-0.5">{formatNumber(t.amount)}</div></div><div><div className="text-gray-500">Price</div><div className="text-gray-300 mt-0.5">{formatUsd(t.price)}</div></div><div><div className="text-gray-500">When</div><div className="text-gray-300 mt-0.5">{timeAgo(t.timestamp)}</div></div></div>
-                <a href="#" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 font-mono break-all">{t.txHash} <ExternalLink className="w-3 h-3 shrink-0" /></a>
-              </div>
-            );
-          })}
-        </div>
+        </section>
       </main>
     </div>
   );

@@ -150,7 +150,8 @@ Wrangler will prompt for each value. Do not put either value in `.env`, source c
 | `RATE_LIMIT` | API rate-limit storage | KV binding; if absent, the Worker falls back to allowing requests |
 | `ENVIRONMENT` | Environment label | Already set to `production` in `wrangler.toml` |
 | `LIFI_API_KEY` | Server-side LI.FI quote requests | Never expose this key to Pages/browser code; execution is still disabled |
-| `ENCRYPTION_KEY` | Reserved for future encrypted-wallet functionality | The current Telegram bot never accepts private keys or seed phrases |
+| `ENCRYPTION_KEY` | Encrypts every custodial private key (EVM, Solana, NEAR) with AES-256-GCM | Secret; 32+ random bytes. Rotating it makes existing keys undecryptable |
+| `NEAR_RPC_URL` | Keyed NEAR mainnet JSON-RPC used for NEAR balances, quotes and broadcasts | Secret (URLs often embed an API key). Free public RPCs are rate limited and used only as fallbacks |
 
 ## 6. Create and bind KV namespaces
 
@@ -197,6 +198,12 @@ npx wrangler d1 migrations apply hopr-db --remote
 ```
 
 This creates `telegram_profiles`, which stores public Telegram wallet addresses, preferences, and the most recent token context used by LI.FI quote previews. KV remains the fast profile cache; D1 is the durable source of truth.
+
+`migrations/0004_add_near_chain.sql` adds the NEAR columns (`near_address`, `near_encrypted_key`) to the custody tables and a read-only `near_address` to `telegram_profiles`. Until it is applied, the bot keeps working for EVM and Solana and NEAR actions reply with a message asking for the migration. Set `NEAR_RPC_URL` before enabling NEAR trading:
+
+```bash
+npx wrangler secret put NEAR_RPC_URL
+```
 
 ### Rate-limit storage (optional)
 

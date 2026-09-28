@@ -7,15 +7,27 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "telegram:configure": "node scripts/configure-telegram.mjs",
-    "test:telegram": "node --import tsx --test tests/telegram-*.test.mjs"
+    "test:telegram": "node --import tsx --test tests/telegram-*.test.mjs",
+    "test": "node --import tsx --test tests/*.test.mjs",
+    "test:near": "node --import tsx --test tests/near.test.mjs tests/telegram-near.test.mjs",
+    "typecheck:worker": "tsc -p tsconfig.worker.json"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
     "@dnd-kit/sortable": "^8.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@near-js/transactions": "^2.5.1",
+    "@near-wallet-selector/core": "^10.1.4",
+    "@near-wallet-selector/here-wallet": "^10.1.4",
+    "@near-wallet-selector/intear-wallet": "^10.1.4",
+    "@near-wallet-selector/meteor-wallet": "^10.1.4",
+    "@near-wallet-selector/my-near-wallet": "^10.1.4",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "@solana/web3.js": "^1.95.3",
     "@supabase/supabase-js": "^2.98.0",
     "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
     "canvas-confetti": "^1.9.3",
     "date-fns": "^2.30.0",
     "ethers": "^6.13.4",
@@ -28,6 +40,8 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260928.1",
+    "@near-js/crypto": "^2.5.1",
     "@tailwindcss/vite": "^4.1.7",
     "@types/canvas-confetti": "^1.6.4",
     "@types/react": "^18.2.0",

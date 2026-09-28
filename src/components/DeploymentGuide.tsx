@@ -73,7 +73,7 @@ npm run build`}
       {/* Part 2: Workers */}
       <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl flex items-center justify-center">
+          <div className="w-10 h-10 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl flex items-center justify-center">
             <Zap className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -295,7 +295,7 @@ CREATE TABLE user_trades (
       </div>
 
       {/* Summary */}
-      <div className="bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-2xl p-6">
+      <div className="bg-gradient-to-br from-brand-500/10 to-blue-500/10 border border-brand-500/20 rounded-2xl p-6">
         <h3 className="text-lg font-semibold text-white mb-4">Deployment Summary</h3>
         <div className="space-y-3">
           <SummaryItem label="Frontend URL" value="https://hopr.pages.dev" />
@@ -305,7 +305,7 @@ CREATE TABLE user_trades (
         </div>
         <div className="mt-6 p-4 bg-gray-900/60 rounded-xl">
           <p className="text-sm text-gray-400">
-            <span className="text-purple-400 font-medium">Note:</span> After initial deployment, you can update the frontend by re-uploading the dist folder, and update the Worker by editing the code in the dashboard. No CLI required for ongoing updates.
+            <span className="text-brand-400 font-medium">Note:</span> After initial deployment, you can update the frontend by re-uploading the dist folder, and update the Worker by editing the code in the dashboard. No CLI required for ongoing updates.
           </p>
         </div>
       </div>
@@ -332,8 +332,8 @@ function DeployStep({
 }) {
   return (
     <div className="flex gap-4">
-      <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/30 rounded-xl flex items-center justify-center">
-        <span className="text-sm font-bold text-purple-400">{number}</span>
+      <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-brand-500/20 to-blue-500/20 border border-brand-500/30 rounded-xl flex items-center justify-center">
+        <span className="text-sm font-bold text-brand-400">{number}</span>
       </div>
       <div className="flex-1">
         <h4 className="text-sm font-semibold text-white mb-1">{title}</h4>
@@ -344,7 +344,7 @@ function DeployStep({
             href={link}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors mb-2"
+            className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 transition-colors mb-2"
           >
             <ExternalLink className="w-3 h-3" />
             {linkText}
@@ -376,7 +376,7 @@ function SummaryItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between p-3 bg-gray-900/60 rounded-xl">
       <span className="text-sm text-gray-400">{label}</span>
-      <code className="text-sm text-purple-400 font-mono">{value}</code>
+      <code className="text-sm text-brand-400 font-mono">{value}</code>
     </div>
   );
 }

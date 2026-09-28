@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { ArrowLeft, BookOpen, Code2, Shield, Server, Layers, FileCode, ExternalLink, Lock, CheckCircle2, Zap, Globe, Link2, DollarSign, CreditCard, Target, Rocket, TrendingDown, Settings, BarChart3, Search, RefreshCw, MapPin, Menu, X } from 'lucide-react';
+import { BookOpen, Code2, Shield, Server, Layers, FileCode, ExternalLink, Lock, CheckCircle2, Zap, Globe, Link2, DollarSign, CreditCard, Target, Rocket, TrendingDown, Settings, BarChart3, Search, RefreshCw, MapPin } from 'lucide-react';
 import { PUBLIC_DOC_FILES, PRIVATE_DOC_FILES } from '../data/docFiles';
 import ChainLogo from './ChainLogo';
 import DeploymentGuide from './DeploymentGuide';
-import ThemeToggle from './ThemeToggle';
+import PageHeader from './PageHeader';
 
 interface DocsPageProps {
   onBack: () => void;
@@ -14,7 +14,6 @@ type Section = 'overview' | 'architecture' | 'chains' | 'api' | 'security' | 'de
 export default function DocsPage({ onBack }: DocsPageProps) {
   const [activeSection, setActiveSection] = useState<Section>('overview');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const sections = [
     { id: 'overview' as Section, label: 'Overview', icon: BookOpen },
@@ -27,77 +26,49 @@ export default function DocsPage({ onBack }: DocsPageProps) {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0a0b0f] text-white">
-      {/* Header */}
-      <header className="navbar-dark sticky top-0 z-40 border-b border-gray-800/50 bg-gray-900/80 backdrop-blur-xl safe-area-top">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-2 sm:gap-4">
-              <button
-                onClick={onBack}
-                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-xs sm:text-sm text-gray-400 hover:text-white hover:bg-gray-800/50 rounded-lg transition-all"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">Back to Dashboard</span>
-              </button>
-              <div className="h-6 w-px bg-gray-800 hidden sm:block" />
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400" />
-                <h1 className="text-base sm:text-lg font-semibold text-white">Documentation</h1>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <ThemeToggle />
-              <span className="text-xs text-gray-500 hidden sm:inline">v1.0.0</span>
-              <div className="hidden sm:flex items-center gap-1 px-2 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
-                <div className="w-1.5 h-1.5 bg-green-400 rounded-full" />
-                <span className="text-xs text-green-400">Public</span>
-              </div>
-              {/* Mobile menu button */}
-              <button
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                className="lg:hidden p-2 hover:bg-gray-800 rounded-lg transition-colors"
-              >
-                {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile navigation */}
-        {mobileMenuOpen && (
-          <div className="docs-drawer subnav-dark lg:hidden border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-xl">
-            <nav className="px-4 py-3 space-y-1">
-              {sections.map((section) => {
-                const Icon = section.icon;
-                return (
-                  <button
-                    key={section.id}
-                    onClick={() => {
-                      setActiveSection(section.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                      activeSection === section.id
-                        ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
-                        : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    {section.label}
-                  </button>
-                );
-              })}
-            </nav>
-          </div>
-        )}
-      </header>
-
+    <div className="text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <PageHeader
+          icon={BookOpen}
+          title="Documentation"
+          subtitle="Architecture, API reference and deployment guides"
+          onBack={onBack}
+          actions={
+            <>
+              <span className="font-mono text-xs text-gray-500">v1.0.0</span>
+              <span className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 border border-green-500/20 rounded-full text-xs text-green-400">
+                <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
+                Public
+              </span>
+            </>
+          }
+        />
+
+        {/* Section switcher - mobile & tablet */}
+        <nav className="lg:hidden -mx-4 mb-6 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]" aria-label="Documentation sections">
+          {sections.map((section) => {
+            const Icon = section.icon;
+            const active = activeSection === section.id;
+            return (
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                aria-current={active ? 'true' : undefined}
+                className={`pressable flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-medium ${
+                  active ? 'border-brand-400/30 bg-brand-500/15 text-brand-300' : 'border-gray-800/60 bg-gray-900/50 text-gray-400 hover:text-white'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {section.label}
+              </button>
+            );
+          })}
+        </nav>
+
         <div className="flex gap-8">
           {/* Sidebar - Desktop only */}
           <aside className="hidden lg:block w-64 flex-shrink-0">
-            <nav className="sticky top-24 space-y-1">
+            <nav className="sticky top-24 space-y-1" aria-label="Documentation sections">
               {sections.map((section) => {
                 const Icon = section.icon;
                 return (
@@ -106,7 +77,7 @@ export default function DocsPage({ onBack }: DocsPageProps) {
                     onClick={() => setActiveSection(section.id)}
                     className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
                       activeSection === section.id
-                        ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                        ? 'bg-brand-500/10 text-brand-400 border border-brand-500/20'
                         : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
                     }`}
                   >
@@ -276,6 +247,7 @@ function ChainsSection() {
     { key: 'bsc', name: 'BNB Smart Chain', type: 'EVM', chainId: '56', native: 'BNB', color: '#F0B90B' },
     { key: 'rhc', name: 'Robinhood Chain', type: 'EVM', chainId: '4663', native: 'ETH', color: '#00C853' },
     { key: 'arc', name: 'Arc Chain', type: 'EVM', chainId: '5042', native: 'USDC', color: '#FF6D00' },
+    { key: 'near', name: 'NEAR Protocol', type: 'NEAR', chainId: '397 (internal; swaps via Ref Finance)', native: 'NEAR', color: '#00EC97' },
   ];
 
   return (
@@ -510,12 +482,12 @@ function FilesSection({ selectedFile, onSelectFile }: { selectedFile: string | n
               onClick={() => onSelectFile(selectedFile === file.id ? null : file.id)}
               className={`w-full text-left bg-gray-900/60 rounded-xl border p-4 transition-all ${
                 selectedFile === file.id
-                  ? 'border-purple-500/50 bg-purple-500/5'
+                  ? 'border-brand-500/50 bg-brand-500/5'
                   : 'border-gray-800/50 hover:border-gray-700/50'
               }`}
             >
               <div className="flex items-start gap-3">
-                <FileCode className="w-5 h-5 text-purple-400 flex-shrink-0 mt-0.5" />
+                <FileCode className="w-5 h-5 text-brand-400 flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-semibold text-white">{file.name}</span>
@@ -564,7 +536,7 @@ function InfoCard({ icon, title, description }: { icon: React.ReactNode; title: 
   return (
     <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 p-6">
       <div className="flex items-start gap-3">
-        <div className="text-purple-400">{icon}</div>
+        <div className="text-brand-400">{icon}</div>
         <div>
           <h3 className="text-sm font-semibold text-white mb-1">{title}</h3>
           <p className="text-xs text-gray-400 leading-relaxed">{description}</p>
@@ -577,8 +549,8 @@ function InfoCard({ icon, title, description }: { icon: React.ReactNode; title: 
 function Step({ number, text }: { number: number; text: string }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="flex-shrink-0 w-6 h-6 bg-purple-500/20 border border-purple-500/30 rounded-full flex items-center justify-center">
-        <span className="text-xs font-bold text-purple-400">{number}</span>
+      <div className="flex-shrink-0 w-6 h-6 bg-brand-500/20 border border-brand-500/30 rounded-full flex items-center justify-center">
+        <span className="text-xs font-bold text-brand-400">{number}</span>
       </div>
       <p className="text-sm text-gray-300 pt-0.5">{text}</p>
     </div>
@@ -588,8 +560,8 @@ function Step({ number, text }: { number: number; text: string }) {
 function FlowStep({ number, title, description }: { number: number; title: string; description: string }) {
   return (
     <div className="flex items-start gap-4">
-      <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/30 rounded-xl flex items-center justify-center">
-        <span className="text-sm font-bold text-purple-400">{number}</span>
+      <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-brand-500/20 to-blue-500/20 border border-brand-500/30 rounded-xl flex items-center justify-center">
+        <span className="text-sm font-bold text-brand-400">{number}</span>
       </div>
       <div className="flex-1">
         <h4 className="text-sm font-semibold text-white mb-1">{title}</h4>
@@ -602,7 +574,7 @@ function FlowStep({ number, title, description }: { number: number; title: strin
 function EnvVar({ name, description }: { name: string; description: string }) {
   return (
     <div className="flex items-center gap-3 p-3 bg-gray-800/40 rounded-xl">
-      <code className="text-sm text-purple-400 font-mono">{name}</code>
+      <code className="text-sm text-brand-400 font-mono">{name}</code>
       <span className="text-xs text-gray-500">–</span>
       <span className="text-xs text-gray-400">{description}</span>
     </div>

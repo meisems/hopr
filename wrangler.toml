@@ -1,6 +1,14 @@
 name = "hopr"
 compatibility_date = "2024-01-01"
 main = "workers/index.ts"
+
+# Secrets (never commit these; set with `npx wrangler secret put <NAME>`):
+#   TELEGRAM_BOT_TOKEN       Bot API token from @BotFather
+#   TELEGRAM_WEBHOOK_SECRET  Random string, also passed to setWebhook
+#   ENCRYPTION_KEY           32+ random bytes; encrypts every custodial key (EVM, Solana, NEAR)
+#   LIFI_API_KEY             Optional LI.FI key for higher quote limits
+#   NEAR_RPC_URL             Keyed NEAR mainnet RPC (e.g. FastNEAR/Lava/Infura). Free public
+#                            RPCs rate-limit quickly; they are only used as fallbacks.
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"

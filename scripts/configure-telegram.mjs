@@ -1,15 +1,30 @@
 import { pathToFileURL } from 'node:url';
 
 export const TELEGRAM_COMMANDS = [
-  { command: 'start', description: 'Start the Hopr bot' },
-  { command: 'menu', description: 'Open the Hopr action menu' },
-  { command: 'app', description: 'Open the Hopr Mini App' },
-  { command: 'help', description: 'Show available commands and bot status' },
-  { command: 'wallet', description: 'Check a public wallet balance' },
-  { command: 'setwallet', description: 'Link a public wallet address' },
-  { command: 'balances', description: 'Refresh linked native-token balances' },
-  { command: 'settings', description: 'View funding-chain and slippage preferences' },
+  { command: 'start', description: '⚡ Start Hopr' },
+  { command: 'menu', description: '◆ Open the main menu' },
+  { command: 'app', description: '🚀 Open the Hopr Mini App' },
+  { command: 'help', description: '❓ Every command, explained' },
+  { command: 'wallet', description: '👛 Wallet balances' },
+  { command: 'setwallet', description: '🔗 Link a public wallet (read-only)' },
+  { command: 'balances', description: '🔄 Refresh native balances' },
+  { command: 'positions', description: '📊 Open positions with live prices' },
+  { command: 'swap', description: 'Ⓝ Swap on NEAR, e.g. /swap 1 near usdc' },
+  { command: 'settings', description: '⚙️ Funding chain & slippage' },
 ];
+
+/** Shown on the bot's profile and on the empty-chat "What can this bot do?" screen. */
+export const TELEGRAM_SHORT_DESCRIPTION = 'Hop across chains — scan and trade any token on Solana, Base, Arbitrum, BNB, NEAR and more.';
+export const TELEGRAM_DESCRIPTION = [
+  '⚡ Hopr — your cross-chain trading terminal in Telegram.',
+  '',
+  '🔎 Paste any token address for a live market card',
+  '💱 Buy & sell with live quotes — you confirm every trade',
+  '👛 Encrypted multi-chain wallet (EVM + Solana + NEAR)',
+  '⛓ Solana · Base · Arbitrum · BNB · Robinhood · Arc · NEAR',
+  '',
+  'Tap Start to begin.',
+].join('\n');
 
 function validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl }) {
   const missing = [];
@@ -75,7 +90,9 @@ export async function configureTelegram({ token, webhookSecret, webhookUrl, mini
     secret_token: webhookSecret,
     allowed_updates: ['message', 'callback_query'],
   }, fetchImpl);
-  await callTelegramApi(token, 'setMyCommands', TELEGRAM_COMMANDS, fetchImpl);
+  await callTelegramApi(token, 'setMyCommands', { commands: TELEGRAM_COMMANDS }, fetchImpl);
+  await callTelegramApi(token, 'setMyShortDescription', { short_description: TELEGRAM_SHORT_DESCRIPTION }, fetchImpl);
+  await callTelegramApi(token, 'setMyDescription', { description: TELEGRAM_DESCRIPTION }, fetchImpl);
   await callTelegramApi(token, 'setChatMenuButton', {
     menu_button: miniAppUrl ? { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } : { type: 'commands' },
   }, fetchImpl);
@@ -91,7 +108,7 @@ async function main() {
       webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
       miniAppUrl: process.env.TELEGRAM_MINI_APP_URL,
     });
-    console.log(`Telegram configured: webhook, slash-command suggestions (${result.commands.map((command) => `/${command}`).join(', ')}), and command menu.`);
+    console.log(`Telegram configured: webhook, slash-command suggestions (${result.commands.map((command) => `/${command}`).join(', ')}), bot description, and menu button.`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'Telegram configuration failed.');
     process.exitCode = 1;
