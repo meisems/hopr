@@ -3,6 +3,7 @@ import { AnimatePresence, motion, MotionConfig } from 'framer-motion';
 import { Settings, Shield, Menu, X, Github, MessageCircle, Search, BarChart3, BookOpen, Wallet } from 'lucide-react';
 import SearchBar, { type ScanRequest } from './components/SearchBar';
 import TrendingRail from './components/TrendingRail';
+import LaunchpadPools from './components/LaunchpadPools';
 import TradeCard from './components/TradeCard';
 import PositionsTable from './components/PositionsTable';
 import WalletPanel from './components/WalletPanel';
@@ -119,8 +120,8 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const [scanRequest, setScanRequest] = useState<ScanRequest | null>(null);
   const searchRef = useRef<HTMLElement>(null);
 
-  const scanFromRail = useCallback((address: string) => {
-    setScanRequest({ address, nonce: Date.now() });
+  const scanFromRail = useCallback((address: string, chainId?: number) => {
+    setScanRequest({ address, chainId, nonce: Date.now() });
     searchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
@@ -176,6 +177,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
       </motion.section>
 
       {/* Positions table */}
+      <LaunchpadPools onSelect={scanFromRail} />
       <motion.section {...sectionMotion(0.18)}>
         <PositionsTable onOpenToken={scanFromRail} />
       </motion.section>

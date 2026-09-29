@@ -22,6 +22,7 @@ export interface Position {
   change24h: number | null;
   token: DetectedToken | null;
   lastTradeAt: number;
+  observedAt: number;
 }
 
 /**
@@ -32,23 +33,31 @@ export interface Position {
 export function usePositions() {
   const activity = useActivity();
   const { addressFor } = useWallet();
-  const [live, setLive] = useState<Record<string, { holdings: bigint | null; token: DetectedToken | null }>>({});
+  const [live, setLive] = useState<Record<string, { holdings: bigint | null; token: DetectedToken | null; observedAt: number }>>({});
   const [loading, setLoading] = useState(false);
 
   const groups = useMemo(() => {
     const map = new Map<string, { chainId: number; address: string; symbol: string; decimals: number; investedUsd: number; realizedUsd: number; lastTradeAt: number }>();
     for (const entry of activity) {
-      if (entry.kind !== 'swap' || entry.status === 'failed' || entry.status === 'refunded') continue;
+      if (entry.kind !== 'swap' || entry.status !== 'done') continue;
+      const sourceNetwork = getNetwork(entry.from.chainId);
+      const owner = sourceNetwork && addressFor(sourceNetwork.vm);
+      if (!owner || (sourceNetwork?.vm === 'svm' ? owner !== entry.wallet : owner.toLowerCase() !== entry.wallet.toLowerCase())) continue;
       const token = entry.side === 'sell' ? entry.from : entry.to;
-      const key = `${token.chainId}:${token.address.toLowerCase()}`;
+      const targetNetwork = getNetwork(token.chainId);
+      const targetOwner = targetNetwork && addressFor(targetNetwork.vm);
+      const recordedOwner = entry.side === 'sell' ? entry.wallet : entry.recipient ?? (entry.from.chainId === entry.to.chainId ? entry.wallet : null);
+      if (!targetOwner || !recordedOwner || (targetNetwork?.vm === 'svm' ? targetOwner !== recordedOwner : targetOwner.toLowerCase() !== recordedOwner.toLowerCase())) continue;
+      const key = `${token.chainId}:${targetOwner}:${(targetNetwork?.vm === 'svm' ? token.address : token.address.toLowerCase())}`;
       const group = map.get(key) ?? { chainId: token.chainId, address: token.address, symbol: token.symbol, decimals: token.decimals, investedUsd: 0, realizedUsd: 0, lastTradeAt: 0 };
-      if (entry.side === 'sell') group.realizedUsd += entry.amountOutUsd ?? 0;
-      else group.investedUsd += entry.amountInUsd ?? 0;
+      // Unknown cost/proceeds make PnL unknown; never turn a missing valuation into profit.
+      if (entry.side === 'sell') group.realizedUsd += entry.amountOutUsd ?? NaN;
+      else group.investedUsd += entry.amountInUsd ?? NaN;
       group.lastTradeAt = Math.max(group.lastTradeAt, entry.createdAt);
       map.set(key, group);
     }
     return [...map.entries()];
-  }, [activity]);
+  }, [activity, addressFor]);
 
   const refresh = useCallback(async () => {
     if (!groups.length) return;
@@ -58,9 +67,9 @@ export function usePositions() {
       const owner = network ? addressFor(network.vm) : null;
       const [holdings, token] = await Promise.all([
         owner ? getAssetBalance({ chainId: group.chainId, address: group.address, symbol: group.symbol, decimals: group.decimals }, owner).catch(() => null) : Promise.resolve(null),
-        detectChain(group.address).catch(() => null),
+        detectChain(group.address, group.chainId).catch(() => null),
       ]);
-      return [key, { holdings, token }] as const;
+      return [key, { holdings, token, observedAt: Date.now() }] as const;
     }));
     setLive(Object.fromEntries(results));
     setLoading(false);
@@ -78,10 +87,11 @@ export function usePositions() {
     const amount = holdings === null ? null : Number(holdings) / 10 ** group.decimals;
     const priceUsd = state?.token?.priceUsd ?? null;
     const valueUsd = amount !== null && priceUsd !== null ? amount * priceUsd : null;
-    const pnlUsd = valueUsd !== null && group.investedUsd > 0 ? valueUsd + group.realizedUsd - group.investedUsd : null;
+    const pnlUsd = valueUsd !== null && Number.isFinite(valueUsd) && Number.isFinite(group.investedUsd) && Number.isFinite(group.realizedUsd) && group.investedUsd > 0 ? valueUsd + group.realizedUsd - group.investedUsd : null;
     return {
       key,
       ...group,
+      observedAt: state?.observedAt ?? Date.now(),
       holdings,
       amount,
       priceUsd,

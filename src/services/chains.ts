@@ -36,7 +36,7 @@ export interface Network {
   addChain?: { chainName: string; rpcUrls: string[]; blockExplorerUrls?: string[] };
 }
 
-const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
+const env = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {});
 const rpc = (key: string, fallback: string) => env[`VITE_RPC_${key}`]?.trim() || fallback;
 
 export const SOLANA_CHAIN_ID = 1151111081099710;

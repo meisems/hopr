@@ -14,7 +14,7 @@ function short(address: string) {
 /** Live portfolio of the connected wallets: native balances on every chain, priced in USD. */
 export default function WalletPanel() {
   const wallet = useWallet();
-  const { rows, totalUsd, loading, updatedAt, refresh } = usePortfolio();
+  const { rows, totalUsd, incomplete, loading, updatedAt, refresh } = usePortfolio();
   const [expanded, setExpanded] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
   const [walletMessage, setWalletMessage] = useState('');
@@ -25,8 +25,8 @@ export default function WalletPanel() {
     { vm: 'near' as const, label: 'NEAR', logo: 'near', info: wallet.near },
   ];
   const anyConnected = connections.some((item) => item.info) || Boolean(wallet.telegramWallet);
-  const funded = rows.filter((row) => row.balance > 0n);
-  const empty = rows.filter((row) => row.balance === 0n);
+  const funded = rows.filter((row) => row.balance === null || row.balance > 0n || row.stale);
+  const empty = rows.filter((row) => row.balance === 0n && !row.stale);
 
   const copy = (value: string) => {
     void navigator.clipboard?.writeText(value).catch(() => undefined);
@@ -57,7 +57,8 @@ export default function WalletPanel() {
           </button>
         </div>
         <div className="mt-2">
-          <div className="font-mono text-2xl font-semibold tracking-tight text-white">{anyConnected ? formatUsd(totalUsd) : '—'}</div>
+          <div className="font-mono text-2xl font-semibold tracking-tight text-white">{anyConnected && rows.some((row) => row.usd !== null) ? `${incomplete ? '≈ ' : ''}${formatUsd(totalUsd)}` : anyConnected ? 'Syncing…' : '—'}</div>
+          {incomplete && <p className="text-[11px] text-amber-400">Partial estimate · retrying pending balances</p>}
           <div className="text-xs text-gray-500">
             {anyConnected
               ? `Native balances across ${rows.length} network${rows.length === 1 ? '' : 's'}${updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`
@@ -107,6 +108,7 @@ export default function WalletPanel() {
                         <div>
                           <div className="text-xs font-medium text-white">{row.network.shortName}</div>
                           <div className="font-mono text-[11px] text-gray-500">{row.formatted} {row.network.nativeSymbol}</div>
+                          {row.stale && <div className="text-[10px] text-amber-400">Last known {row.observedAt ? new Date(row.observedAt).toLocaleTimeString() : ''} · retrying</div>}
                         </div>
                       </div>
                       <div className="font-mono text-xs font-medium text-white">{row.usd === null ? '—' : formatUsd(row.usd)}</div>

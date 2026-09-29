@@ -287,9 +287,15 @@ function formatLiquiditySource(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function detectLaunchpad(source: string): string | undefined {
+export function detectLaunchpad(source: string): string | undefined {
   const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
-  if (normalized.includes('pump')) return 'Pump.fun';
+  if (normalized === 'pumpswap') return 'PumpSwap';
+  if (normalized === 'pumpfun') return 'Pump.fun';
+  if (normalized === 'nearpaid') return 'NEARPaid';
+  if (normalized === 'raydiumlaunchlab') return 'LaunchLab';
+  if (normalized === 'moonit') return 'Moonit';
+  if (normalized === 'letsbonkfun') return 'LetsBonk';
+  if (normalized === 'virtualsbase' || normalized === 'virtualsunicornbase') return 'Virtuals';
   if (normalized.includes('stonk')) return 'StonkFun';
   if (normalized.includes('argus')) return 'ArgusWorld';
   if (normalized.includes('tolly')) return 'TollyLabs';
@@ -511,7 +517,27 @@ async function detectNearToken(tokenId: string): Promise<DetectedToken | null> {
   };
 }
 
-export async function detectChain(address: string): Promise<DetectedToken | null> {
+export async function detectChain(address: string, chainHint?: number): Promise<DetectedToken | null> {
+  // Pool discovery knows the chain. Do not let the same EVM address on another chain win.
+  if (chainHint !== undefined) {
+    if (chainHint === NEAR_CHAIN_ID) return isNearAccountId(address) ? detectNearToken(address) : null;
+    const chain = SUPPORTED_CHAINS.find((c) => c.id === chainHint);
+    if (!chain || (chain.type === 'EVM' ? !isEvmAddress(address) : !isBase58(address))) return null;
+    const market = await fetchGeckoTerminalMarket(address, chain);
+    if (market) return geckoMarketToToken(market, chain, address);
+    const pairs = await fetchDexScreener(address);
+    const pair = pairs.find((p) => DEXSCREENER_CHAIN_SLUGS[p.chainId] === chainHint
+      && (chain.type === 'SVM' ? p.baseToken.address === address || p.quoteToken?.address === address
+        : p.baseToken.address.toLowerCase() === address.toLowerCase() || p.quoteToken?.address.toLowerCase() === address.toLowerCase()));
+    if (pair) return pairToDetectedToken(pair, chain.id, chain, address);
+    if (chain.type === 'EVM') {
+      const metadata = await readErc20Metadata(chain.rpcUrl, address);
+      if (!metadata) return null;
+      return { address, ...metadata, chainId: chain.id, chainName: chain.name, chainType: 'EVM', chainColor: chain.color,
+        priceUsd: 0, liquidity: 0, volume24h: 0, fdv: 0, change24h: 0, freshDeployment: true };
+    }
+    return null;
+  }
   const nearId = address.trim().toLowerCase();
   if (!isEvmAddress(address) && !isBase58(address) && isNearAccountId(nearId)) {
     return detectNearToken(nearId);

@@ -165,7 +165,7 @@ test('routes involving NEAR use NEAR Intents: bps slippage, mapped assets, depos
     assert.equal(request.destinationAsset, 'nep141:wrap.near');
     assert.equal(request.refundTo, EVM);
     assert.equal(request.recipient, 'alice.near');
-    assert.deepEqual(preview.fees, ['NEAR Intents app fee 0.2% (included)']);
+    assert.deepEqual(preview.fees, ['1Click routing fee 0.25% (included, additional to platform fee)']);
 
     const quote = await getRouteQuote({ kind: 'bridge', from: BASE_ETH, to: NEAR_NATIVE, amount: 10n ** 16n, fromAddress: EVM, toAddress: 'alice.near', slippage: 0.01 }, { commit: true });
     const result = await executeRoute(quote, { evm: { provider, address: EVM } });

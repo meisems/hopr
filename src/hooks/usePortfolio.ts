@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useWallet } from '../context/WalletContext';
 import { NETWORKS, type Network } from '../services/chains';
-import { getAssetBalance, loadIntentsTokens } from '../services/router';
+import { getTrackedAssetBalance, loadIntentsTokens } from '../services/router';
 import { formatUnits } from '../services/nearService';
 
 export interface PortfolioRow {
   network: Network;
   address: string;
-  balance: bigint;
+  balance: bigint | null;
+  stale: boolean;
+  observedAt: number | null;
   formatted: string;
   usd: number | null;
 }
@@ -37,53 +39,49 @@ export function usePortfolio() {
   const evmAddress = evm?.address ?? telegramWallet?.evmAddress;
   const svmAddress = svm?.address ?? telegramWallet?.solanaAddress;
   const nearAddress = near?.address ?? telegramWallet?.nearAddress ?? undefined;
-  const [retryTick, setRetryTick] = useState(0);
+  const [refreshTick, setRefreshTick] = useState(0);
   const [rows, setRows] = useState<PortfolioRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+    let failures = 0;
     const targets = NETWORKS.flatMap((network) => {
       const address = network.vm === 'evm' ? evmAddress : network.vm === 'svm' ? svmAddress : nearAddress;
       return address ? [{ network, address }] : [];
     });
-    if (!targets.length) {
-      setRows([]);
-      return;
-    }
+    setRows([]); setUpdatedAt(null);
+    if (!targets.length) { setLoading(false); return; }
+    const load = async () => {
     setLoading(true);
     const [prices, balances] = await Promise.all([
       nativePrices(),
       Promise.all(targets.map(async ({ network, address }) => {
-        try {
-          return { network, address, balance: await getAssetBalance({ chainId: network.id, address: 'native', symbol: network.nativeSymbol, decimals: network.nativeDecimals }, address) };
-        } catch {
-          return null;
-        }
+        const reading = await getTrackedAssetBalance({ chainId: network.id, address: 'native', symbol: network.nativeSymbol, decimals: network.nativeDecimals }, address);
+        return { network, address, balance: reading.value, stale: reading.stale, observedAt: reading.at };
       })),
     ]);
-    setRows(balances.filter((row): row is NonNullable<typeof row> => row !== null).map(({ network, address, balance }) => {
-      const amount = Number(balance) / 10 ** network.nativeDecimals;
+    if (!active) return;
+    setRows(balances.map(({ network, address, balance, stale, observedAt }) => {
+      const amount = balance === null ? null : Number(balance) / 10 ** network.nativeDecimals;
       const price = prices[network.nativeSymbol];
-      return { network, address, balance, formatted: formatUnits(balance, network.nativeDecimals, 5), usd: price !== undefined ? amount * price : null };
+      return { network, address, balance, stale, observedAt, formatted: balance === null ? 'Syncing…' : formatUnits(balance, network.nativeDecimals, 5), usd: price !== undefined && amount !== null ? amount * price : null };
     }));
     setUpdatedAt(Date.now());
     setLoading(false);
-    // A chain that couldn't be read (and has no last-known value yet) is retried shortly.
-    if (balances.some((row) => row === null)) window.setTimeout(() => setRetryTick((tick) => (tick < 5 ? tick + 1 : tick)), 8000);
-  }, [evmAddress, svmAddress, nearAddress]);
-
-  useEffect(() => {
-    if (retryTick) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryTick]);
-
-  useEffect(() => {
+    const needsRetry = balances.some((row) => row.balance === null || row.stale);
+    failures = needsRetry ? failures + 1 : 0;
+    timer = window.setTimeout(() => void load(), needsRetry && failures <= 3 ? 8000 : 60_000);
+    };
     void load();
-    const timer = window.setInterval(() => void load(), 60_000);
-    return () => window.clearInterval(timer);
-  }, [load]);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [evmAddress, svmAddress, nearAddress, refreshTick]);
 
-  const totalUsd = rows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
-  return { rows, totalUsd, loading, updatedAt, refresh: load };
+  // Hide the previous account's results immediately, even before effect cleanup runs.
+  const currentRows = rows.filter((row) => row.address === (row.network.vm === 'evm' ? evmAddress : row.network.vm === 'svm' ? svmAddress : nearAddress));
+  const totalUsd = currentRows.reduce((sum, row) => sum + (row.usd ?? 0), 0);
+  const incomplete = currentRows.some((row) => row.usd === null || row.stale);
+  return { rows: currentRows, totalUsd, incomplete, loading, updatedAt, refresh: () => setRefreshTick((n) => n + 1) };
 }

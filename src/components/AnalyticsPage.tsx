@@ -26,7 +26,7 @@ function MetricCard({ icon, label, value, detail }: { icon: React.ReactNode; lab
 /** Your own trading analytics, computed from the swaps and bridges you signed here. */
 export default function AnalyticsPage({ onBack }: AnalyticsPageProps) {
   const activity = useActivity();
-  const { totalUsd, rows } = usePortfolio();
+  const { totalUsd, rows, incomplete } = usePortfolio();
 
   const settled = activity.filter((entry) => entry.status === 'done');
   const volume = activity.reduce((sum, entry) => sum + (entry.amountInUsd ?? 0), 0);
@@ -61,7 +61,7 @@ export default function AnalyticsPage({ onBack }: AnalyticsPageProps) {
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetricCard icon={<Activity className="h-4 w-4" />} label="Total volume" value={formatUsd(volume)} detail={`${activity.length} trade${activity.length === 1 ? '' : 's'} and bridges`} />
           <MetricCard icon={<BarChart3 className="h-4 w-4" />} label="24h volume" value={formatUsd(last24h)} detail="Signed in the last 24 hours" />
-          <MetricCard icon={<Wallet className="h-4 w-4" />} label="Wallet value" value={formatUsd(totalUsd)} detail={`Native balances on ${rows.length} network${rows.length === 1 ? '' : 's'}`} />
+          <MetricCard icon={<Wallet className="h-4 w-4" />} label="Wallet value" value={rows.some((row) => row.usd !== null) ? `${incomplete ? '≈ ' : ''}${formatUsd(totalUsd)}` : '—'} detail={`${incomplete ? 'Partial estimate · ' : ''}Native balances on ${rows.length} network${rows.length === 1 ? '' : 's'}`} />
           <MetricCard icon={<CheckCircle2 className="h-4 w-4" />} label="Success rate" value={successRate === null ? '—' : `${successRate}%`} detail={`${bridges} bridge${bridges === 1 ? '' : 's'} · ${activity.filter((entry) => entry.status === 'pending').length} pending`} />
         </section>
 

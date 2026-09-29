@@ -1,14 +1,14 @@
 // Referral program: codes, first-touch bindings, server-verified trade
 // rewards, and payout requests. See migrations/0005 and 0006.
 //
-// Referrers earn REFERRAL_SHARE (25%) of the platform fee Hopr charged on
-// each referred trade (0.5% trades, 1% bridges). Rewards are never taken
+// Referrers earn REFERRAL_SHARE (25%) of Hopr's fee revenue AFTER the
+// routing provider's share (0.5% trades, 1% bridges before splitting). Rewards are never taken
 // from client-supplied numbers — every reported trade is checked against
 // the route provider first:
 //   LI.FI ......... status API: DONE, Hopr's integrator id, sent by the referred
 //                   wallet; the fee is LI.FI's own integrator-fee figure
 //   NEAR Intents .. 1Click status: SUCCESS, refunds to the referred wallet,
-//                   Hopr's app fee attached; fee = volume × Hopr's app-fee bps
+//                   Hopr's app fee attached; revenue uses the saved quote-time split
 //   Ref Finance ... NEAR RPC: the swap transaction was signed by the referred
 //                   account and carries the ft_transfer of Hopr's fee
 //
@@ -20,8 +20,9 @@
 // bot trades, Mini App trades and web trades all land on one account.
 
 import { verifyWalletProof, type WalletProof } from './walletProof';
+import type { IntentsFeeRecord } from './intentsFees';
 
-export const REFERRAL_SHARE = 0.25; // of the platform fee
+export const REFERRAL_SHARE = 0.25; // of Hopr's fee revenue after the provider's share
 export const PLATFORM_FEE = { swap: 0.005, bridge: 0.01 } as const;
 const DEFAULT_MIN_PAYOUT_USD = 5;
 const MAX_VERIFY_ATTEMPTS = 40;
@@ -112,20 +113,22 @@ interface LifiStatus {
 }
 
 /** Hopr's share of a LI.FI transfer's fees in USD, from LI.FI's integrator-fee split. */
-export function lifiPlatformFeeUsd(data: LifiStatus, volumeUsd: number): number {
+export function lifiPlatformFeeUsd(data: LifiStatus): number | null {
   const split = (data.feeCosts ?? []).filter((cost) => cost.feeSplit?.integratorFee !== undefined);
   if (split.length > 0) {
-    return split.reduce((sum, cost) => {
+    let total = 0;
+    for (const cost of split) {
       const amount = Number(cost.amount);
       const usd = Number(cost.amountUSD);
       const integrator = Number(cost.feeSplit!.integratorFee);
-      return amount > 0 && Number.isFinite(usd) && Number.isFinite(integrator) ? sum + (usd * integrator) / amount : sum;
-    }, 0);
+      if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(usd) || usd < 0 ||
+          !Number.isFinite(integrator) || integrator < 0 || integrator > amount) return null;
+      total += (usd * integrator) / amount;
+    }
+    return total;
   }
-  // No split reported: the standard rate for the route type (same asset across chains = bridge).
-  const coin = (side?: { token?: { coinKey?: string; symbol?: string } }) => side?.token?.coinKey ?? side?.token?.symbol;
-  const bridge = data.sending?.chainId !== data.receiving?.chainId && Boolean(coin(data.sending)) && coin(data.sending) === coin(data.receiving);
-  return volumeUsd * (bridge ? PLATFORM_FEE.bridge : PLATFORM_FEE.swap);
+  // Unknown provider revenue must not be turned into a payable reward.
+  return null;
 }
 
 function decodeArgs(base64: unknown): Record<string, unknown> {
@@ -221,7 +224,8 @@ export async function verifyTrade(row: TradeRow, env: ReferralEnv, fetchImpl: ty
       if (normalizeWallet(data.fromAddress)?.wallet !== row.wallet) return { status: 'rejected', reason: 'Sender does not match the referred wallet' };
       const volume = Number(data.sending?.amountUSD);
       if (!Number.isFinite(volume) || volume <= 0) return { status: 'rejected', reason: 'No USD volume reported' };
-      const feeUsd = lifiPlatformFeeUsd(data, volume);
+      const feeUsd = lifiPlatformFeeUsd(data);
+      if (feeUsd === null) return { status: 'pending', reason: 'Awaiting LI.FI integrator fee split' };
       if (!(feeUsd > 0)) return { status: 'ineligible', reason: 'No Hopr fee on this route' };
       return { status: 'verified', volumeUsd: volume, feeUsd };
     }
@@ -236,16 +240,30 @@ export async function verifyTrade(row: TradeRow, env: ReferralEnv, fetchImpl: ty
     const data = await response.json().catch(() => ({})) as {
       status?: string;
       quoteResponse?: { quote?: { amountInUsd?: string }; quoteRequest?: { refundTo?: string; appFees?: Array<{ recipient?: string; fee?: number }> } };
-      swapDetails?: { amountInUsd?: string };
+      swapDetails?: { amountInUsd?: string; originChainTxHashes?: Array<{ hash: string }> };
     };
     if (data.status === 'SUCCESS') {
       const request = data.quoteResponse?.quoteRequest;
       if (normalizeWallet(request?.refundTo)?.wallet !== row.wallet) return { status: 'rejected', reason: 'Depositor does not match the referred wallet' };
       const bps = (request?.appFees ?? []).filter((fee) => fee.recipient === env.HOPR_INTENTS_FEE_ACCOUNT).reduce((sum, fee) => sum + (fee.fee ?? 0), 0);
       if (!(bps > 0)) return { status: 'ineligible', reason: 'Hopr app fee not attached' };
-      const volume = Number(data.swapDetails?.amountInUsd ?? data.quoteResponse?.quote?.amountInUsd);
+      const saved = await env.DB?.prepare('SELECT * FROM intents_fee_quotes WHERE deposit_address = ?1')
+        .bind(row.deposit_address).first<IntentsFeeRecord>();
+      if (!saved) return { status: 'pending', reason: 'Quote-time fee agreement unavailable; reconciliation required' };
+      if (saved.credited_trade_id && saved.credited_trade_id !== row.id) return { status: 'rejected', reason: 'Deposit already credited' };
+      if (normalizeWallet(saved.refund_wallet)?.wallet !== row.wallet || saved.fee_account !== env.HOPR_INTENTS_FEE_ACCOUNT) {
+        return { status: 'rejected', reason: 'Fee agreement does not match this trade' };
+      }
+      // Some provider responses normalize appFees to the effective recipient share.
+      // Revenue always comes from our saved agreement, never by halving a response twice.
+      if (bps !== saved.requested_bps && bps !== saved.hopr_bps) return { status: 'pending', reason: 'Provider fee differs from saved agreement' };
+      const hashes = data.swapDetails?.originChainTxHashes;
+      if (!hashes?.length) return { status: 'pending', reason: 'Awaiting deposit transaction confirmation' };
+      const sameHash = (hash: string) => /^0x/i.test(hash) ? hash.toLowerCase() === row.tx_hash.toLowerCase() : hash === row.tx_hash;
+      if (!hashes.some(({ hash }) => sameHash(hash))) return { status: 'rejected', reason: 'Deposit transaction does not match' };
+      const volume = Number(data.swapDetails?.amountInUsd);
       if (!Number.isFinite(volume) || volume <= 0) return { status: 'rejected', reason: 'No USD volume reported' };
-      return { status: 'verified', volumeUsd: volume, feeUsd: (volume * bps) / 10_000 };
+      return { status: 'verified', volumeUsd: volume, feeUsd: (volume * saved.hopr_bps) / 10_000 };
     }
     if (data.status === 'REFUNDED' || data.status === 'FAILED') return { status: 'rejected', reason: `Intents status ${data.status}` };
     return { status: 'pending', reason: data.status ?? 'PENDING' };
@@ -257,6 +275,15 @@ export async function verifyTrade(row: TradeRow, env: ReferralEnv, fetchImpl: ty
 async function applyVerdict(row: TradeRow, verdict: Verdict, env: ReferralEnv): Promise<void> {
   const now = Date.now();
   if (verdict.status === 'verified') {
+    if (row.provider === 'intents') {
+      const claim = await env.DB!.prepare(`UPDATE intents_fee_quotes SET credited_trade_id = ?1
+        WHERE deposit_address = ?2 AND (credited_trade_id IS NULL OR credited_trade_id = ?1)`)
+        .bind(row.id, row.deposit_address).run();
+      if (!claim.meta.changes) {
+        await applyVerdict(row, { status: 'rejected', reason: 'Deposit already credited' }, env);
+        return;
+      }
+    }
     await env.DB!.prepare(
       `UPDATE referral_trades SET status = 'verified', volume_usd = ?1, fee_usd = ?2, reward_usd = ?3, status_reason = NULL, verified_at = ?4, attempts = attempts + 1 WHERE id = ?5 AND status = 'pending'`
     ).bind(round(verdict.volumeUsd), round(verdict.feeUsd), round(verdict.feeUsd * REFERRAL_SHARE), now, row.id).run();

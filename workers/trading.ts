@@ -41,6 +41,7 @@ import {
   type RefSwapQuote,
 } from '../src/services/nearService';
 import { executeNearTransactions, generateNearWallet } from '../src/services/nearSigner';
+import { saveIntentsFeeQuote } from './intentsFees';
 
 export interface TradingEnv {
   DB?: D1Database;
@@ -51,7 +52,7 @@ export interface TradingEnv {
   NEAR_RPC_URL?: string;
   /** Hopr's NEAR account: NEAR Intents app fee + Ref swap fee. */
   HOPR_INTENTS_FEE_ACCOUNT?: string;
-  /** NEAR Intents 1Click API key (JWT). Without it 1Click keeps half of the app fee. */
+  /** 1Click API key: default app-fee split is 50/50; public quotes add 25bps. */
   ONECLICK_JWT?: string;
 }
 
@@ -573,18 +574,28 @@ async function intentsAsset(chainId: number, tokenAddress: string | 'native'): P
 
 /**
  * Ask 1Click for a quote. Hopr's app fee is added here (server-side) when the
- * fee account is configured; the 1Click JWT, when set, keeps the whole fee.
+ * fee account is configured. Authenticated default terms split it 50/50.
  */
 export async function requestIntentsQuote(body: Record<string, unknown>, feeBps: number, env: TradingEnv): Promise<{ status: number; data: Record<string, unknown> }> {
   const feeAccount = env.HOPR_INTENTS_FEE_ACCOUNT?.trim();
-  const payload = { ...body, ...(feeAccount && feeBps > 0 ? { appFees: [{ recipient: feeAccount, fee: feeBps }] } : {}) };
+  const payload = { ...body, appFees: feeAccount && feeBps > 0 ? [{ recipient: feeAccount, fee: feeBps }] : [] };
   const response = await fetch(`${ONECLICK_API}/quote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(env.ONECLICK_JWT ? { Authorization: `Bearer ${env.ONECLICK_JWT}` } : {}) },
     body: JSON.stringify(payload),
   });
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-  return { status: response.status, data };
+  const quote = data.quote as { depositAddress?: string } | undefined;
+  if (response.ok && body.dry === false && quote?.depositAddress && feeAccount && feeBps > 0 && env.DB) {
+    // Await durable accounting before giving the user an address to fund.
+    await saveIntentsFeeQuote(env.DB, {
+      depositAddress: quote.depositAddress, refundWallet: String(body.refundTo),
+      feeAccount, requestedBps: feeBps, authenticated: Boolean(env.ONECLICK_JWT),
+    });
+  }
+  return { status: response.status, data: response.ok ? { ...data, hoprFee: {
+    requestedBps: feeAccount ? feeBps : 0, authenticated: Boolean(env.ONECLICK_JWT),
+  } } : data };
 }
 
 /**
@@ -659,6 +670,23 @@ export async function prepareNearIntentsBuy(params: {
   }
   const { data, quote } = result;
   const hubChain = getChainById(hubChainId)!;
+  if (!direct) {
+    if (!env.TELEGRAM_STATE) throw new Error('Multi-step NEAR buys require TELEGRAM_STATE to resume the final swap.');
+    const reserve = hubChain.type === 'SVM' ? 5_000_000n : hubChainId === ARC_CHAIN_ID ? 100_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
+    const spend = BigInt(quote.minAmountOut ?? quote.amountOut) - reserve;
+    if (spend <= 0n) throw new Error('This amount cannot cover the final swap and gas. No funds were moved.');
+    // Check the final market before offering the bridge for confirmation. The route
+    // is quoted again after delivery because this preview can expire or lose liquidity.
+    try {
+      await getQuote({ fromChain: String(hubChainId), toChain: String(params.targetChainId),
+        fromToken: hubChainId === ARC_CHAIN_ID ? ARC_NATIVE_USDC : nativeTokenAddress(hubChain.key),
+        toToken: params.targetTokenAddress, fromAmount: spend.toString(),
+        fromAddress: addressOn(hubChain.type), toAddress: addressOn(targetChain.type),
+        slippage: params.slippage, fee: 0 }, env.LIFI_API_KEY ?? '');
+    } catch {
+      throw new Error('The final token swap could not be quoted. No NEAR was moved. Retry or choose another token.');
+    }
+  }
   const trade: PendingTrade = {
     id: crypto.randomUUID(),
     userId: params.userId,

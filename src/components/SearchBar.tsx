@@ -7,6 +7,7 @@ import { useRateLimiter } from '../hooks/useRateLimiter';
 
 export interface ScanRequest {
   address: string;
+  chainId?: number;
   /** Changes on every request so the same address can be re-scanned. */
   nonce: number;
 }
@@ -79,20 +80,21 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
     setRecents((current) => {
       const next = [
         { address: token.address, symbol: token.symbol, chainId: token.chainId, imageUrl: token.imageUrl },
-        ...current.filter((item) => item.address.toLowerCase() !== token.address.toLowerCase()),
+        ...current.filter((item) => item.chainId !== token.chainId || item.address !== token.address),
       ].slice(0, MAX_RECENTS);
       writeRecents(next);
       return next;
     });
   }, []);
 
-  const scan = useCallback(async (raw: string) => {
+  const scan = useCallback(async (raw: string, chainId?: number) => {
     const address = raw.trim();
     if (!address) return;
     const id = ++requestId.current;
     setError('');
 
-    const cached = detectionCache.get(address.toLowerCase());
+    const cacheKey = `${chainId ?? 'auto'}:${address.startsWith('0x') ? address.toLowerCase() : address}`;
+    const cached = detectionCache.get(cacheKey);
     if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
       setDetected(cached.token);
       onTokenDetected(cached.token);
@@ -104,10 +106,10 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
     setLoading(true);
     setDetected(null);
     try {
-      const result = await detectChain(address);
+      const result = await detectChain(address, chainId);
       if (id !== requestId.current) return; // a newer scan superseded this one
       if (result) {
-        detectionCache.set(address.toLowerCase(), { at: Date.now(), token: result });
+        detectionCache.set(cacheKey, { at: Date.now(), token: result });
         setDetected(result);
         onTokenDetected(result);
         remember(result);
@@ -125,7 +127,7 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
   useEffect(() => {
     if (!scanRequest) return;
     setQuery(scanRequest.address);
-    void scan(scanRequest.address);
+    void scan(scanRequest.address, scanRequest.chainId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanRequest?.nonce]);
 
@@ -225,7 +227,7 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
             {recents.map((item) => (
               <button
                 key={`${item.chainId}-${item.address}`}
-                onClick={() => { setQuery(item.address); void scan(item.address); }}
+                onClick={() => { setQuery(item.address); void scan(item.address, item.chainId); }}
                 className="pressable flex shrink-0 items-center gap-1.5 rounded-full border border-gray-800/70 bg-gray-900/60 py-1 pl-1 pr-2.5 text-xs font-medium text-gray-300 hover:border-brand-400/40 hover:text-white"
                 title={item.address}
               >

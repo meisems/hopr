@@ -149,7 +149,7 @@ Wrangler will prompt for each value. Do not put either value in `.env`, source c
 | `TELEGRAM_STATE` | Saved public Telegram wallet addresses and preferences | KV binding; without it, one-time public balance reads and token lookup still work |
 | `RATE_LIMIT` | API rate-limit storage | KV binding; if absent, the Worker falls back to allowing requests |
 | `ENVIRONMENT` | Environment label | Already set to `production` in `wrangler.toml` |
-| `LIFI_API_KEY` | Server-side LI.FI quote requests | Never expose this key to Pages/browser code; execution is still disabled |
+| `LIFI_API_KEY` | Server-side LI.FI quote requests | Never expose this key to Pages/browser code; enables authenticated routing requests |
 | `ENCRYPTION_KEY` | Encrypts every custodial private key (EVM, Solana, NEAR) with AES-256-GCM | Secret; 32+ random bytes. Rotating it makes existing keys undecryptable |
 | `NEAR_RPC_URL` | Keyed NEAR mainnet JSON-RPC used for NEAR balances, quotes and broadcasts | Secret (URLs often embed an API key). Free public RPCs are rate limited and used only as fallbacks |
 
@@ -207,14 +207,15 @@ npx wrangler secret put NEAR_RPC_URL
 
 ### Fees, NEAR routes and referrals
 
-Hopr charges 0.5% on trades and 1% on bridges. `migrations/0005_referrals.sql` and `0006_referral_fee_share.sql` (applied by the command above) enable the referral program: referrers earn 25% of the fees their friends pay, synced across the bot, the Mini App and the web.
+Hopr charges 0.5% on trades and 1% on bridges. Migrations `0005_referrals.sql`, `0006_referral_fee_share.sql` and `0007_intents_fee_policy.sql` (applied by the command above) enable the referral program: referrers earn 25% of HOPR fee revenue after the routing provider share, synced across the bot, the Mini App and the web.
 
 ```bash
 # LI.FI API key (partner portal) — required: without it all users share the worker's small anonymous quota.
 npx wrangler secret put LIFI_API_KEY
 # Hopr's NEAR account (must exist on mainnet): receives the NEAR Intents and Ref Finance fees.
 npx wrangler secret put HOPR_INTENTS_FEE_ACCOUNT
-# NEAR Intents 1Click API key — without it 1Click keeps half of every NEAR Intents fee.
+# NEAR Intents API key — default authenticated terms split the submitted fee 50/50.
+# Without a key, 1Click adds 0.25% on top and HOPR keeps the submitted fee.
 npx wrangler secret put ONECLICK_JWT
 # Bearer token for the referral payout queue.
 npx wrangler secret put ADMIN_TOKEN
@@ -295,7 +296,8 @@ For a custom Worker API domain:
 - [ ] Dashboard loads without a blank screen.
 - [ ] The Telegram preview shows `/start`, `/menu`, `/help`, `/wallet`, and `/settings` indicators.
 - [ ] The token action rows render: buy, custom, change chain, sell, settings, DexScreener, and dismiss.
-- [ ] The preview clearly identifies the bot as read-only.
+- [ ] Connected wallets sign in the wallet app; linked public addresses stay read-only.
+- [ ] Test the Mini App inside Telegram Web and mobile. Pages headers allow framing by https://web.telegram.org; remove any conflicting DENY header set by a proxy.
 
 ### Worker
 
@@ -307,7 +309,9 @@ curl -i https://hopr.<your-subdomain>.workers.dev/health
 - [ ] `GET /api/wallet/<public-address>/balances` returns balance data.
 - [ ] `POST /telegram/webhook` rejects requests with an incorrect webhook secret.
 - [ ] `POST /api/trade/quote` returns a read-only LI.FI quote for a connected EVM wallet.
-- [ ] Trade endpoints return the documented `501 TRADE_EXECUTION_UNAVAILABLE` response rather than claiming success.
+- [ ] Legacy buy/sell/status endpoints return 501; custodial quote/confirm rejects missing or invalid Telegram authentication.
+- [ ] `/api/launchpads/pools?source=pump` returns real pools or a clear retry response.
+- [ ] Balance outages retain timestamped last-known readings; a never-loaded balance stays pending, never a fabricated zero.
 
 ### Telegram
 
@@ -317,9 +321,10 @@ In a private chat with the bot:
 2. Send `/menu` and confirm the action menu appears.
 3. Send `/help` and confirm `/menu` is listed.
 4. Send a token contract address and confirm the token card plus premium inline action rows.
-5. Tap a Buy or Sell button and confirm the bot explains that trading is not enabled yet.
+5. With a configured custodial wallet, tap Buy or Sell and review a live quote. Cancel first; fund and confirm a small trade only as a deliberate production acceptance test.
 6. If `TELEGRAM_STATE` is bound, test `/setwallet`, `/wallet`, and `/settings`.
-7. After looking up an EVM token and linking a public EVM wallet, tap a Telegram Buy button and confirm a read-only LI.FI quote is returned.
+7. Open `/pools nearpaid`, `/pools pons`, `/pools pump`, `/pools tolly`, and `/pools argus`. Check venue attribution, pool links and timestamps.
+8. Follow a referral link, open the Mini App from the same Telegram account, and confirm the referral identity matches the bot. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
 
 ## 10. Rollback
 
@@ -365,3 +370,9 @@ npx wrangler deploy
 ```
 
 Then run the Telegram verification checklist. Never describe a buy or sell as submitted or completed until real signing, transaction submission, and status tracking have been implemented and separately verified.
+
+## Launchpad discovery deployment
+
+Use the existing CACHE KV binding and set VITE_API_URL to the Worker HTTPS origin (or proxy same-origin /api/*). Set a reliable NEAR_RPC_URL and rerun telegram:configure to register /pools. See [launchpad sources and limitations](docs/launchpad-liquidity-sources.md). No new migration or dependency is needed for this feed.
+
+Public routing endpoints are quota-limited. Configure LIFI_API_KEY and ONECLICK_JWT for production, plus the platform fee accounts and integrator configuration described above. The read-only route matrix is not a funded execution test. Tokens available only on Rhea DCL, bonding curves or custom hooks need router support or a dedicated execution adapter.

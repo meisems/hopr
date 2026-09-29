@@ -27,6 +27,8 @@ export interface ActivityEntry {
   amountInUsd?: number;
   amountOutUsd?: number;
   wallet: string;
+  /** Destination wallet, recorded so positions cannot mix accounts across chains. */
+  recipient?: string;
   txHash: string;
   explorerUrl?: string;
   receivingTxHash?: string;

@@ -51,7 +51,7 @@ function endpointProblem(error: { code?: number; message?: string }): boolean {
     || /rate|limit|forbidden|not allowed|api key|token|unavailable|timeout|too many|not available|unauthor/i.test(message);
 }
 
-export async function jsonRpc<T>(chainId: number, method: string, params: unknown, options: { timeoutMs?: number; extra?: string[]; fetchImpl?: typeof fetch } = {}): Promise<T> {
+export async function jsonRpc<T>(chainId: number, method: string, params: unknown, options: { timeoutMs?: number; extra?: string[]; fetchImpl?: typeof fetch; validate?: (value: T) => boolean } = {}): Promise<T> {
   const doFetch = options.fetchImpl ?? fetch;
   let lastError: unknown = new Error(`No RPC endpoint for chain ${chainId}`);
   for (const url of rpcEndpoints(chainId, options.extra)) {
@@ -64,6 +64,7 @@ export async function jsonRpc<T>(chainId: number, method: string, params: unknow
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
         signal: controller?.signal,
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json().catch(() => null) as { result?: T; error?: { code?: number; message?: string } } | null;
       if (!payload) throw new Error(`HTTP ${response.status}`);
       if (payload.error) {
@@ -71,6 +72,7 @@ export async function jsonRpc<T>(chainId: number, method: string, params: unknow
         throw new RpcCallError(payload.error.message ?? `${method} failed`, payload.error.code);
       }
       if (payload.result === undefined) throw new Error(`${method}: empty response`);
+      if (options.validate && !options.validate(payload.result)) throw new Error(`${method}: malformed result`);
       preferred.set(chainId, url);
       return payload.result;
     } catch (error) {
@@ -95,11 +97,12 @@ let memory: Record<string, CacheEntry> | null = null;
 function cache(): Record<string, CacheEntry> {
   if (memory) return memory;
   try {
-    memory = typeof localStorage === 'undefined' ? {} : JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}') as Record<string, CacheEntry>;
+    const parsed = typeof localStorage === 'undefined' ? {} : JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}');
+    memory = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
     memory = {};
   }
-  return memory;
+  return memory ?? {};
 }
 
 export function rememberBalance(key: string, value: bigint) {
@@ -114,5 +117,6 @@ export function rememberBalance(key: string, value: bigint) {
 
 export function recallBalance(key: string): { value: bigint; at: number } | null {
   const entry = cache()[key];
-  return entry ? { value: BigInt(entry.value), at: entry.at } : null;
+  if (!entry || !Number.isFinite(entry.at) || Date.now() - entry.at > 30 * 86400_000 || !/^\d+$/.test(entry.value)) return null;
+  return { value: BigInt(entry.value), at: entry.at };
 }

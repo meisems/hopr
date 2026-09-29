@@ -65,7 +65,7 @@ test('/referral shows the Telegram invite link, web link and earnings; /start re
   const code = text.match(/Code  ([a-z0-9]{8})/)[1];
   assert.match(text, new RegExp(`Telegram  https://t\\.me/HoprBot\\?start=ref_${code}`));
   assert.match(text, new RegExp(`Web  https://hopr\\.app/\\?ref=${code}`));
-  assert.match(text, /Earn 25% of the Hopr fees your friends pay/);
+  assert.match(text, /Earn 25% of HOPR fee revenue after the routing provider's share/);
   assert.match(text, /Friends  0/);
   const buttons = panel.at(-1).body.reply_markup.inline_keyboard.flat();
   assert.match(buttons.find((button) => button.text === '📤 Share invite').url, /t\.me\/share\/url/);

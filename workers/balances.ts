@@ -35,19 +35,24 @@ export async function tracked(env: BalanceEnv, key: string, reader: () => Promis
   } catch {
     const raw = await store?.get(`bal:v1:${key}`).catch(() => null);
     if (!raw) return null;
-    const cached = JSON.parse(raw) as { value: string; at: number };
-    return { value: BigInt(cached.value), cachedAt: cached.at };
+    try {
+      const cached = JSON.parse(raw) as { value: string; at: number };
+      if (!/^\d+$/.test(cached.value) || !Number.isFinite(cached.at) || Date.now() - cached.at > CACHE_TTL * 1000) return null;
+      return { value: BigInt(cached.value), cachedAt: cached.at };
+    } catch { return null; }
   }
 }
 
 /** Native balance in smallest units (wei / lamports / yoctoNEAR available). */
 export async function readNativeBalance(chainId: number, address: string, near?: NearRpcOptions): Promise<bigint> {
-  if (chainId === SOLANA_CHAIN_ID) return BigInt((await jsonRpc<{ value: number }>(SOLANA_CHAIN_ID, 'getBalance', [address, { commitment: 'confirmed' }])).value);
+  if (chainId === SOLANA_CHAIN_ID) return BigInt((await jsonRpc<{ value: number }>(SOLANA_CHAIN_ID, 'getBalance', [address, { commitment: 'confirmed' }], {
+    validate: (result) => Number.isSafeInteger(result?.value) && result.value >= 0,
+  })).value);
   if (chainId === NEAR_CHAIN_ID) {
     const balance = await getNearBalance(address, [], near);
     return balance.exists ? BigInt(balance.availableYocto) : 0n;
   }
-  return BigInt(await jsonRpc<string>(chainId, 'eth_getBalance', [address, 'latest']));
+  return BigInt(await jsonRpc<string>(chainId, 'eth_getBalance', [address, 'latest'], { validate: (value) => typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value) }));
 }
 
 const pad32 = (hex: string) => hex.replace(/^0x/, '').toLowerCase().padStart(64, '0');
@@ -87,7 +92,8 @@ export async function nativePricesUsd(): Promise<Record<string, number>> {
   if (priceCache && Date.now() - priceCache.at < 5 * 60_000) return priceCache.prices;
   const prices: Record<string, number> = { USDC: 1 };
   try {
-    const response = await fetch('https://1click.chaindefuser.com/v0/tokens');
+    const response = await fetch('https://1click.chaindefuser.com/v0/tokens', { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error('Price provider failed');
     for (const token of await response.json() as Array<{ symbol: string; price?: number; contractAddress?: string }>) {
       const symbol = token.symbol.toUpperCase() === 'WNEAR' ? 'NEAR' : token.symbol.toUpperCase();
       if (token.price && !prices[symbol] && (!token.contractAddress || symbol === 'NEAR')) prices[symbol] = token.price;

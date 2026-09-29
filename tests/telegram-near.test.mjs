@@ -436,3 +436,20 @@ test('paying with NEAR for a BNB token falls back to ETH on Base when NEAR Inten
   assert.equal(lifi.searchParams.get('toChain'), '56');
   assert.equal(lifi.searchParams.get('toToken'), CAKE);
 });
+
+test('NEAR-funded launchpad buy refuses the bridge when the final token has no route', async () => {
+  const { kv, env } = await custodialSetup();
+  const near = createNearNetwork();
+  await kv.put('telegram:79', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: '0x' + '8'.repeat(40), lastTokenChainId: 8453, lastTokenSymbol: 'NEW' }));
+  const network = { broadcasts: near.broadcasts, fetchImpl: async (url, init = {}) => {
+    const href = String(url);
+    if (href.endsWith('/v0/tokens')) return Response.json([{ assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 }]);
+    if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: 'd'.repeat(64), amountOut: '2100000000000000', minAmountOut: '2050000000000000' } });
+    if (href.includes('li.quest/v1/quote')) return Response.json({ message: 'No route' }, { status: 404 });
+    return near.fetchImpl(url, init);
+  }};
+  const calls = await sendUpdate({ callback_query: { id: 'blocked-route', data: 'trade:buy:1', message: { message_id: 2, chat: { id: 79, type: 'private' } } } }, env, network);
+  assert.match(plain(calls.at(-1).body.text), /final token swap could not be quoted/);
+  assert.equal(near.broadcasts.length, 0);
+  assert.ok(!calls.at(-1).body.reply_markup?.inline_keyboard?.flat().some(b => b.callback_data?.startsWith('trade:confirm:')));
+});

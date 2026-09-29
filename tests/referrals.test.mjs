@@ -16,13 +16,15 @@ import {
   referralStats,
   telegramIdentity,
 } from '../workers/referrals.ts';
+import { saveIntentsFeeQuote, intentsHoprBps } from '../workers/intentsFees.ts';
+import { requestIntentsQuote } from '../workers/trading.ts';
 import { nep413Hash, personalMessageHash, verifyWalletProof } from '../workers/walletProof.ts';
 import { referralProofMessage } from '../src/services/referralMessage.ts';
 
 /** Cloudflare D1 API over an in-memory SQLite database with the real migrations applied. */
 function createD1() {
   const db = new DatabaseSync(':memory:');
-  for (const file of ['0005_referrals.sql', '0006_referral_fee_share.sql']) {
+  for (const file of ['0005_referrals.sql', '0006_referral_fee_share.sql', '0007_intents_fee_policy.sql']) {
     db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
   }
   return {
@@ -189,10 +191,25 @@ test(`a verified LI.FI trade earns ${REFERRAL_SHARE * 100}% of the Hopr fee LI.F
   assert.equal(duplicate.data.recorded, false);
 });
 
-test('without a fee split the standard rate applies: 0.5% trades, 1% same-asset bridges', () => {
-  assert.equal(lifiPlatformFeeUsd({ sending: { chainId: 8453, token: { coinKey: 'ETH' } }, receiving: { chainId: 8453, token: { coinKey: 'DEGEN' } } }, 1000), 5);
-  assert.equal(lifiPlatformFeeUsd({ sending: { chainId: 8453, token: { coinKey: 'ETH' } }, receiving: { chainId: 42161, token: { coinKey: 'ETH' } } }, 1000), 10);
-  assert.equal(lifiPlatformFeeUsd({ feeCosts: [{ amount: '100', amountUSD: '0.25', feeSplit: { integratorFee: '0' } }] }, 1000), 0);
+test('missing or invalid LI.FI revenue is unknown, never an estimated payable fee', () => {
+  assert.equal(lifiPlatformFeeUsd({ sending: { chainId: 8453 }, receiving: { chainId: 42161 } }), null);
+  for (const cost of [
+    { amount: '100', feeSplit: { integratorFee: '50' } },
+    { amount: '100', amountUSD: '1', feeSplit: { integratorFee: '-1' } },
+    { amount: '100', amountUSD: '1', feeSplit: { integratorFee: '101' } },
+  ]) assert.equal(lifiPlatformFeeUsd({ feeCosts: [cost] }), null);
+  assert.equal(lifiPlatformFeeUsd({ feeCosts: [{ amount: '100', amountUSD: '0.25', feeSplit: { integratorFee: '0' } }] }), 0);
+});
+
+test('LI.FI rewards wait for the integrator revenue then settle using that revenue', async () => {
+  const ctx = setup();
+  await referredTrader(ctx);
+  ctx.provide([lifiDone({ feeCosts: [] })]);
+  assert.equal((await ctx.call('POST', '/api/referrals/trade', { wallet: TRADER.address, txHash: TX, provider: 'lifi', chainId: 8453 })).data.status, 'pending');
+  const pending = await ctx.call('GET', '/api/referrals/stats?wallet=' + REFERRER.address);
+  assert.equal(pending.data.earnedUsd, 0);
+  ctx.provide([lifiDone()]);
+  assert.equal((await ctx.call('GET', '/api/referrals/stats?wallet=' + REFERRER.address)).data.earnedUsd, 1.25);
 });
 
 test('trades not routed through Hopr, sent by another wallet, or without a Hopr fee earn nothing', async () => {
@@ -220,19 +237,88 @@ test('pending cross-chain trades are verified later when stats are read', async 
   assert.equal(data.pendingTrades, 0);
 });
 
-test('NEAR Intents trades earn on Hopr’s app-fee bps; routes without it are ineligible', async () => {
-  const ctx = setup();
-  await referredTrader(ctx);
-  const intents = (appFees) => ({ match: '1click', body: { status: 'SUCCESS', swapDetails: { amountInUsd: '500' }, quoteResponse: { quoteRequest: { refundTo: TRADER.address, appFees } } } });
+const intentsSuccess = (fee = 50, overrides = {}) => ({ match: '1click', body: {
+  status: 'SUCCESS',
+  swapDetails: { amountInUsd: '1000', originChainTxHashes: [{ hash: TX }] },
+  quoteResponse: { quoteRequest: { refundTo: TRADER.address, appFees: [{ recipient: 'hopr-fees.near', fee }] } },
+  ...overrides,
+} });
+const saveAgreement = (ctx, requestedBps = 50, authenticated = true) => saveIntentsFeeQuote(ctx.env.DB, {
+  depositAddress: 'deposit-1', refundWallet: TRADER.address, feeAccount: 'hopr-fees.near', requestedBps, authenticated,
+});
+const reportIntents = (ctx, txHash = TX) => ctx.call('POST', '/api/referrals/trade', {
+  wallet: TRADER.address, txHash, provider: 'intents', chainId: 8453, depositAddress: 'deposit-1',
+});
 
-  ctx.provide([intents([{ recipient: 'hopr-fees.near', fee: 50 }])]);
-  assert.equal((await ctx.call('POST', '/api/referrals/trade', { wallet: TRADER.address, txHash: TX, provider: 'intents', chainId: 8453, depositAddress: 'deposit-1' })).data.status, 'verified');
-  ctx.provide([intents([{ recipient: 'someone.near', fee: 50 }])]);
-  assert.equal((await ctx.call('POST', '/api/referrals/trade', { wallet: TRADER.address, txHash: `0x${'3'.repeat(64)}`, provider: 'intents', chainId: 8453, depositAddress: 'deposit-2' })).data.status, 'ineligible');
+for (const [fee, authenticated, revenue, reward] of [[50, true, 2.5, 0.625], [100, true, 5, 1.25], [50, false, 5, 1.25]]) {
+  test('1Click ' + fee + 'bps authenticated=' + authenticated + ' pays referrals from saved HOPR revenue', async () => {
+    const ctx = setup();
+    await referredTrader(ctx);
+    await saveAgreement(ctx, fee, authenticated);
+    // Changing today's configuration must not affect a previously quoted agreement.
+    ctx.env.ONECLICK_JWT = authenticated ? undefined : 'new-key';
+    ctx.provide([intentsSuccess(fee)]);
+    assert.equal((await reportIntents(ctx)).data.status, 'verified');
+    const { data } = await ctx.call('GET', '/api/referrals/stats?wallet=' + REFERRER.address);
+    assert.equal(data.feesUsd, revenue);
+    assert.equal(data.earnedUsd, reward);
+  });
+}
 
-  const { data } = await ctx.call('GET', `/api/referrals/stats?wallet=${REFERRER.address}`);
-  assert.equal(data.feesUsd, 2.5);
-  assert.equal(data.earnedUsd, 0.625);
+test('1Click normalized recipient fees are not halved twice', async () => {
+  const ctx = setup(); await referredTrader(ctx); await saveAgreement(ctx);
+  ctx.provide([intentsSuccess(25)]);
+  assert.equal((await reportIntents(ctx)).data.status, 'verified');
+  assert.equal((await ctx.call('GET', '/api/referrals/stats?wallet=' + REFERRER.address)).data.earnedUsd, 0.625);
+});
+
+test('1Click never credits a guessed agreement, a missing fee, or a mismatched transaction', async () => {
+  const unknown = setup(); await referredTrader(unknown);
+  unknown.provide([intentsSuccess()]);
+  assert.equal((await reportIntents(unknown)).data.status, 'pending');
+  for (const [response, expected] of [
+    [intentsSuccess(0), 'ineligible'],
+    [intentsSuccess(99), 'pending'],
+    [intentsSuccess(50, { swapDetails: { amountInUsd: '1000' } }), 'pending'],
+    [intentsSuccess(50, { swapDetails: { amountInUsd: '1000', originChainTxHashes: [{ hash: 'wrong' }] } }), 'rejected'],
+  ]) {
+    const ctx = setup(); await referredTrader(ctx); await saveAgreement(ctx);
+    ctx.provide([response]);
+    assert.equal((await reportIntents(ctx)).data.status, expected);
+  }
+});
+
+test('a deposit cannot earn rewards twice through different reported hashes', async () => {
+  const ctx = setup(); await referredTrader(ctx); await saveAgreement(ctx);
+  const secondHash = '0x' + '2'.repeat(64);
+  ctx.provide([intentsSuccess(50, { swapDetails: { amountInUsd: '1000', originChainTxHashes: [{ hash: TX }, { hash: secondHash }] } })]);
+  assert.equal((await reportIntents(ctx)).data.status, 'verified');
+  assert.equal((await reportIntents(ctx, secondHash)).data.status, 'rejected');
+  assert.equal((await ctx.call('GET', '/api/referrals/stats?wallet=' + REFERRER.address)).data.earnedUsd, 0.625);
+});
+
+test('unreferred trades create no referral liability', async () => {
+  const ctx = setup(); await saveAgreement(ctx);
+  assert.equal((await reportIntents(ctx)).data.recorded, false);
+});
+
+test('executable 1Click quotes persist the original fee split; previews do not', async (t) => {
+  const ctx = setup({ ONECLICK_JWT: 'test-key' });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return Response.json({ quote: { depositAddress: 'deposit-1', amountOut: '100' } });
+  });
+  await requestIntentsQuote({ dry: true, refundTo: TRADER.address }, 50, ctx.env);
+  assert.equal(await ctx.env.DB.prepare('SELECT * FROM intents_fee_quotes WHERE deposit_address = ?1').bind('deposit-1').first(), null);
+  await requestIntentsQuote({ dry: false, refundTo: TRADER.address }, 50, ctx.env);
+  const saved = await ctx.env.DB.prepare('SELECT * FROM intents_fee_quotes WHERE deposit_address = ?1').bind('deposit-1').first();
+  assert.equal(saved.requested_bps, 50);
+  assert.equal(saved.hopr_bps, 25);
+  assert.deepEqual(requests[1].appFees, [{ recipient: 'hopr-fees.near', fee: 50 }]);
+  assert.equal(intentsHoprBps(100, true), 50);
+  assert.equal(intentsHoprBps(50, false), 50);
+  assert.throws(() => intentsHoprBps(-1, true));
 });
 
 test('Ref Finance swaps earn when the signed transaction carries Hopr’s fee transfer', async () => {

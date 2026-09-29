@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, ArrowDownUp, CheckCircle2, ExternalLink, Loader2, Rocket, Settings, TrendingDown, Wallet, XCircle, Zap } from 'lucide-react';
 import { DetectedToken, formatUsd } from '../services/chainDetector';
@@ -80,6 +80,7 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [decimals, setDecimals] = useState<number | null>(null);
   const [fundingBalance, setFundingBalance] = useState<bigint | null>(null);
   const [holdings, setHoldings] = useState<bigint | null>(null);
+  const [balanceRetry, setBalanceRetry] = useState(false);
   const [routePreview, setRoutePreview] = useState<{ path: string; via: string; steps: number } | null>(null);
   const [useExternalWallet, setUseExternalWallet] = useState(false);
 
@@ -95,7 +96,9 @@ export default function TradeCard({ token }: TradeCardProps) {
     setMessage('');
     setDecimals(null);
     setHoldings(null);
-    if (token) void resolveDecimals(token).then(setDecimals);
+    let active = true;
+    if (token) void resolveDecimals(token).then((value) => { if (active) setDecimals(value); });
+    return () => { active = false; };
   }, [token?.address, token?.chainId]);
 
   const tokenAsset: Asset | null = useMemo(() => (token && decimals !== null
@@ -105,21 +108,29 @@ export default function TradeCard({ token }: TradeCardProps) {
 
   const fundingAddress = wallet.addressFor(funding.vm);
   const tokenAddressOwner = tokenNetwork ? wallet.addressFor(tokenNetwork.vm) : null;
+  const balanceKey = `${funding.id}:${fundingAddress}:${token?.chainId}:${token?.address}:${tokenAddressOwner}`;
+  const currentBalanceKey = useRef(balanceKey);
+  currentBalanceKey.current = balanceKey;
 
   const refreshBalances = useCallback(async () => {
+    const requestedKey = balanceKey;
     const [paid, held] = await Promise.all([
       fundingAddress ? getAssetBalance(nativeAsset, fundingAddress).catch(() => undefined) : null,
       tokenAsset && tokenAddressOwner ? getAssetBalance(tokenAsset, tokenAddressOwner).catch(() => undefined) : null,
     ]);
-    // undefined = read failed with nothing cached: keep what is on screen rather than blanking it.
+    if (currentBalanceKey.current !== requestedKey) return;
+    setBalanceRetry(paid === undefined || held === undefined);
+    // Keep last readings for this wallet only; flag a failed refresh visibly.
     if (paid !== undefined) setFundingBalance(paid);
     if (held !== undefined) setHoldings(held);
-  }, [fundingAddress, funding.id, tokenAsset, tokenAddressOwner]);
+  }, [fundingAddress, funding.id, tokenAsset, tokenAddressOwner, balanceKey]);
 
   // A different chain or wallet means a different balance: clear it until the new read lands.
   useEffect(() => {
     setFundingBalance(null);
-  }, [funding.id, fundingAddress]);
+    setHoldings(null);
+    setBalanceRetry(false);
+  }, [balanceKey]);
 
   // Balances are tracked live: read now, then every 20 s (and after each trade).
   useEffect(() => {
@@ -199,7 +210,7 @@ export default function TradeCard({ token }: TradeCardProps) {
         throw new Error(`Not enough ${from.symbol} on ${fromNetwork.shortName}. You have ${formatUnits(balance, from.decimals, 6)}${reserve ? ' (keep a little for gas)' : ''}.`);
       }
       // One step for most pairs; NEAR ↔ tokens NEAR Intents doesn't list hop through a hub asset.
-      // Every step is quoted up front, so a plan can't strand funds half-way.
+      // Preview each leg; later quotes may still expire or lose liquidity after a bridge.
       const { legs } = await previewPlan({ kind: 'swap', from, to, amount, fromAddress, toAddress, slippage: slippage / 100 });
       const isTraded = (asset: Asset) => asset.chainId === tokenAssetValue.chainId && asset.address.toLowerCase() === tokenAssetValue.address.toLowerCase();
       let last: { quote: RouteQuote; entryId: string; txHash: string; trackType: string } | null = null;
@@ -227,6 +238,7 @@ export default function TradeCard({ token }: TradeCardProps) {
             amountInUsd: stepQuote.amountInUsd,
             amountOutUsd: stepQuote.amountOutUsd,
             wallet: leg.fromAddress,
+            recipient: leg.toAddress,
             txHash: result.txHash,
             explorerUrl: result.explorerUrl,
             track: result.track,
@@ -270,7 +282,8 @@ export default function TradeCard({ token }: TradeCardProps) {
   };
 
   const sell = (percent: number) => {
-    if (!holdings || holdings === 0n) {
+    if (holdings === null) { setPhase('error'); setMessage('Your token balance is syncing. Retry after it loads.'); return; }
+    if (holdings === 0n) {
       setPhase('error');
       if (!tokenAddressOwner) return missingWallet(tokenNetwork.vm);
       setMessage(`Your connected ${tokenNetwork.shortName} wallet holds no ${token.symbol}.`);
@@ -358,6 +371,7 @@ export default function TradeCard({ token }: TradeCardProps) {
         </div>
 
         {/* Status */}
+        {balanceRetry && <p role="status" className="text-[11px] text-amber-400">Balance refresh pending · last loaded values retained · retrying automatically</p>}
         <AnimatePresence mode="wait">
           {phase !== 'idle' && (
             <motion.div key={phase} initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}

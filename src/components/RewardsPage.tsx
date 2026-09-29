@@ -49,7 +49,7 @@ function LinkRow({ label, icon, link, onCopy, copied }: { label: string; icon: R
   );
 }
 
-/** Referral program: share a link, earn 25% of the Hopr fees your friends pay. */
+/** Referral program: earn 25% of HOPR revenue after the routing provider share. */
 export default function RewardsPage({ onBack }: { onBack: () => void }) {
   const wallet = useWallet();
   const telegram = inTelegram();
@@ -152,7 +152,7 @@ export default function RewardsPage({ onBack }: { onBack: () => void }) {
   return (
     <div className="text-white">
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        <PageHeader icon={Gift} title="Rewards" subtitle={`Invite traders and earn ${REFERRAL_SHARE_PERCENT}% of the Hopr fees they pay`} onBack={onBack} />
+        <PageHeader icon={Gift} title="Rewards" subtitle={`Invite traders and earn ${REFERRAL_SHARE_PERCENT}% of HOPR revenue after routing fees`} onBack={onBack} />
 
         {invite && awaiting.length > 0 && (
           <section className="flex flex-col gap-3 rounded-2xl border border-brand-400/30 bg-brand-500/10 p-4 sm:flex-row sm:items-center">
@@ -193,7 +193,7 @@ export default function RewardsPage({ onBack }: { onBack: () => void }) {
                   <p className="mt-1 text-sm text-gray-400">
                     {telegram
                       ? 'Your Telegram account’s code — the same one /referral shows in the bot.'
-                      : `Earn ${REFERRAL_SHARE_PERCENT}% of the Hopr fees paid by everyone who joins with it.`}
+                      : `Earn ${REFERRAL_SHARE_PERCENT}% of HOPR revenue after routing fees from referred trades.`}
                   </p>
                 </div>
                 {!telegram && connected.length > 1 && (
@@ -231,7 +231,7 @@ export default function RewardsPage({ onBack }: { onBack: () => void }) {
             <section className="grid grid-cols-2 gap-3 lg:grid-cols-6">
               <Stat label="Friends" value={String(stats?.referredUsers ?? 0)} />
               <Stat label="Their volume" value={formatUsd(stats?.volumeUsd ?? 0)} hint="Verified with route providers" />
-              <Stat label="Fees they paid" value={formatUsd(stats?.feesUsd ?? 0)} hint="0.5% trades · 1% bridges" />
+              <Stat label="HOPR fee revenue" value={formatUsd(stats?.feesUsd ?? 0)} hint="After the routing provider's share" />
               <Stat label={`You earned (${REFERRAL_SHARE_PERCENT}%)`} value={formatUsd(stats?.earnedUsd ?? 0)} hint={stats?.pendingTrades ? `${stats.pendingTrades} trade(s) verifying` : undefined} accent />
               <Stat label="Paid out" value={formatUsd(stats?.paidUsd ?? 0)} hint={stats?.requestedUsd ? `${formatUsd(stats.requestedUsd)} requested` : undefined} />
               <div className="rounded-2xl border border-green-500/25 bg-green-500/5 p-4">
@@ -260,7 +260,7 @@ export default function RewardsPage({ onBack }: { onBack: () => void }) {
                       </span>
                       <span className="flex shrink-0 items-center gap-3">
                         <span className="hidden font-mono text-gray-400 sm:inline">{trade.volumeUsd ? formatUsd(trade.volumeUsd) : '—'}</span>
-                        <span className="font-mono text-gray-500" title="Hopr fee paid">{trade.feeUsd ? formatUsd(trade.feeUsd) : ''}</span>
+                        <span className="font-mono text-gray-500" title="HOPR revenue after the provider share">{trade.feeUsd ? formatUsd(trade.feeUsd) : ''}</span>
                         <span className="font-mono text-green-400">{trade.rewardUsd ? `+${formatUsd(trade.rewardUsd)}` : ''}</span>
                         <span title={trade.reason ?? undefined} className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${trade.status === 'verified' ? 'bg-green-500/10 text-green-400' : trade.status === 'pending' ? 'bg-yellow-500/10 text-yellow-300' : 'bg-gray-800 text-gray-400'}`}>{trade.status}</span>
                       </span>
@@ -276,7 +276,7 @@ export default function RewardsPage({ onBack }: { onBack: () => void }) {
           <h2 className="mb-3 text-sm font-semibold text-white">How it works</h2>
           <ol className="list-decimal space-y-1.5 pl-5">
             <li>Share your web or Telegram link. Friends who open it are linked to you for good (first link wins). Wallets accept the invite with a free signature; in Telegram the account itself is linked.</li>
-            <li>You earn <span className="text-white">{REFERRAL_SHARE_PERCENT}% of the Hopr platform fee</span> on every trade they make — 0.5% on trades and 1% on bridges, so 0.125% / 0.25% of their volume. It comes out of Hopr&apos;s fee; they pay nothing extra.</li>
+            <li>You earn <span className="text-white">{REFERRAL_SHARE_PERCENT}% of HOPR fee revenue</span> after the routing provider takes its share. Standard fees are 0.5% for trades and 1% for bridges. With the default authenticated 1Click split, your reward is 0.0625% of trade volume or 0.125% of bridge volume. Other routes depend on verified HOPR revenue. Referrals add no extra fee.</li>
             <li>It syncs everywhere: trades in the Telegram bot, the Mini App and on the web all count toward the same account.</li>
             <li>Every trade is verified with the route provider (LI.FI, NEAR Intents, or the NEAR chain for Ref Finance swaps) before it counts. Claim once you reach the minimum; payouts are sent in USDC to your wallet.</li>
           </ol>

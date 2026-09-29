@@ -32,7 +32,12 @@ import {
   type ConfirmResult,
   type PendingTrade,
 } from './trading';
-import { getChainById, SUPPORTED_CHAINS } from '../src/services/chainDetector';
+import { detectChain as detectTokenOnChain, detectLaunchpad, getChainById, SUPPORTED_CHAINS } from '../src/services/chainDetector';
+import { LAUNCHPADS, launchpadById, sortPools, type LaunchpadId } from '../src/services/launchpads';
+import { getLaunchpadFeed } from './launchpads';
+import { savePoolActions, readPoolAction } from './launchpadActions';
+import { getNetwork } from '../src/services/chains';
+import { tracked, readNativeBalance, nativePricesUsd, type TrackedAmount } from './balances';
 import {
   generateDualWallet,
   decryptPrivateKey,
@@ -87,7 +92,7 @@ export interface Env {
   NEAR_RPC_URL?: string;
   /** Hopr's NEAR account: receives the NEAR Intents app fee and the Ref swap fee (0.5% / 1%). */
   HOPR_INTENTS_FEE_ACCOUNT?: string;
-  /** NEAR Intents 1Click API key (JWT). Without it 1Click keeps half of the app fee. */
+  /** 1Click API key: default app-fee split is 50/50; public quotes add 25bps. */
   ONECLICK_JWT?: string;
   /** Bot username without @, for invite links (read from getMe when unset). */
   TELEGRAM_BOT_USERNAME?: string;
@@ -278,6 +283,7 @@ function telegramActionKeyboard(env: Env): TelegramKeyboard {
         { text: '💳 Wallets', callback_data: 'wallet' },
         { text: '⚙️ Settings', callback_data: 'settings' },
       ],
+      [{ text: '📡 Launch radar', callback_data: 'pools' }],
       [
         { text: '🎁 Refer & Earn', callback_data: 'referral' },
         { text: '🔗 Link wallet', callback_data: 'wallet:link' },
@@ -533,7 +539,9 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (callback) {
     const data = callback.data ?? '';
     const chatType = callback.message?.chat?.type;
-    const recognized = ['help', 'menu', 'wallet', 'settings', 'dismiss', 'positions', 'trade:start', 'token:refresh:last', 'referral', 'referral:claim'].includes(data)
+    const recognized = ['help', 'menu', 'wallet', 'settings', 'dismiss', 'positions', 'trade:start', 'token:refresh:last', 'referral', 'referral:claim', 'pools'].includes(data)
+      || (data.startsWith('pools:') && !!launchpadById(data.slice(6)))
+      || /^lp:(view|buy):[a-f0-9]{24}:[0-5]$/.test(data)
       || /^trade:cont:[0-9a-f]{8}$/.test(data)
       || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana', 'wallet:set:near', 'wallet:generate', 'wallet:import', 'wallet:export', 'wallet:preferred', 'wallet:delete', 'wallet:delete:confirm'].includes(data)
       || /^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(data)
@@ -553,7 +561,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       callback_query_id: callback.id,
       ...(telegramCallbackToast(data) ? { text: telegramCallbackToast(data) } : {}),
     });
-    if ((data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data === 'positions' || data.startsWith('referral')) && chatType !== 'private') {
+    if ((data.startsWith('lp:') || data.startsWith('trade:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data === 'positions' || data.startsWith('referral')) && chatType !== 'private') {
       await sendTelegramMessage(chatId, '🔒 For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return Response.json({ ok: true });
     }
@@ -593,6 +601,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     'Buy / Sell buttons first show a live quote',
     '/swap &lt;amount&gt; &lt;from&gt; &lt;to&gt; — NEAR swaps on Ref Finance, e.g. <code>/swap 1 near usdc</code>',
     '/positions — open positions with live prices',
+    '/pools — launchpad pools, liquidity and volume',
     'Only the <b>Confirm and submit</b> button signs and submits a trade',
   ]),
   tgSection('💳', 'Wallet', [
@@ -604,7 +613,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
   ]),
   tgSection('🎁', 'Refer &amp; Earn', [
     '/referral — your invite links and earnings',
-    `Earn ${REFERRAL_SHARE * 100}% of the Hopr fees your friends pay (0.5% trades · 1% bridges)`,
+    `Earn ${REFERRAL_SHARE * 100}% of HOPR fee revenue after the routing provider's share (0.5% trades · 1% bridges)`,
   ]),
   tgSection('⚙️', 'General', [
     '/menu — main menu',
@@ -668,6 +677,15 @@ async function handleTelegramMessage(
   }
   if (command === '/menu') {
     await showTelegramMenu(chatId, env, undefined, chatType);
+    return;
+  }
+  if (command === '/pools') {
+    const id = text.trim().split(/\s+/)[1]?.toLowerCase() ?? 'pump';
+    if (!launchpadById(id)) {
+      await sendTelegramMessage(chatId, `Choose a source: ${LAUNCHPADS.map((s) => `/pools ${s.id}`).join(', ')}`, env);
+      return;
+    }
+    await showTelegramPools(chatId, id as LaunchpadId, env);
     return;
   }
   if (command === '/positions') {
@@ -930,8 +948,9 @@ function normalizeTelegramAddress(text: string): string | null {
   return null;
 }
 
-async function lookupTelegramToken(chatId: number, address: string, env: Env, panelId?: number): Promise<void> {
-  const response = await handleChainDetection(address, env, {});
+async function lookupTelegramToken(chatId: number, address: string, env: Env, panelId?: number, chainHint?: number, listing?: string): Promise<void> {
+  const detected = chainHint ? await detectTokenOnChain(address, chainHint).catch(() => null) : null;
+  const response = chainHint ? Response.json(detected ?? {}, { status: detected ? 200 : 404 }) : await handleChainDetection(address, env, {});
   const token = await response.json() as Record<string, unknown>;
   if (!response.ok) {
     await sendTelegramPanel(chatId, panelId, tgMessage(
@@ -952,7 +971,7 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
   const name = typeof token.name === 'string' ? token.name : 'Unknown token';
   const chain = typeof token.chainName === 'string' ? token.chainName : 'Unknown chain';
   const chainId = typeof token.chainId === 'number' ? token.chainId : undefined;
-  const dex = typeof token.dexId === 'string' ? token.dexId.replace(/[-_]+/g, ' ').toUpperCase() : 'DEX';
+  const dex = typeof token.dexId === 'string' ? token.dexId.replace(/[-_]+/g, ' ').toUpperCase() : String(token.liquiditySource ?? 'DEX');
   const changes = (token.priceChanges ?? {}) as { m5?: number; h1?: number; h6?: number; h24?: number };
   const txns = token.txns24h as { buys?: number; sells?: number } | undefined;
   const age = formatAge(typeof token.pairCreatedAt === 'number' ? token.pairCreatedAt : undefined);
@@ -965,6 +984,7 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
   const slippage = profile?.slippagePercent ?? 1;
 
   const identity = [
+    listing ? `📡 Listed on ${escapeTelegramHtml(listing)}` : token.launchpad ? `📡 ${escapeTelegramHtml(String(token.launchpad))}` : null,
     `${chainEmoji(chainId)} ${escapeTelegramHtml(chain)} · 🏪 ${escapeTelegramHtml(dex)}`,
     [age && `🌱 ${age}`, txns && (txns.buys || txns.sells) ? `🔁 ${formatCount((txns.buys ?? 0) + (txns.sells ?? 0))} txns (🟢${formatCount(txns.buys ?? 0)} 🔴${formatCount(txns.sells ?? 0)})` : null]
       .filter(Boolean).join(' · ') || null,
@@ -990,10 +1010,9 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
     tgFootnote(`DexScreener · ${telegramUtcTime()} · Scan only — no transaction was submitted.`),
   );
 
-  // Do not make Telegram wait for the write. The market card is the user-visible
-  // response; persisting the token context runs concurrently with delivery.
+  // Persist before exposing buttons so an immediate tap sees this token.
   if (env.DB || env.TELEGRAM_STATE) {
-    void writeTelegramProfile(chatId, {
+    await writeTelegramProfile(chatId, {
       ...(profile ?? {}),
       lastTokenAddress: address,
       lastTokenChainId: chainId,
@@ -1184,24 +1203,21 @@ async function showTelegramWallet(chatId: number, env: Env, panelId?: number): P
 
 /** NEAR block for the wallet card: spendable NEAR plus any NEP-141 tokens held. */
 async function telegramNearBalanceBlock(nearAddress: string, env: Env, custodial: boolean): Promise<string> {
-  let lines: string[];
-  try {
-    const balance: NearBalance = await getNearBalance(nearAddress, [], nearRpcOptions(env));
-    if (!balance.exists) {
-      lines = [
-        `${chainEmoji(NEAR_CHAIN_ID)} <b>NEAR</b>: 0 <code>NEAR</code>`,
-        custodial ? '<i>New account — send at least 0.1 NEAR to this address to activate it.</i>' : '<i>Account not found on-chain.</i>',
-      ];
-    } else {
-      lines = [`${chainEmoji(NEAR_CHAIN_ID)} <b>NEAR</b>: ${formatNearAmount(balance.availableYocto)} <code>NEAR</code>`];
-      for (const token of balance.tokens) {
-        lines.push(`🪙 <b>${escapeTelegramHtml(token.symbol)}</b>: ${formatUnits(token.balance, token.decimals)}`);
-      }
-    }
-  } catch {
-    lines = [`${chainEmoji(NEAR_CHAIN_ID)} <b>NEAR</b>: <i>unavailable</i>`];
-  }
+  let detail: NearBalance | undefined;
+  const reading = await tracked(env, `397:${nearAddress}`, async () => {
+    detail = await getNearBalance(nearAddress, [], nearRpcOptions(env));
+    return BigInt(detail.availableYocto);
+  });
+  const lines = [`${chainEmoji(NEAR_CHAIN_ID)} <b>NEAR</b>: ${telegramTrackedAmount(reading, 24, 'NEAR')}`];
+  for (const token of detail?.tokens ?? []) lines.push(`🪙 <b>${escapeTelegramHtml(token.symbol)}</b>: ${escapeTelegramHtml(formatUnits(token.balance, token.decimals))}`);
+  if (custodial && reading?.value === 0n && !reading.cachedAt) lines.push('<i>Fund this address with NEAR to cover trades and storage.</i>');
   return `<b>NEAR</b> · <code>${escapeTelegramHtml(nearAddress)}</code>\n${tgCard(lines)}`;
+}
+
+function telegramTrackedAmount(reading: TrackedAmount | null, decimals: number, symbol: string): string {
+  if (!reading) return '<i>Sync pending · tap Refresh to retry</i>';
+  const age = reading.cachedAt ? ` <i>· last known ${new Date(reading.cachedAt).toISOString().slice(11, 16)} UTC</i>` : '';
+  return `${escapeTelegramHtml(formatUnits(reading.value, decimals, decimals === 24 ? 4 : 5))} <code>${escapeTelegramHtml(symbol)}</code>${age}`;
 }
 
 async function showTelegramWalletBalances(
@@ -1212,41 +1228,32 @@ async function showTelegramWalletBalances(
   options: { label?: string; panelId?: number; nearAddress?: string; custodial?: boolean } = {},
 ): Promise<void> {
   const blocks: string[] = [tgTitle('💳', options.label ?? 'Wallet', 'Native balances across supported chains')];
+  const pricesPromise = nativePricesUsd();
   const nearBlock = options.nearAddress ? telegramNearBalanceBlock(options.nearAddress, env, Boolean(options.custodial)) : null;
 
   if (evmAddress) {
-    const evmChains = TELEGRAM_CHAINS.filter((chain) => chain.id !== 1151111081099710);
+    const evmChains = TELEGRAM_CHAINS.filter((chain) => chain.id !== 1151111081099710 && chain.id !== NEAR_CHAIN_ID);
     const results = await Promise.all(evmChains.map(async (chain) => {
-      try {
-        return { chain, balance: await fetchEvmBalance(evmAddress, chain.id) };
-      } catch {
-        return { chain, balance: null };
-      }
+      return { chain, reading: await tracked(env, `${chain.id}:${evmAddress.toLowerCase()}`, () => readNativeBalance(chain.id, evmAddress)) };
     }));
-    const funded = results.filter((result) => result.balance !== null && Number(result.balance) !== 0);
-    const empty = results.filter((result) => result.balance !== null && Number(result.balance) === 0);
-    const failed = results.filter((result) => result.balance === null);
-    const lines = funded.map(({ chain, balance }) => `${chainEmoji(chain.id)} <b>${escapeTelegramHtml(chain.name)}</b>: ${formatTelegramBalance(balance!)} <code>${chain.symbol}</code>`);
-    if (!funded.length) lines.push('No native balance on any EVM chain yet.');
-    if (empty.length && funded.length) lines.push(`<i>Empty: ${empty.map(({ chain }) => escapeTelegramHtml(chain.name)).join(' · ')}</i>`);
-    if (failed.length) lines.push(`<i>Unavailable: ${failed.map(({ chain }) => escapeTelegramHtml(chain.name)).join(' · ')}</i>`);
+    const prices = await pricesPromise;
+    const lines = results.map(({ chain, reading }) => {
+      const price = prices[chain.symbol];
+      const usd = reading && price ? ` · ≈$${(Number(reading.value) / 1e18 * price).toFixed(2)}` : '';
+      return `${chainEmoji(chain.id)} <b>${escapeTelegramHtml(chain.name)}</b>: ${telegramTrackedAmount(reading, 18, chain.symbol)}${usd}`;
+    });
     blocks.push(`<b>EVM</b> · <code>${escapeTelegramHtml(evmAddress)}</code>\n${tgCard(lines)}`);
   }
 
   if (solanaAddress) {
-    let line: string;
-    try {
-      const balance = await fetchSolanaBalance(solanaAddress);
-      line = `${chainEmoji(1151111081099710)} <b>Solana</b>: ${formatTelegramBalance(balance)} <code>SOL</code>`;
-    } catch {
-      line = `${chainEmoji(1151111081099710)} <b>Solana</b>: <i>unavailable</i>`;
-    }
+    const reading = await tracked(env, `1151111081099710:${solanaAddress}`, () => readNativeBalance(1151111081099710, solanaAddress));
+    const line = `${chainEmoji(1151111081099710)} <b>Solana</b>: ${telegramTrackedAmount(reading, 9, 'SOL')}`;
     blocks.push(`<b>Solana</b> · <code>${escapeTelegramHtml(solanaAddress)}</code>\n${tgCard([line])}`);
   }
 
   if (nearBlock) blocks.push(await nearBlock);
 
-  blocks.push(tgFootnote(`Updated ${telegramUtcTime()} · tap an address to copy it · USD values unavailable`));
+  blocks.push(tgFootnote(`Checked ${telegramUtcTime()} · tap an address to copy it · cached balances carry their last-read time`));
   await sendTelegramPanel(chatId, options.panelId, tgMessage(...blocks), env, telegramWalletActionKeyboard(env));
 }
 
@@ -1511,7 +1518,7 @@ function telegramQuoteMessage(side: 'BUY' | 'SELL', lines: string[]): string {
   );
 }
 
-async function handleTelegramTradeAction(chatId: number, data: string, env: Env, panelId?: number): Promise<void> {
+async function handleTelegramTradeAction(chatId: number, data: string, env: Env, panelId?: number, target?: TelegramProfile): Promise<void> {
   if (data === 'trade:custom') {
     const profile = await readTelegramProfile(chatId, env).catch(() => null);
     if (!profile?.lastTokenAddress) {
@@ -1591,7 +1598,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
     }
     return;
   }
-  const profile = await readTelegramProfile(chatId, env);
+  const profile = target ?? await readTelegramProfile(chatId, env);
   if (!profile?.lastTokenAddress || !profile.lastTokenChainId) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('🔎', 'Pick a token first'), 'Open a token lookup first (paste a contract address), then use the buy/sell buttons on that result.'), env, telegramActionKeyboard(env));
     return;
@@ -1663,7 +1670,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
               ]
               : [`🎯 <b>You get</b>  ≈ ${out} · NEAR Intents`]),
             `🎚 <b>Slippage</b>  ${slippagePercent}%`,
-            '🏷 <b>Platform fee</b>  0.5% · charged once',
+            `🏷 <b>Platform fee</b>  0.5% · charged once${env.ONECLICK_JWT ? '' : ' + 0.25% 1Click routing fee'}`,
           ]),
           env,
           telegramTradeConfirmationKeyboard(trade.id, intents.continuation ? '✅ Confirm step 1' : '✅ Confirm and submit'),
@@ -1911,7 +1918,54 @@ async function requestLifiQuote(params: {
   }
 }
 
+async function showTelegramPools(chatId: number, sourceId: LaunchpadId, env: Env, panelId?: number): Promise<void> {
+  const source = launchpadById(sourceId);
+  if (!source) return;
+  const buttons: TelegramButton[][] = [];
+  for (let i = 0; i < LAUNCHPADS.length; i += 3) buttons.push(LAUNCHPADS.slice(i, i + 3).map((pad) => ({ text: `${pad.id === sourceId ? '• ' : ''}${pad.name}`, callback_data: `pools:${pad.id}` })));
+  buttons.push([{ text: '↻ Refresh', callback_data: `pools:${sourceId}` }, { text: '◆ Menu', callback_data: 'menu' }]);
+  const usd = (value: number | null) => value === null ? 'Not indexed' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  try {
+    const feed = await getLaunchpadFeed(sourceId, env);
+    const rows = sortPools(feed.pools, sourceId === 'nearpaid' ? 'newest' : 'volume').slice(0, 6);
+    const profile = await readTelegramProfile(chatId, env).catch(() => null);
+    const funding = getNetwork(source.chainId === NEAR_CHAIN_ID ? NEAR_CHAIN_ID : profile?.fundingChainId ?? 8453) ?? getNetwork(8453)!;
+    const amount = funding.quickBuy[0];
+    const actionId = await savePoolActions(chatId, rows.map((pool) => ({ pool, fundingChainId: funding.id, amount })), env).catch(() => null);
+    if (actionId) buttons.unshift(...rows.map((pool, i) => [
+      { text: `📊 ${i + 1}. ${pool.symbol.slice(0, 18)}`, callback_data: `lp:view:${actionId}:${i}` },
+      { text: `🟢 Buy ${amount} ${funding.nativeSymbol}`, callback_data: `lp:buy:${actionId}:${i}` },
+    ]));
+    const body = rows.map((pool, i) => tgMessage(
+      `<b>${i + 1}. ${escapeTelegramHtml(pool.symbol.slice(0, 32))}</b>${pool.quoteSymbol ? ` / ${escapeTelegramHtml(pool.quoteSymbol.slice(0, 20))}` : ''}`,
+      tgCard([`Liquidity: ${usd(pool.liquidityUsd)}`, `Volume · 24h: ${usd(pool.volume24h)}`]),
+      `<code>${escapeTelegramHtml(pool.tokenAddress)}</code>`,
+    ));
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📡', `${source.name} · Launch radar`),
+      `<i>${feed.stale ? 'Last saved' : feed.partial ? 'Partial update' : 'Fetched'} ${new Date(feed.observedAt).toISOString().slice(11, 16)} UTC · ${source.network}</i>`,
+      ...body, rows.length ? (actionId ? 'Tap Buy for a live quote, then confirm. Buttons expire after 15 minutes. Change your pay-from chain in Settings.' : 'Send a token address to check routes. Quick Buy needs CACHE or TELEGRAM_STATE storage.') : 'No pools returned by this source yet.',
+      `<i>${escapeTelegramHtml(feed.coverage)}</i>`), env, { inline_keyboard: buttons });
+  } catch {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📡', `${source.name} · Launch radar`),
+      'This source could not refresh. Retry shortly or choose another launchpad.'), env, { inline_keyboard: buttons });
+  }
+}
+
 async function handleTelegramCallback(chatId: number, data: string, env: Env, panelId?: number, chatType?: string): Promise<void> {
+  const poolAction = data.match(/^lp:(view|buy):([a-f0-9]{24}):([0-5])$/);
+  if (poolAction) {
+    if (chatType !== 'private') return sendTelegramMessage(chatId, 'Open a private chat to trade launchpad tokens.', env);
+    const action = await readPoolAction(chatId, poolAction[2], Number(poolAction[3]), env).catch(() => null);
+    if (!action) return sendTelegramPanel(chatId, panelId, 'This pool button expired. Open /pools for fresh token buttons.', env, telegramActionKeyboard(env));
+    const { pool, fundingChainId, amount } = action;
+    if (poolAction[1] === 'view') return lookupTelegramToken(chatId, pool.tokenAddress, env, panelId, pool.chainId, launchpadById(pool.source)?.name);
+    const profile = await readTelegramProfile(chatId, env).catch(() => null);
+    return handleTelegramTradeAction(chatId, `trade:buy:${amount}`, env, panelId, {
+      ...profile, fundingChainId, lastTokenAddress: pool.tokenAddress, lastTokenChainId: pool.chainId,
+      lastTokenChainType: pool.chainId === NEAR_CHAIN_ID ? 'NEAR' : pool.network === 'solana' ? 'SVM' : 'EVM', lastTokenSymbol: pool.symbol,
+    });
+  }
+  if (data === 'pools' || data.startsWith('pools:')) return showTelegramPools(chatId, (data === 'pools' ? 'pump' : data.slice(6)) as LaunchpadId, env, panelId);
   if (data === 'help') return sendTelegramPanel(chatId, panelId, TELEGRAM_HELP_TEXT, env, telegramActionKeyboard(env));
   if (data === 'menu') return showTelegramMenu(chatId, env, panelId, chatType);
   if (data === 'positions') return showTelegramPositions(chatId, env, panelId);
@@ -2125,6 +2179,17 @@ async function handleApiRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
+
+  if (path === '/api/launchpads/pools' && request.method === 'GET') {
+    const source = launchpadById(url.searchParams.get('source') ?? 'pump');
+    if (!source) return Response.json({ error: 'Unknown launchpad' }, { status: 400, headers: corsHeaders });
+    try {
+      const feed = await getLaunchpadFeed(source.id, env);
+      return Response.json(feed, { headers: { ...corsHeaders, 'Cache-Control': feed.stale ? 'no-store' : 'public, max-age=30' } });
+    } catch {
+      return Response.json({ error: 'Pool provider could not refresh. Please retry.' }, { status: 503, headers: { ...corsHeaders, 'Retry-After': '120' } });
+    }
+  }
 
   // POST /api/detect - Chain detection
   if (path === '/api/detect' && request.method === 'POST') {
@@ -2674,8 +2739,7 @@ async function fetchGeckoLaunchpadPool(address: string, network: string): Promis
     if (!pool?.attributes || Number(pool.attributes.reserve_in_usd ?? 0) <= 0) return null;
     const attrs = pool.attributes;
     const source = String(pool.relationships?.dex?.data?.id?.split('_').pop() ?? 'GeckoTerminal').replace(/[_-]+/g, ' ');
-    const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
-    const launchpad = normalized.includes('pump') ? 'Pump.fun' : normalized.includes('stonk') ? 'StonkFun' : normalized.includes('argus') ? 'ArgusWorld' : normalized.includes('tolly') ? 'TollyLabs' : normalized.includes('pons') ? 'PonsFamily' : undefined;
+    const launchpad = detectLaunchpad(source);
     const volume = attrs.volume_usd as { h24?: number } | undefined;
     const pairSymbols = String(attrs.name ?? 'Launchpad token').split(' / ').map((part) => part.replace(/\s+\d+(?:\.\d+)?%$/, '').trim());
     const baseId = pool.relationships?.base_token?.data?.id?.split('_').pop()?.toLowerCase();
@@ -2826,98 +2890,37 @@ async function handleTradeExecute(request: Request, env: Env, corsHeaders: Recor
   }
 }
 
-async function handleWalletBalances(
-  address: string,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const nearAccount = decodeURIComponent(address).toLowerCase();
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address) && isNearAccountId(nearAccount)) {
-    try {
-      const balance = await getNearBalance(nearAccount, [], nearRpcOptions(env));
-      return Response.json({
-        address: nearAccount,
-        chainId: NEAR_CHAIN_ID,
-        exists: balance.exists,
-        balances: [{ chainId: NEAR_CHAIN_ID, balance: formatUnits(balance.availableYocto, NEAR_DECIMALS, 6), balanceYocto: balance.availableYocto, error: null }],
-        tokens: balance.tokens.map((token) => ({ ...token, formatted: formatUnits(token.balance, token.decimals, 6) })),
-      }, { headers: corsHeaders });
-    } catch (error) {
-      return Response.json({ error: error instanceof Error ? error.message : 'NEAR RPC unavailable' }, { status: 502, headers: corsHeaders });
-    }
-  }
-  // Query balances across all chains
-  const balances = await Promise.allSettled([
-    // Solana balance
-    fetchSolanaBalance(address),
-    // EVM balances
-    fetchEvmBalance(address, 42161),  // Arbitrum
-    fetchEvmBalance(address, 8453),   // Base
-    fetchEvmBalance(address, 56),     // BSC
-    fetchEvmBalance(address, 4663),   // Robinhood
-    fetchEvmBalance(address, 5042),   // Arc
-  ]);
-
-  const result = {
-    address,
-    balances: balances.map((b, i) => ({
-      chainId: [1151111081099710, 42161, 8453, 56, 4663, 5042][i],
-      balance: b.status === 'fulfilled' ? b.value : '0',
-      error: b.status === 'rejected' ? b.reason.message : null,
-    })),
-  };
-
-  return Response.json(result, { headers: corsHeaders });
-}
-
-async function fetchSolanaBalance(address: string): Promise<string> {
-  const response = await fetch('https://api.mainnet-beta.solana.com', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'getBalance',
-      params: [address],
-    }),
-  });
-  if (!response.ok) throw new Error(`Solana RPC returned HTTP ${response.status}`);
-  const data = await response.json() as { result?: { value?: number }; error?: { message?: string } };
-  if (data.error || typeof data.result?.value !== 'number' || !Number.isFinite(data.result.value)) {
-    throw new Error(data.error?.message ?? 'Invalid Solana RPC response');
-  }
-  return (data.result.value / 1e9).toString();
-}
-
-async function fetchEvmBalance(address: string, chainId: number): Promise<string> {
-  const rpcUrls: Record<number, string> = {
-    42161: 'https://arb1.arbitrum.io/rpc',
-    8453: 'https://mainnet.base.org',
-    56: 'https://bsc-dataseed.binance.org',
-    4663: 'https://rpc.mainnet.chain.robinhood.com',
-    5042: 'https://rpc.mainnet.arc.io',
-  };
-
-  const rpcUrl = rpcUrls[chainId];
-  if (!rpcUrl) return '0';
-
-  const response = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_getBalance',
-      params: [address, 'latest'],
-    }),
-  });
-  if (!response.ok) throw new Error(`EVM RPC returned HTTP ${response.status}`);
-  const data = await response.json() as { result?: string; error?: { message?: string } };
-  if (data.error || typeof data.result !== 'string' || !/^0x[0-9a-fA-F]+$/.test(data.result)) {
-    throw new Error(data.error?.message ?? 'Invalid EVM RPC response');
-  }
-  const balance = BigInt(data.result);
-  return (Number(balance) / 1e18).toString();
+async function handleWalletBalances(address: string, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  let account: string;
+  try { account = decodeURIComponent(address); } catch { return Response.json({ error: 'Invalid address' }, { status: 400, headers: corsHeaders }); }
+  const evm = /^0x[a-fA-F0-9]{40}$/.test(account);
+  const near = !evm && isNearAccountId(account);
+  const sol = !evm && !near && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(account);
+  if (!evm && !near && !sol) return Response.json({ error: 'Invalid wallet address' }, { status: 400, headers: corsHeaders });
+  const ids = near ? [NEAR_CHAIN_ID] : sol ? [1151111081099710] : [42161, 8453, 56, 4663, 5042];
+  let nearDetail: NearBalance | undefined;
+  const balances = await Promise.all(ids.map(async (chainId) => {
+    const reading = await tracked(env, `${chainId}:${evm ? account.toLowerCase() : account}`, async () => {
+      if (near) {
+        nearDetail = await getNearBalance(account, [], nearRpcOptions(env));
+        return BigInt(nearDetail.availableYocto);
+      }
+      return readNativeBalance(chainId, account);
+    });
+    const decimals = near ? 24 : sol ? 9 : 18;
+    const units = reading?.value;
+    const base = 10n ** BigInt(decimals);
+    const fraction = units === undefined ? '' : (units % base).toString().padStart(decimals, '0').replace(/0+$/, '');
+    return { chainId, balance: units === undefined ? null : `${units / base}${fraction ? '.' + fraction : ''}`,
+      balanceUnits: units?.toString() ?? null, ...(near ? { balanceYocto: units?.toString() ?? null } : {}),
+      status: !reading ? 'pending' : reading.cachedAt ? 'stale' : 'live',
+      observedAt: reading ? reading.cachedAt ?? Date.now() : null,
+      error: reading ? null : 'Balance sync pending; retry shortly.' };
+  }));
+  return Response.json({ address: account, balances, ...(near ? {
+    exists: nearDetail?.exists ?? null, tokensStatus: nearDetail ? 'live' : 'pending',
+    tokens: nearDetail?.tokens.map((token) => ({ ...token, formatted: formatUnits(token.balance, token.decimals, 6) })),
+  } : {}) }, { headers: { ...corsHeaders, 'Cache-Control': 'no-store' } });
 }
 
 async function handleTradeBuy(
@@ -3047,7 +3050,7 @@ async function showTelegramReferral(chatId: number, env: Env, panelId?: number, 
     const claimable = stats.claimableUsd ?? 0;
     const canClaim = Boolean(wallet) && claimable >= stats.minPayoutUsd;
     const text = tgMessage(
-      tgTitle('🎁', 'Refer &amp; Earn', `Earn ${REFERRAL_SHARE * 100}% of the Hopr fees your friends pay — every trade, in the bot, the Mini App or on the web.`),
+      tgTitle('🎁', 'Refer &amp; Earn', `Earn ${REFERRAL_SHARE * 100}% of HOPR fee revenue after the routing provider's share — in the bot, the Mini App or on the web.`),
       notice ? `<b>${notice}</b>` : null,
       tgSection('🔗', 'Your invite', [
         ...(telegramLink ? [`Telegram  ${telegramLink}`] : []),
@@ -3057,7 +3060,7 @@ async function showTelegramReferral(chatId: number, env: Env, panelId?: number, 
       tgSection('📊', 'Earnings', [
         `👥 Friends  <b>${stats.referredUsers ?? 0}</b>`,
         `💱 Their volume  <b>${formatRewardUsd(stats.volumeUsd)}</b>`,
-        `🏷 Fees they paid  <b>${formatRewardUsd(stats.feesUsd)}</b>`,
+        `🏷 HOPR revenue after routing fees  <b>${formatRewardUsd(stats.feesUsd)}</b>`,
         `💰 You earned (${REFERRAL_SHARE * 100}%)  <b>${formatRewardUsd(stats.earnedUsd)}</b>`,
         `✅ Claimable  <b>${formatRewardUsd(claimable)}</b> · min ${formatRewardUsd(stats.minPayoutUsd)}`,
         ...(stats.pendingTrades ? [`⏳ Verifying  ${stats.pendingTrades} trade${stats.pendingTrades === 1 ? '' : 's'}`] : []),
@@ -3106,24 +3109,8 @@ async function claimTelegramReferral(chatId: number, env: Env, panelId?: number)
 
 /** Native balance in smallest units (wei / lamports) for the custodial wallet checks. */
 async function nativeBalanceUnits(chainId: number, address: string): Promise<bigint> {
-  if (chainId === 1151111081099710) {
-    const response = await fetch('https://api.mainnet-beta.solana.com', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [address] }),
-    });
-    const data = await response.json() as { result?: { value?: number } };
-    return BigInt(data.result?.value ?? 0);
-  }
-  const rpcUrl = getChainById(chainId)?.rpcUrl;
-  if (!rpcUrl) return 0n;
-  const response = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, 'latest'] }),
-  });
-  const data = await response.json() as { result?: string };
-  return /^0x[0-9a-f]+$/i.test(data.result ?? '') ? BigInt(data.result!) : 0n;
+  // Execution checks require a fresh read; display caches must never authorize spending.
+  return readNativeBalance(chainId, address);
 }
 
 function telegramIntentsSentMessage(result: ConfirmResult): string {
@@ -3273,7 +3260,7 @@ async function handleTelegramTradePrepare(request: Request, env: Env, corsHeader
             : `≈ ${formatUnits(intents.expectedOut, intents.outDecimals, 6)} ${symbol}`,
           route: intents.continuation ? `NEAR Intents → ${getChainById(trade.toChainId)?.name ?? tokenChain.name}, then LI.FI` : 'NEAR Intents',
           steps: intents.continuation ? 2 : 1,
-          feeNote: '0.5% Hopr fee · charged once',
+          feeNote: `0.5% platform fee · charged once${env.ONECLICK_JWT ? '' : ' + 0.25% 1Click routing fee'}`,
           expiresInSeconds: 90,
         };
         return Response.json(summary, { headers: corsHeaders });

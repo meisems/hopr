@@ -303,7 +303,7 @@ export class BlackHoleRenderer {
     const gl = this.gl;
     // Redraw into a power-of-two canvas so WebGL 1 can mipmap it: lensing stretches
     // the mark hugely, and mipmaps keep the Einstein ring smooth instead of aliased.
-    const size = 512;
+    const size = 1024;
     const canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;

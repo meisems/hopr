@@ -64,27 +64,37 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
   const { telegramWallet } = useWallet();
   const [fundingBalance, setFundingBalance] = useState<bigint | null>(null);
   const [holding, setHolding] = useState<bigint | null>(null);
+  const [balanceRetry, setBalanceRetry] = useState(false);
   const ownerFor = (vm: string | undefined) => (vm === 'evm' ? telegramWallet?.evmAddress : vm === 'svm' ? telegramWallet?.solanaAddress : telegramWallet?.nearAddress) ?? null;
+  const balanceKey = `${funding.id}:${token.chainId}:${token.address}:${ownerFor(funding.vm)}:${ownerFor(tokenNetwork?.vm)}`;
+  const currentBalanceKey = useRef(balanceKey);
+  currentBalanceKey.current = balanceKey;
 
   // Live balances of the Hopr wallet: the coin you pay with and the token you hold.
   const refreshBalances = async () => {
+    const requestedKey = balanceKey;
     const fundingOwner = ownerFor(funding.vm);
     const tokenOwner = ownerFor(tokenNetwork?.vm);
     const [paid, held] = await Promise.all([
       fundingOwner ? getAssetBalance({ chainId: funding.id, address: 'native', symbol: funding.nativeSymbol, decimals: funding.nativeDecimals }, fundingOwner).catch(() => null) : null,
       tokenOwner ? getAssetBalance({ chainId: token.chainId, address: token.address, symbol: token.symbol, decimals: token.decimals }, tokenOwner).catch(() => null) : null,
     ]);
+    if (currentBalanceKey.current !== requestedKey) return;
+    setBalanceRetry((!!fundingOwner && paid === null) || (!!tokenOwner && held === null));
     if (paid !== null) setFundingBalance(paid);
     if (held !== null) setHolding(held);
   };
 
   useEffect(() => {
+    currentBalanceKey.current = balanceKey;
     setFundingBalance(null);
+    setHolding(null);
+    setBalanceRetry(false);
     void refreshBalances();
     const timer = window.setInterval(() => void refreshBalances(), 20_000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); currentBalanceKey.current = ''; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funding.id, token.address, token.chainId, telegramWallet?.evmAddress, telegramWallet?.solanaAddress, telegramWallet?.nearAddress]);
+  }, [balanceKey]);
 
   useEffect(() => {
     setFundingChainId(token.chainId);
@@ -238,6 +248,7 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
         </div>
 
         <div className="flex items-center gap-1.5">
+          {balanceRetry && <span role="status" className="text-[11px] text-amber-400">Last loaded balances · refresh pending</span>}
           <span className="mr-1 text-xs text-gray-500">Slippage</span>
           {SLIPPAGES.map((value) => (
             <button key={value} onClick={() => setSlippage(value)} className={`pressable rounded-lg px-2.5 py-1 text-xs font-medium ${slippage === value ? 'bg-brand-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>{value}%</button>

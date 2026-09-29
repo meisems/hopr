@@ -329,11 +329,21 @@ async function quoteIntents(request: RouteRequest, dry: boolean): Promise<RouteQ
   const data = await response.json().catch(() => ({})) as {
     quote?: { depositAddress?: string; amountOut?: string; minAmountOut?: string; amountInUsd?: string; amountOutUsd?: string; timeEstimate?: number };
     quoteRequest?: { appFees?: Array<{ fee: number }> };
+    hoprFee?: { requestedBps: number; authenticated: boolean };
     message?: string;
   };
   if (!response.ok || !data.quote?.amountOut) throw new Error(data.message ?? 'NEAR Intents could not quote this route.');
   if (!dry && !data.quote.depositAddress) throw new Error('NEAR Intents did not return a deposit address.');
-  const appFeeBps = data.quoteRequest?.appFees?.reduce((total, fee) => total + fee.fee, 0) ?? 0;
+  const submittedFees = payload.appFees as Array<{ fee: number }> | undefined;
+  const appFeeBps = data.hoprFee?.requestedBps ?? (!API_BASE_URL
+    ? submittedFees?.reduce((total, fee) => total + fee.fee, 0) ?? 0
+    : data.quoteRequest?.appFees?.reduce((total, fee) => total + fee.fee, 0) ?? 0);
+  const feeNotes = appFeeBps ? [`Platform fee ${appFeeBps / 100}% (included)`] : [];
+  if (data.hoprFee?.authenticated === false || !API_BASE_URL) {
+    feeNotes.push('1Click routing fee 0.25% (included, additional to platform fee)');
+  } else if (!appFeeBps) {
+    feeNotes.push('1Click routing fees included in output');
+  }
   return {
     provider: 'intents',
     request,
@@ -343,7 +353,7 @@ async function quoteIntents(request: RouteRequest, dry: boolean): Promise<RouteQ
     amountOutUsd: Number(data.quote.amountOutUsd) || undefined,
     durationSeconds: data.quote.timeEstimate,
     via: 'NEAR Intents',
-    fees: appFeeBps ? [`NEAR Intents app fee ${appFeeBps / 100}% (included)`] : [],
+    fees: feeNotes,
     intents: data.quote.depositAddress ? { depositAddress: data.quote.depositAddress, originAsset, destinationAsset } : undefined,
     expiresAt: Date.now() + 5 * 60_000,
   };
@@ -498,19 +508,27 @@ export async function waitForSourceConfirmation(chainId: number, hash: string): 
 
 /**
  * Spendable balance of `asset` for `owner`, in smallest units. Reads go
- * through the RPC failover pool; if every endpoint is down, the last balance
- * read for this wallet is returned instead of failing.
+ * through the RPC failover pool. Failure propagates: trading must never spend
+ * against a stale display cache.
  */
 export async function getAssetBalance(asset: Asset, owner: string): Promise<bigint> {
-  const key = `${asset.chainId}:${asset.address.toLowerCase()}:${owner}`;
+  const key = assetBalanceKey(asset, owner);
+  const value = await readAssetBalance(asset, owner);
+  rememberBalance(key, value);
+  return value;
+}
+
+function assetBalanceKey(asset: Asset, owner: string): string {
+  return `${asset.chainId}:${vmOf(asset.chainId) === 'svm' ? asset.address : asset.address.toLowerCase()}:${vmOf(asset.chainId) === 'evm' ? owner.toLowerCase() : owner}`;
+}
+
+/** Display-only read. Execution and spend checks must use the fresh-only getAssetBalance. */
+export async function getTrackedAssetBalance(asset: Asset, owner: string): Promise<{ value: bigint | null; at: number | null; stale: boolean }> {
   try {
-    const value = await readAssetBalance(asset, owner);
-    rememberBalance(key, value);
-    return value;
-  } catch (error) {
-    const known = recallBalance(key);
-    if (known) return known.value;
-    throw error;
+    return { value: await getAssetBalance(asset, owner), at: Date.now(), stale: false };
+  } catch {
+    const known = recallBalance(assetBalanceKey(asset, owner));
+    return known ? { value: known.value, at: known.at, stale: true } : { value: null, at: null, stale: false };
   }
 }
 
@@ -713,13 +731,17 @@ export async function executePlan(legs: RouteRequest[], signers: Signers, hooks:
   const results: ExecutionResult[] = [];
   const plan = legs.map((leg) => ({ ...leg }));
 
+  // Validate every leg before the first signature, including the destination
+  // launchpad token. A later quote can still change while a bridge settles.
+  if (plan.length > 1) await previewLegs(plan[0], plan);
+
   for (let index = 0; index < steps; index += 1) {
     const leg = plan[index];
     const progress = (message: string) => hooks.onProgress?.(steps > 1 ? `Step ${index + 1}/${steps} · ${message}` : message, index, steps);
     const next = plan[index + 1];
     // Balances before this step, to size the next one.
     const nearHub = next && sameAsset(next.from, WNEAR_ASSET);
-    const before = next ? await getAssetBalance(next.from, next.fromAddress).catch(() => 0n) : 0n;
+    const before = next ? await getAssetBalance(next.from, next.fromAddress) : 0n;
 
     progress(`Finding the best ${leg.from.symbol} → ${leg.to.symbol} route…`);
     const quote = await getRouteQuote(leg, { commit: true });

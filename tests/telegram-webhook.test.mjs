@@ -92,12 +92,26 @@ test('help command lists working commands and shows navigation buttons', async (
       { text: '💳 Wallets', callback_data: 'wallet' },
       { text: '⚙️ Settings', callback_data: 'settings' },
     ],
+    [{ text: '📡 Launch radar', callback_data: 'pools' }],
     [
       { text: '🎁 Refer & Earn', callback_data: 'referral' },
       { text: '🔗 Link wallet', callback_data: 'wallet:link' },
       { text: '❓ Help', callback_data: 'help' },
     ],
   ]);
+});
+
+test('/pools and its inline filters use the shared feed, escape metadata and fit callback limits', async () => {
+  const kv = createKv();
+  await kv.put('launchpads:v1:argus', JSON.stringify({ source: 'argus', stale: false, partial: false, observedAt: Date.now(), coverage: 'Indexed pools',
+    pools: [{ id: '5042:pool', source: 'argus', chainId: 5042, tokenAddress: '0x' + '1'.repeat(40), symbol: '<ARGUS>', quoteSymbol: 'USDC', liquidityUsd: 1234, volume24h: null }] }));
+  const { calls } = await sendUpdate({ message: { chat: { id: 820, type: 'private' }, text: '/pools argus' } }, { extraEnv: { CACHE: kv } });
+  const panel = calls.at(-1).body;
+  assert.match(panel.text, /&lt;ARGUS&gt;/); assert.match(panel.text, /Not indexed/);
+  assert.ok(panel.reply_markup.inline_keyboard.flat().every((b) => Buffer.byteLength(b.callback_data ?? '') <= 64));
+  const callback = await sendUpdate({ callback_query: { id: 'pad-filter', data: 'pools:argus', message: { message_id: 4, chat: { id: 820, type: 'private' } } } }, { extraEnv: { CACHE: kv } });
+  assert.match(callback.calls.at(-1).url, /editMessageText/);
+  assert.match(callback.calls.at(-1).body.text, /Launch radar/);
 });
 
 test('private /setwallet stores an EVM address and confirms read-only use', async () => {

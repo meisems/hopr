@@ -1,6 +1,6 @@
 // Referral program client. Links look like https://hopr.app/?ref=<code> or
-// https://t.me/<bot>?start=ref_<code>. Referrers earn 25% of the Hopr fees
-// their friends pay (0.5% trades, 1% bridges).
+// https://t.me/<bot>?start=ref_<code>. Referrers earn 25% of HOPR fee revenue
+// after the routing provider share (standard fees: 0.5% trades, 1% bridges).
 //
 // The code is remembered on first visit (first touch). A connected wallet
 // accepts the invite by signing a free message (no transaction), so nobody

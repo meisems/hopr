@@ -1,4 +1,7 @@
-import { ArrowRight, Loader2, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
+import { useState } from 'react';
+import PnlShareCard from './PnlShareCard';
+import type { PnlCardData } from '../services/pnlCard';
+import { ArrowRight, Share2, Loader2, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
 import { formatTokenPrice, formatUsd } from '../services/chainDetector';
 import { getNetwork } from '../services/chains';
 import { formatUnits } from '../services/nearService';
@@ -27,6 +30,13 @@ function Pnl({ position }: { position: Position }) {
 
 export default function PositionsTable({ onOpenToken }: PositionsTableProps) {
   const { positions, totals, loading, refresh } = usePositions();
+  const [shareData, setShareData] = useState<PnlCardData | null>(null);
+  const share = (position: Position) => {
+    if (position.pnlUsd === null || position.pnlPercent === null || position.valueUsd === null) return;
+    setShareData({ symbol: position.symbol, chain: getNetwork(position.chainId)?.shortName ?? String(position.chainId),
+      pnlUsd: position.pnlUsd, pnlPercent: position.pnlPercent, investedUsd: position.investedUsd,
+      valueUsd: position.valueUsd, realizedUsd: position.realizedUsd, observedAt: position.observedAt });
+  };
   const chains = new Set(positions.map((position) => position.chainId)).size;
 
   const open = (address: string) => {
@@ -42,6 +52,7 @@ export default function PositionsTable({ onOpenToken }: PositionsTableProps) {
 
   return (
     <div className="bg-gray-900/60 rounded-2xl border border-gray-800/50 overflow-hidden">
+      {shareData && <PnlShareCard data={shareData} onClose={() => setShareData(null)} />}
       <div className="p-4 border-b border-gray-800/50">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -102,6 +113,7 @@ export default function PositionsTable({ onOpenToken }: PositionsTableProps) {
                       <td className="px-4 py-3 text-right font-mono font-semibold text-white">{position.valueUsd === null ? '—' : formatUsd(position.valueUsd)}</td>
                       <td className="px-4 py-3 text-right"><Pnl position={position} /></td>
                       <td className="px-4 py-3 text-right">
+                        <button disabled={position.pnlUsd === null} onClick={() => share(position)} aria-label={`Share ${position.symbol} PnL card`} className="mr-2 rounded-lg p-2 text-gray-400 hover:text-brand-300 disabled:opacity-30"><Share2 className="h-4 w-4" /></button>
                         <button onClick={() => open(position.address)} className="pressable inline-flex items-center gap-1 rounded-lg border border-gray-700 bg-gray-800/60 px-2.5 py-1.5 text-xs font-medium text-gray-200 hover:border-brand-400/40 hover:text-white">
                           Trade <ArrowRight className="h-3 w-3" />
                         </button>
@@ -117,7 +129,7 @@ export default function PositionsTable({ onOpenToken }: PositionsTableProps) {
             {positions.map((position) => {
               const network = getNetwork(position.chainId);
               return (
-                <button key={position.key} onClick={() => open(position.address)} className="pressable flex w-full items-center justify-between rounded-xl bg-gray-800/30 p-3 text-left">
+                <div key={position.key} className="rounded-xl bg-gray-800/30 p-3"><button onClick={() => open(position.address)} className="pressable flex w-full items-center justify-between text-left">
                   <div className="flex items-center gap-2">
                     <ChainLogo chainKey={network?.key ?? ''} size={24} />
                     <div>
@@ -129,7 +141,7 @@ export default function PositionsTable({ onOpenToken }: PositionsTableProps) {
                     <div className="font-mono font-semibold text-white">{position.valueUsd === null ? '—' : formatUsd(position.valueUsd)}</div>
                     <div className="text-xs"><Pnl position={position} /></div>
                   </div>
-                </button>
+                </button><button disabled={position.pnlUsd === null} onClick={() => share(position)} className="mt-2 flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-brand-300 disabled:opacity-30"><Share2 size={14} />Share PnL card</button></div>
               );
             })}
           </div>

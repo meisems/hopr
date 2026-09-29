@@ -98,7 +98,7 @@ function LensingSplash({ isExiting, onExitStart, onExitComplete, spin, inclinati
 
     const image = new Image();
     image.onload = () => renderer.setLogo(image);
-    image.src = '/brand/logo-icon.png';
+    image.src = '/brand/logo-mark.svg';
 
     const updateLogoSize = () => setLogoHeight(flatLogoHeightPx(window.innerWidth, window.innerHeight, END_DISTANCE));
     updateLogoSize();
@@ -164,7 +164,7 @@ function LensingSplash({ isExiting, onExitStart, onExitComplete, spin, inclinati
     <div className={`lens-overlay${isExiting ? ' lens-overlay--exit' : ''}`} style={{ '--hs-fade': `${FADE_MS}ms` } as CSSProperties} onClick={finish} role="presentation">
       <canvas ref={canvasRef} className="lens-canvas" aria-hidden="true" />
       <div className={`lens-brand${handoff ? ' lens-brand--on' : ''}`}>
-        <img src="/brand/logo-icon.png" alt="" draggable={false} style={{ height: logoHeight || undefined }} className="lens-mark" />
+        <img src="/brand/logo-mark.svg" alt="" draggable={false} style={{ height: logoHeight || undefined }} className="lens-mark" />
         <div className="lens-wordmark" aria-label="hopr">
           {'hopr'.split('').map((letter, index) => (
             <span key={index} style={{ transitionDelay: `${120 + index * 60}ms` }}>{letter}</span>
@@ -230,7 +230,7 @@ function CssSplash({ isExiting, onExitStart, onExitComplete, spin, inclination }
         <div className="hs-photon-ring" />
         <div className="hs-core" />
         <div className="hs-mark">
-          <img src="/brand/logo-icon.png" alt="" draggable={false} />
+          <img src="/brand/logo-mark.svg" alt="" draggable={false} />
         </div>
       </div>
       <div className="hs-brand">
