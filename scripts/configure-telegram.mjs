@@ -6,7 +6,6 @@ export const TELEGRAM_COMMANDS = [
   { command: 'app', description: '🚀 Open the Hopr Mini App' },
   { command: 'help', description: '❓ Every command, explained' },
   { command: 'wallet', description: '👛 Wallet balances' },
-  { command: 'setwallet', description: '🔗 Link a public wallet (read-only)' },
   { command: 'balances', description: '🔄 Refresh native balances' },
   { command: 'positions', description: '📊 Open positions with live prices' },
   { command: 'pools', description: '📡 Launchpad pools, liquidity & volume' },
