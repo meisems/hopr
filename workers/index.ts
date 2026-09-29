@@ -28,6 +28,7 @@ import {
   confirmTrade,
   continueNearFundedBuy,
   prepareNearIntentsBuy,
+  prepareIncomingNearBuy,
   requestIntentsQuote,
   type ConfirmResult,
   type PendingTrade,
@@ -286,7 +287,6 @@ function telegramActionKeyboard(env: Env): TelegramKeyboard {
       [{ text: '📡 Launch radar', callback_data: 'pools' }],
       [
         { text: '🎁 Refer & Earn', callback_data: 'referral' },
-        { text: '🔗 Link wallet', callback_data: 'wallet:link' },
         { text: '❓ Help', callback_data: 'help' },
       ],
       ...telegramMiniAppRow(env),
@@ -296,11 +296,29 @@ function telegramActionKeyboard(env: Env): TelegramKeyboard {
 
 interface TokenKeyboardContext {
   chainId?: number;
+  /** Chain the quick buys are paid from (any supported chain, including NEAR). */
+  fundingChainId?: number;
   /** Native symbol the quick buys spend (ETH, SOL, BNB, NEAR …). */
   fundingSymbol?: string;
   fundingChainName?: string;
   slippagePercent?: number;
 }
+
+/** Quick-buy presets for the pay-from chain: NEAR keeps 0.5/1/5; NEAR tokens paid elsewhere use chain-sized presets. */
+function telegramQuickBuyAmounts(tokenChainId: number | undefined, fundingChainId: number | undefined): string[] {
+  if (tokenChainId === NEAR_CHAIN_ID) {
+    if (fundingChainId === undefined || fundingChainId === NEAR_CHAIN_ID) return NEAR_QUICK_BUY_AMOUNTS;
+    return getNetwork(fundingChainId)?.quickBuy.slice(0, 3) ?? QUICK_BUY_AMOUNTS;
+  }
+  return QUICK_BUY_AMOUNTS;
+}
+
+/** Pay-with shortcuts shown on every token card (callback sets the funding chain and redraws the card). */
+const TELEGRAM_PAY_WITH = [
+  { id: NEAR_CHAIN_ID, label: 'Ⓝ NEAR' },
+  { id: 1151111081099710, label: '◎ SOL' },
+  { id: 4663, label: '🟩 Robinhood ETH' },
+];
 
 /**
  * Trading panel under a token card. Mirrors the Maestro layout: utility row on
@@ -308,8 +326,7 @@ interface TokenKeyboardContext {
  * and links. Callback data is unchanged so older cards keep working.
  */
 function telegramTokenKeyboard(address: string, context: TokenKeyboardContext = {}): TelegramKeyboard {
-  const isNear = context.chainId === NEAR_CHAIN_ID;
-  const fundingSymbol = isNear ? 'NEAR' : context.fundingSymbol ?? '';
+  const fundingSymbol = context.fundingSymbol ?? '';
   const refresh = `token:refresh:${address}`.length <= 64 ? `token:refresh:${address}` : 'token:refresh:last'; // 64-byte callback cap
   const explorer = context.chainId !== undefined ? TELEGRAM_TOKEN_EXPLORERS[context.chainId] : undefined;
   return {
@@ -318,7 +335,7 @@ function telegramTokenKeyboard(address: string, context: TokenKeyboardContext = 
         { text: '🔄 Refresh', callback_data: refresh },
         { text: '✖️ Close', callback_data: 'dismiss' },
       ],
-      (isNear ? NEAR_QUICK_BUY_AMOUNTS : QUICK_BUY_AMOUNTS).map((amount) => ({
+      telegramQuickBuyAmounts(context.chainId, context.fundingChainId).map((amount) => ({
         text: `🟢 Buy ${amount}${fundingSymbol ? ` ${fundingSymbol}` : ''}`,
         callback_data: `trade:buy:${amount}`,
       })),
@@ -327,11 +344,13 @@ function telegramTokenKeyboard(address: string, context: TokenKeyboardContext = 
         { text: '🔴 Sell 50%', callback_data: 'trade:sell:50' },
         { text: '🔴 Sell 100%', callback_data: 'trade:sell:100' },
       ],
+      TELEGRAM_PAY_WITH.map((option) => ({
+        text: `${option.id === context.fundingChainId ? '✅ ' : ''}${option.label}`,
+        callback_data: `token:pay:${option.id}`,
+      })),
       [
         { text: '✏️ Buy X', callback_data: 'trade:custom' },
-        isNear
-          ? { text: 'Ⓝ NEAR wallet', callback_data: 'wallet' }
-          : { text: `⛓ ${context.fundingChainName ?? 'Funding'}`, callback_data: 'settings' },
+        { text: `⛓ ${context.fundingChainName ?? 'Funding'}`, callback_data: 'settings' },
         { text: `🎚 Slip ${context.slippagePercent ?? 1}%`, callback_data: 'settings' },
       ],
       [
@@ -351,12 +370,8 @@ function telegramTradeConfirmationKeyboard(tradeId: string, confirmLabel = '✅ 
   };
 }
 
-const TELEGRAM_WALLET_PROMPTS = {
-  evm: 'Reply to this message with a public EVM address only.',
-  solana: 'Reply to this message with a public Solana address only.',
-  near: 'Reply to this message with a public NEAR account only.',
-};
-type TelegramWalletNetwork = keyof typeof TELEGRAM_WALLET_PROMPTS;
+/** Most wallets one Telegram user can hold (generated + imported). */
+const MAX_WALLETS_PER_USER = 10;
 
 const telegramDetectionMemoryCache = new Map<string, { expiresAt: number; value: Record<string, unknown> }>();
 
@@ -373,9 +388,9 @@ const TELEGRAM_CHAINS = [
 const TELEGRAM_SLIPPAGE_OPTIONS = [0.5, 1, 3, 5];
 
 interface TelegramProfile {
+  /** Legacy read-only linked addresses (linking was removed; kept so old rows round-trip). */
   evmAddress?: string;
   solanaAddress?: string;
-  /** Read-only linked NEAR account (implicit or named). */
   nearAddress?: string;
   fundingChainId?: number;
   slippagePercent?: number;
@@ -543,12 +558,13 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       || (data.startsWith('pools:') && !!launchpadById(data.slice(6)))
       || /^lp:(view|buy):[a-f0-9]{24}:[0-5]$/.test(data)
       || /^trade:cont:[0-9a-f]{8}$/.test(data)
-      || ['wallet:link', 'wallet:set:evm', 'wallet:set:solana', 'wallet:set:near', 'wallet:generate', 'wallet:import', 'wallet:export', 'wallet:preferred', 'wallet:delete', 'wallet:delete:confirm'].includes(data)
+      || ['wallet:generate', 'wallet:import', 'wallet:export', 'wallet:preferred', 'wallet:delete', 'wallet:delete:confirm'].includes(data)
       || /^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(data)
       || (data.startsWith('token:refresh:') && isNearAccountId(data.slice('token:refresh:'.length)))
+      || /^token:pay:\d+$/.test(data)
       || /^settings:chain:\d+$/.test(data)
       || /^settings:slippage:(0\.5|1|3|5)$/.test(data)
-      || /^trade:(buy:(0\.1|0\.5|1\.0|1|5)|sell:(25|50|100)|custom|confirm:[0-9a-f-]+|cancel)$/.test(data);
+      || /^trade:(buy:\d{1,6}(\.\d{1,6})?|sell:(25|50|100)|custom|confirm:[0-9a-f-]+|cancel)$/.test(data);
     if (!recognized) {
       await telegramApiCall('answerCallbackQuery', env, {
         callback_query_id: callback.id,
@@ -557,15 +573,17 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       });
       return Response.json({ ok: true });
     }
-    await telegramApiCall('answerCallbackQuery', env, {
+    // Acknowledge the tap while the real work runs, instead of one extra round trip first.
+    const acknowledged = telegramApiRequest('answerCallbackQuery', env, {
       callback_query_id: callback.id,
       ...(telegramCallbackToast(data) ? { text: telegramCallbackToast(data) } : {}),
     });
-    if ((data.startsWith('lp:') || data.startsWith('trade:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data === 'positions' || data.startsWith('referral')) && chatType !== 'private') {
+    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data === 'positions' || data.startsWith('referral')) && chatType !== 'private') {
+      await acknowledged;
       await sendTelegramMessage(chatId, '🔒 For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return Response.json({ ok: true });
     }
-    await handleTelegramCallback(chatId, data, env, callback.message?.message_id, chatType);
+    await Promise.all([acknowledged, handleTelegramCallback(chatId, data, env, callback.message?.message_id, chatType)]);
     return Response.json({ ok: true });
   }
 
@@ -584,7 +602,7 @@ function telegramCallbackToast(data: string): string | undefined {
   if (data.startsWith('trade:confirm:')) return 'Submitting…';
   if (data.startsWith('trade:cont:')) return 'Checking the bridge…';
   if (data === 'referral') return 'Loading your referrals…';
-  const chainMatch = data.match(/^settings:chain:(\d+)$/);
+  const chainMatch = data.match(/^(?:settings:chain|token:pay):(\d+)$/);
   if (chainMatch) {
     const chain = TELEGRAM_CHAINS.find((item) => item.id === Number(chainMatch[1]));
     return chain ? `Funding chain: ${chain.name}` : undefined;
@@ -598,6 +616,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
   tgTitle('❓', 'Hopr command guide', 'Everything the bot can do, in one place.'),
   tgSection('🛒', 'Trading', [
     'Paste any token address (EVM, Solana or NEAR) for a live trading panel',
+    'Pay from any chain — Solana, Base, Arbitrum, BNB, Robinhood, Arc or NEAR — for a token on any chain',
     'Buy / Sell buttons first show a live quote',
     '/swap &lt;amount&gt; &lt;from&gt; &lt;to&gt; — NEAR swaps on Ref Finance, e.g. <code>/swap 1 near usdc</code>',
     '/positions — open positions with live prices',
@@ -605,9 +624,9 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     'Only the <b>Confirm and submit</b> button signs and submits a trade',
   ]),
   tgSection('💳', 'Wallet', [
-    '/wallet — balances for your wallet',
+    '/wallet — balances for your active wallet',
     '/wallet &lt;address&gt; — one-off balance check',
-    '/setwallet &lt;evm|solana|near&gt; &lt;address&gt; — link a public address (read-only)',
+    `💳 Wallets — create or import up to ${MAX_WALLETS_PER_USER} wallets, synced with the Mini App`,
     '/importkey &lt;evm|solana|near&gt; &lt;key&gt; — use your own key (DM only)',
     '/exportkeys — reveal your private keys (DM only)',
   ]),
@@ -632,17 +651,6 @@ async function handleTelegramMessage(
   replyToMessage?: TelegramMessage['reply_to_message'],
   firstName?: string,
 ): Promise<void> {
-  const promptedNetwork = replyToMessage?.from?.is_bot
-    ? (Object.keys(TELEGRAM_WALLET_PROMPTS) as TelegramWalletNetwork[]).find((network) => replyToMessage.text === TELEGRAM_WALLET_PROMPTS[network])
-    : undefined;
-  if (promptedNetwork) {
-    if (chatType !== 'private') {
-      await sendTelegramMessage(chatId, '🔒 For privacy, link wallet addresses only in a private chat with this bot.', env);
-      return;
-    }
-    await setTelegramWallet(chatId, [promptedNetwork, text], env);
-    return;
-  }
   if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_BUY_X_PROMPT)) {
     const amount = text.trim().replace(',', '.');
     if (!/^\d{1,12}(\.\d{1,18})?$/.test(amount) || !(Number(amount) > 0)) {
@@ -746,11 +754,11 @@ async function handleTelegramMessage(
     return;
   }
   if (command === '/setwallet') {
-    if (chatType !== 'private') {
-      await sendTelegramMessage(chatId, '🔒 For privacy, link wallet addresses only in a private chat with this bot.', env);
-      return;
-    }
-    await setTelegramWallet(chatId, args, env);
+    // Read-only wallet linking was retired: every wallet is now a Hopr wallet you create or import.
+    await sendTelegramMessage(chatId, tgMessage(
+      tgTitle('💳', 'Wallet linking was removed'),
+      `Create or import up to ${MAX_WALLETS_PER_USER} wallets from 💳 Wallets — they sync to the Mini App automatically.`,
+    ), env, chatType === 'private' ? telegramWalletSetupKeyboard() : undefined);
     return;
   }
   if (command === '/importkey') {
@@ -817,11 +825,15 @@ async function handleTelegramMessage(
 
 type TelegramHomeWallet = { evmAddress: string; solanaAddress: string; nearAddress?: string | null } | null;
 
-/** The user's trading wallet for the home screen; creates the NEAR account for pre-NEAR wallets. */
-async function loadTelegramHomeWallet(chatId: number, chatType: string | undefined, env: Env): Promise<TelegramHomeWallet> {
+/**
+ * The user's trading wallet for the home screen; creates the NEAR account for pre-NEAR wallets.
+ * With `provision` (/start) a first wallet is generated, so the Mini App finds it synced on open.
+ */
+async function loadTelegramHomeWallet(chatId: number, chatType: string | undefined, env: Env, provision = false): Promise<TelegramHomeWallet> {
   if (chatType !== 'private') return null;
   try {
-    const wallet = await getCustodialWallet(String(chatId), env);
+    let wallet = await getCustodialWallet(String(chatId), env);
+    if (!wallet && provision && env.DB && env.ENCRYPTION_KEY) wallet = await createCustodialWallet(String(chatId), env);
     if (wallet && !wallet.nearAddress) wallet.nearAddress = await ensureNearWallet(String(chatId), env).catch(() => null);
     return wallet;
   } catch {
@@ -842,6 +854,7 @@ function telegramHomeText(heading: string, wallet: TelegramHomeWallet): string {
       : tgSection('💳', 'Wallet', ['No trading wallet yet — tap 💳 Wallets to create one in one tap']),
     tgSection('🚀', 'Trade', [
       'Paste any token address to open its trading panel',
+      'Pay from any supported chain — the route is found for you',
       '🛒 Buy & Sell · 📊 Positions · Ⓝ /swap for NEAR',
       'Every trade shows a live quote first — you confirm',
     ]),
@@ -851,7 +864,7 @@ function telegramHomeText(heading: string, wallet: TelegramHomeWallet): string {
 
 async function showTelegramWelcome(chatId: number, chatType: string | undefined, env: Env, firstName?: string, notice?: string): Promise<void> {
   const name = firstName?.trim() ? `, ${escapeTelegramHtml(firstName.trim().slice(0, 32))}` : '';
-  const wallet = await loadTelegramHomeWallet(chatId, chatType, env);
+  const wallet = await loadTelegramHomeWallet(chatId, chatType, env, true);
   const home = telegramHomeText(`Welcome to Hopr${name}`, wallet);
   await sendTelegramMessage(chatId, notice ? tgMessage(`<b>${notice}</b>`, home) : home, env, telegramActionKeyboard(env));
 }
@@ -948,9 +961,14 @@ function normalizeTelegramAddress(text: string): string | null {
   return null;
 }
 
-async function lookupTelegramToken(chatId: number, address: string, env: Env, panelId?: number, chainHint?: number, listing?: string): Promise<void> {
-  const detected = chainHint ? await detectTokenOnChain(address, chainHint).catch(() => null) : null;
-  const response = chainHint ? Response.json(detected ?? {}, { status: detected ? 200 : 404 }) : await handleChainDetection(address, env, {});
+async function lookupTelegramToken(chatId: number, address: string, env: Env, panelId?: number, chainHint?: number, listing?: string, fresh = false): Promise<void> {
+  // Market data and the user's profile are independent: fetch them together.
+  const [response, profile] = await Promise.all([
+    chainHint
+      ? detectTokenOnChain(address, chainHint).catch(() => null).then((detected) => Response.json(detected ?? {}, { status: detected ? 200 : 404 }))
+      : handleChainDetection(address, env, {}, { fresh }),
+    env.DB || env.TELEGRAM_STATE ? readTelegramProfile(chatId, env).catch(() => null) : Promise.resolve(null),
+  ]);
   const token = await response.json() as Record<string, unknown>;
   if (!response.ok) {
     await sendTelegramPanel(chatId, panelId, tgMessage(
@@ -977,11 +995,12 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
   const age = formatAge(typeof token.pairCreatedAt === 'number' ? token.pairCreatedAt : undefined);
 
   // The profile supplies the funding chain / slippage shown on the card and its buttons.
-  const profile = env.DB || env.TELEGRAM_STATE ? await readTelegramProfile(chatId, env).catch(() => null) : null;
+  // Any chain can pay for any token; NEAR tokens default to paying with NEAR.
   const isNear = chainId === NEAR_CHAIN_ID;
-  const fundingChain = TELEGRAM_CHAINS.find((item) => item.id === (profile?.fundingChainId ?? 8453)) ?? TELEGRAM_CHAINS[2];
-  const fundingSymbol = isNear ? 'NEAR' : fundingChain.symbol;
+  const fundingChain = TELEGRAM_CHAINS.find((item) => item.id === (profile?.fundingChainId ?? (isNear ? NEAR_CHAIN_ID : 8453))) ?? TELEGRAM_CHAINS[2];
+  const fundingSymbol = fundingChain.symbol;
   const slippage = profile?.slippagePercent ?? 1;
+  const nearViaRef = isNear && fundingChain.id === NEAR_CHAIN_ID;
 
   const identity = [
     listing ? `📡 Listed on ${escapeTelegramHtml(listing)}` : token.launchpad ? `📡 ${escapeTelegramHtml(String(token.launchpad))}` : null,
@@ -1004,28 +1023,29 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
         : `24h  ${formatPercentChange(change)}`,
     ]),
     tgSection('⚙️', 'Trade setup', [
-      isNear ? 'Route  Ref Finance · paid in NEAR' : `Funding  ${chainEmoji(fundingChain.id)} ${escapeTelegramHtml(fundingChain.name)} (${fundingSymbol})`,
+      nearViaRef ? 'Route  Ref Finance · paid in NEAR' : `Funding  ${chainEmoji(fundingChain.id)} ${escapeTelegramHtml(fundingChain.name)} (${fundingSymbol})${fundingChain.id !== chainId ? ' · cross-chain' : ''}`,
       `Slippage  ${slippage}% · every trade is quoted before you confirm`,
     ]),
     tgFootnote(`DexScreener · ${telegramUtcTime()} · Scan only — no transaction was submitted.`),
   );
 
-  // Persist before exposing buttons so an immediate tap sees this token.
-  if (env.DB || env.TELEGRAM_STATE) {
-    await writeTelegramProfile(chatId, {
+  // Persist alongside sending the card; the KV write starts first, so a tap on the new buttons sees this token.
+  const persisted = env.DB || env.TELEGRAM_STATE
+    ? writeTelegramProfile(chatId, {
       ...(profile ?? {}),
       lastTokenAddress: address,
       lastTokenChainId: chainId,
       lastTokenChainType: token.chainType === 'SVM' || token.chainType === 'NEAR' ? token.chainType : 'EVM',
       lastTokenSymbol: symbol,
-    }, env).catch((error) => console.error('Telegram token profile persistence failed', error));
-  }
-  await sendTelegramPanel(chatId, panelId, result, env, telegramTokenKeyboard(address, {
+    }, env).catch((error) => console.error('Telegram token profile persistence failed', error))
+    : Promise.resolve();
+  await Promise.all([persisted, sendTelegramPanel(chatId, panelId, result, env, telegramTokenKeyboard(address, {
     chainId,
+    fundingChainId: fundingChain.id,
     fundingSymbol,
     fundingChainName: fundingChain.name.replace(' One', '').replace(' Chain', ''),
     slippagePercent: slippage,
-  }));
+  }))]);
 }
 
 const telegramProfileKey = (chatId: number) => `telegram:${chatId}`;
@@ -1081,6 +1101,8 @@ async function readTelegramProfile(chatId: number, env: Env): Promise<TelegramPr
 
 async function writeTelegramProfile(chatId: number, profile: TelegramProfile, env: Env): Promise<boolean> {
   if (!env.TELEGRAM_STATE && !env.DB) return false;
+  // KV first: it is what readTelegramProfile consults, so the next tap sees the change immediately.
+  const cached = env.TELEGRAM_STATE?.put(telegramProfileKey(chatId), JSON.stringify(profile), { expirationTtl: 86400 });
   const now = Date.now();
   if (env.DB) {
     const values = [
@@ -1117,7 +1139,7 @@ async function writeTelegramProfile(chatId: number, profile: TelegramProfile, en
       return upsert(false);
     });
   }
-  if (env.TELEGRAM_STATE) await env.TELEGRAM_STATE.put(telegramProfileKey(chatId), JSON.stringify(profile), { expirationTtl: 86400 });
+  await cached;
   return true;
 }
 
@@ -1126,45 +1148,6 @@ const TELEGRAM_PERSISTENCE_REQUIRED = tgMessage(
   'Saving wallets and settings needs the <code>TELEGRAM_STATE</code> KV or <code>DB</code> binding. Ask the bot owner to enable persistence.',
   tgFootnote('For a one-time read-only balance check, use /wallet &lt;public-address&gt;.'),
 );
-
-async function setTelegramWallet(chatId: number, args: string[], env: Env): Promise<void> {
-  if (!env.TELEGRAM_STATE && !env.DB) {
-    await sendTelegramMessage(chatId, TELEGRAM_PERSISTENCE_REQUIRED, env);
-    return;
-  }
-  const [network, suppliedAddress] = args;
-  const address = suppliedAddress?.trim() ?? '';
-  const isEvm = network?.toLowerCase() === 'evm' && /^0x[a-fA-F0-9]{40}$/.test(address);
-  const isSolana = network?.toLowerCase() === 'solana' && address.length >= 32 && address.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(address);
-  const isNear = network?.toLowerCase() === 'near' && isNearAccountId(address.toLowerCase());
-  if (!isEvm && !isSolana && !isNear) {
-    await sendTelegramMessage(chatId, tgMessage(
-      tgTitle('🔗', 'Link a public wallet'),
-      tgCard(['/setwallet evm 0x…', '/setwallet solana &lt;base58-address&gt;', '/setwallet near &lt;account.near&gt;']),
-      tgFootnote('Only a public address is needed — never send a seed phrase or private key.'),
-    ), env);
-    return;
-  }
-
-  const profile = await readTelegramProfile(chatId, env) ?? {};
-  if (isEvm) profile.evmAddress = address;
-  if (isSolana) profile.solanaAddress = address;
-  if (isNear) profile.nearAddress = address.toLowerCase();
-  if (!await writeTelegramProfile(chatId, profile, env)) {
-    await sendTelegramMessage(chatId, '⚠️ Could not save your wallet address. Please try again later.', env);
-    return;
-  }
-  await sendTelegramMessage(
-    chatId,
-    tgMessage(
-      tgTitle('✅', `${isEvm ? 'EVM' : isSolana ? 'SOLANA' : 'NEAR'} public address linked`),
-      `<code>${escapeTelegramHtml(address)}</code>`,
-      tgFootnote('Read-only: Only native balances are read; no signing or transactions are performed. Use /wallet to check balances.'),
-    ),
-    env,
-    telegramActionKeyboard(env),
-  );
-}
 
 async function showTelegramWallet(chatId: number, env: Env, panelId?: number): Promise<void> {
   let tradingWallet: { evmAddress: string; solanaAddress: string; nearAddress?: string | null } | null = null;
@@ -1180,25 +1163,14 @@ async function showTelegramWallet(chatId: number, env: Env, panelId?: number): P
     return;
   }
 
-  const profile = await readTelegramProfile(chatId, env);
-  if (!profile) {
-    await sendTelegramPanel(chatId, panelId, TELEGRAM_PERSISTENCE_REQUIRED, env);
-    return;
-  }
-  if (!profile.evmAddress && !profile.solanaAddress && !profile.nearAddress) {
-    await sendTelegramPanel(chatId, panelId, tgMessage(
-      tgTitle('💳', 'No wallet yet', 'Create a trading wallet, import one, or link a public address.'),
-      tgCard([
-        '📦 <b>Create</b> — a new encrypted EVM + Solana + NEAR wallet',
-        '📥 <b>Import</b> — bring a private key you already own',
-        '🔗 <b>Link</b> — watch a public address (read-only)',
-      ]),
-      tgFootnote('Never send a seed phrase to anyone, including this bot.'),
-    ), env, telegramWalletLinkKeyboard());
-    return;
-  }
-
-  await showTelegramWalletBalances(chatId, profile.evmAddress, profile.solanaAddress, env, { label: 'Linked wallet · read-only', panelId, nearAddress: profile.nearAddress });
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('💳', 'No wallet yet', `Create a wallet or import one you own — up to ${MAX_WALLETS_PER_USER} wallets.`),
+    tgCard([
+      '📦 <b>Create</b> — a new encrypted EVM + Solana + NEAR wallet',
+      '📥 <b>Import</b> — bring a private key you already own',
+    ]),
+    tgFootnote('Wallets sync to the Hopr Mini App automatically. Never send a seed phrase to anyone, including this bot.'),
+  ), env, telegramWalletSetupKeyboard());
 }
 
 /** NEAR block for the wallet card: spendable NEAR plus any NEP-141 tokens held. */
@@ -1293,16 +1265,10 @@ function telegramSettingsKeyboard(profile: TelegramProfile): TelegramKeyboard {
   };
 }
 
-function telegramWalletLinkKeyboard(): TelegramKeyboard {
+function telegramWalletSetupKeyboard(): TelegramKeyboard {
   return {
     inline_keyboard: [
-      [
-        { text: '🔗 Link EVM (read-only)', callback_data: 'wallet:set:evm' },
-        { text: '🔗 Link Solana (read-only)', callback_data: 'wallet:set:solana' },
-      ],
-      [{ text: '🔗 Link NEAR (read-only)', callback_data: 'wallet:set:near' }],
-      [{ text: '📦 Create trading wallet', callback_data: 'wallet:generate' }],
-      [{ text: '📥 Import private key', callback_data: 'wallet:import' }],
+      [{ text: '📦 Create wallet', callback_data: 'wallet:generate' }, { text: '📥 Import wallet', callback_data: 'wallet:import' }],
       [{ text: '❓ Help', callback_data: 'help' }, { text: '◀️ Menu', callback_data: 'menu' }],
     ],
   };
@@ -1335,7 +1301,7 @@ async function showTelegramWalletExport(chatId: number, env: Env): Promise<void>
     .bind(userId)
     .first<{ evm_address: string; evm_encrypted_key: string; solana_address: string; solana_encrypted_key: string }>();
   if (!row) {
-    await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'No trading wallet yet'), 'Create a trading wallet first, then you can export its keys.'), env, telegramWalletLinkKeyboard());
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'No trading wallet yet'), 'Create a trading wallet first, then you can export its keys.'), env, telegramWalletSetupKeyboard());
     return;
   }
   const decryptIfPresent = (packed: string | null | undefined) => packed ? decryptPrivateKey(unpackEncryptedSecret(packed), env.ENCRYPTION_KEY!) : Promise.resolve('');
@@ -1463,12 +1429,28 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
     return;
   }
   const existing = await getCustodialWallet(userId, env);
-  const wallet = existing ?? await createCustodialWallet(userId, env);
+  let wallet: { evmAddress: string; solanaAddress: string; nearAddress?: string | null };
+  let label: string | null = null;
+  if (!existing) {
+    wallet = await createCustodialWallet(userId, env);
+  } else {
+    // Another wallet (up to the cap); it becomes the active one, same as in the Mini App vault.
+    try {
+      const near = generateNearWallet();
+      const row = await storeWalletAccount(userId, { ...generateDualWallet(), nearAddress: near.address, nearPrivateKey: near.privateKey }, '', 'generated', env);
+      wallet = { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null };
+      label = row.label;
+    } catch (error) {
+      const message = error instanceof WalletLimitError ? error.message : 'Wallet storage is unavailable. Apply migrations/0003_multi_wallets.sql, then try again.';
+      await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'No new wallet created'), escapeTelegramHtml(message)), env, telegramWalletActionKeyboard(env));
+      return;
+    }
+  }
   const nearAddress = wallet.nearAddress ?? await ensureNearWallet(userId, env).catch(() => null);
   await sendTelegramMessage(
     chatId,
     tgMessage(
-      tgTitle('✦', 'Your Hopr wallet is ready', existing ? 'Your secure cross-chain wallet is already active.' : 'Welcome to your private cross-chain command center.'),
+      tgTitle('✦', label ? `Wallet ${escapeTelegramHtml(label)} created` : 'Your Hopr wallet is ready', label ? 'It is now your active trading wallet · synced to the Mini App.' : 'Welcome to your private cross-chain command center.'),
       tgCard([
         `<b>EVM</b>  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
         `<b>Solana</b>  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
@@ -1555,11 +1537,12 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
       };
       const result = await confirmTrade(String(chatId), confirmMatch[1], rpcUrls, env);
       await recordTelegramReferral(String(chatId), result, env);
-      if (result.venue === 'intents') {
+      if (result.venue === 'intents' || result.continuationId) {
+        const explorer = TELEGRAM_EXPLORERS[result.fromChainId ?? NEAR_CHAIN_ID];
         await sendTelegramPanel(chatId, panelId, telegramIntentsSentMessage(result), env, {
           inline_keyboard: [
-            ...(result.continuationId ? [[{ text: '▶️ Continue — step 2', callback_data: `trade:cont:${result.continuationId}` }]] : []),
-            [{ text: '🔎 View transaction', url: `${TELEGRAM_EXPLORERS[NEAR_CHAIN_ID]}${encodeURIComponent(result.txHash)}` }],
+            ...(result.continuationId ? [[{ text: '▶️ Continue — next step', callback_data: `trade:cont:${result.continuationId}` }]] : []),
+            ...(explorer ? [[{ text: '🔎 View transaction', url: `${explorer}${encodeURIComponent(result.txHash)}` }]] : []),
             [{ text: '💳 Wallet', callback_data: 'wallet' }, { text: '◀️ Menu', callback_data: 'menu' }],
           ],
         });
@@ -1611,10 +1594,10 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
       chatId,
       tgMessage(
         tgTitle('💳', 'Trading needs a Hopr wallet'),
-        'Hopr holds the keys and signs only after you confirm a quote. Create one, or link a public address for read-only balance checks.',
+        `Hopr holds the keys and signs only after you confirm a quote. Create or import one (up to ${MAX_WALLETS_PER_USER}).`,
       ),
       env,
-      telegramWalletLinkKeyboard(),
+      telegramWalletSetupKeyboard(),
     );
     return;
   }
@@ -1788,6 +1771,59 @@ async function sendTelegramNearQuote(chatId: number, trade: PendingTrade, env: E
   await sendTelegramMessage(chatId, telegramNearQuoteMessage(trade), env, telegramTradeConfirmationKeyboard(trade.id, '✅ Confirm swap'));
 }
 
+/** Decimals of the native coin a trade is paid with, by chain id. */
+function nativeDecimalsOf(chainId: number): number {
+  return chainId === NEAR_CHAIN_ID ? NEAR_DECIMALS : chainId === 1151111081099710 ? 9 : 18;
+}
+
+/**
+ * Quote card for trades paid from one chain into a NEAR token: NEAR Intents
+ * from SOL / ETH / BNB, or a LI.FI hop to Base first for chains Intents can't
+ * reach. Ref swaps reuse the NEAR quote card.
+ */
+function telegramIncomingQuote(trade: PendingTrade): { text: string; confirmLabel: string } {
+  if (trade.venue === 'ref') return { text: telegramNearQuoteMessage(trade), confirmLabel: '✅ Confirm swap' };
+  const chain = getChainById(trade.fundingChainId);
+  const pay = `${formatUnits(trade.displayAmount, nativeDecimalsOf(trade.fundingChainId), 6)} ${escapeTelegramHtml(trade.displaySymbol)}${chain ? ` on ${escapeTelegramHtml(chain.name)}` : ''}`;
+  const fee = trade.feeBps ? `🏷 <b>Platform fee</b>  ${trade.feeBps / 100}% · charged once` : '🏷 <b>Platform fee</b>  already paid in step 1';
+  if (trade.hubContinuation) {
+    const target = escapeTelegramHtml(trade.hubContinuation.targetSymbol);
+    return {
+      text: telegramQuoteMessage('BUY', [
+        `💸 <b>You pay</b>  ${pay}`,
+        `🌉 <b>Step 1</b>  ${escapeTelegramHtml(trade.displaySymbol)} → ≈ ${formatUnits(trade.quote.estimate.toAmount, 18, 6)} ETH on Base · LI.FI`,
+        `🎯 <b>Next</b>  ETH → ${target} on NEAR · NEAR Intents + Ref Finance (you confirm each step)`,
+        `🎚 <b>Slippage</b>  ${Number((trade.hubContinuation.slippage * 100).toFixed(2))}%`,
+        fee,
+      ]),
+      confirmLabel: '✅ Confirm step 1',
+    };
+  }
+  const intents = trade.intents!;
+  const out = `${formatUnits(intents.expectedOut, intents.outDecimals, 6)} ${escapeTelegramHtml(intents.outSymbol)}`;
+  return {
+    text: telegramQuoteMessage('BUY', [
+      `💸 <b>You pay</b>  ${pay}`,
+      ...(intents.continuation
+        ? [
+          `🌉 <b>Step 1</b>  ${escapeTelegramHtml(trade.displaySymbol)} → ≈ ${out} on NEAR · NEAR Intents`,
+          `🎯 <b>Step 2</b>  NEAR → ${escapeTelegramHtml(intents.continuation.targetSymbol)} · Ref Finance (you confirm it next)`,
+        ]
+        : [`🎯 <b>You get</b>  ≈ ${out} on NEAR · NEAR Intents`]),
+      `🎚 <b>Slippage</b>  ${Number((((intents.continuation?.slippage) ?? 0.01) * 100).toFixed(2))}%`,
+      fee,
+    ]),
+    confirmLabel: intents.continuation ? '✅ Confirm step 1' : '✅ Confirm and submit',
+  };
+}
+
+async function sendTelegramPreparedTrade(chatId: number, trade: PendingTrade, env: Env, panelId?: number): Promise<void> {
+  const { text, confirmLabel } = telegramIncomingQuote(trade);
+  const keyboard = telegramTradeConfirmationKeyboard(trade.id, confirmLabel);
+  if (panelId) await sendTelegramPanel(chatId, panelId, text, env, keyboard);
+  else await sendTelegramMessage(chatId, text, env, keyboard);
+}
+
 async function handleTelegramNearTrade(chatId: number, data: string, profile: TelegramProfile, env: Env): Promise<void> {
   const buyMatch = data.match(/^trade:buy:(\d{1,12}(?:\.\d{1,24})?)$/);
   const sellMatch = data.match(/^trade:sell:(25|50|100)$/);
@@ -1799,7 +1835,21 @@ async function handleTelegramNearTrade(chatId: number, data: string, profile: Te
   const tokenId = profile.lastTokenAddress!;
   const rpc = nearRpcOptions(env);
   const slippage = (profile.slippagePercent ?? 1) / 100;
+  const fundingChainId = profile.fundingChainId ?? NEAR_CHAIN_ID;
   try {
+    if (buyMatch && fundingChainId !== NEAR_CHAIN_ID) {
+      // Paid from another chain: NEAR Intents into NEAR (LI.FI first for chains Intents can't reach).
+      const funding = getChainById(fundingChainId);
+      const wallet = await getCustodialWallet(userId, env);
+      if (!funding || !wallet) throw new Error('Pick a funding chain in /settings.');
+      const trade = await prepareIncomingNearBuy({
+        userId, wallet, fundingChainId: funding.id,
+        amountUnits: decimalToUnits(buyMatch[1], funding.type === 'SVM' ? 9 : 18),
+        tokenAddress: tokenId, slippage,
+      }, env);
+      await sendTelegramPreparedTrade(chatId, trade, env);
+      return;
+    }
     const metadata = await getTokenMetadata(tokenId, rpc);
     const token = { id: tokenId, symbol: metadata.symbol, decimals: metadata.decimals };
     if (buyMatch) {
@@ -1849,7 +1899,7 @@ async function handleTelegramNearSwapCommand(chatId: number, args: string[], env
     return;
   }
   if (!await getCustodialWallet(userId, env).catch(() => null)) {
-    await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'Trading needs a Hopr wallet'), 'Create one first — it includes a NEAR account.'), env, telegramWalletLinkKeyboard());
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'Trading needs a Hopr wallet'), 'Create one first — it includes a NEAR account.'), env, telegramWalletSetupKeyboard());
     return;
   }
   const rpc = nearRpcOptions(env);
@@ -1985,8 +2035,8 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
       if (!profile?.lastTokenAddress) return sendTelegramPanel(chatId, panelId, 'Paste the token address again to refresh it.', env);
       address = profile.lastTokenAddress;
     }
-    telegramDetectionMemoryCache.delete(`detect:${address}`);
-    return lookupTelegramToken(chatId, address, env, panelId);
+    // Refresh means live numbers: skip both the isolate and the KV cache.
+    return lookupTelegramToken(chatId, address, env, panelId, undefined, undefined, true);
   }
   if (data.startsWith('trade:')) {
     return handleTelegramTradeAction(chatId, data, env, panelId);
@@ -2031,42 +2081,21 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
       tgMessage(
         tgTitle('📥', 'Import a wallet you own'),
         'Send one of these as a direct message (not in a group):',
-        tgCard(['/importkey evm &lt;private-key&gt;', '/importkey solana &lt;base58-secret-key&gt;']),
-        tgFootnote('🧹 Delete your message right after sending it.'),
+        tgCard(['/importkey evm &lt;private-key&gt;', '/importkey solana &lt;base58-secret-key&gt;', '/importkey near &lt;ed25519:key&gt; [account.near]']),
+        tgFootnote(`🧹 Delete your message right after sending it. Up to ${MAX_WALLETS_PER_USER} wallets; the Mini App Wallet Vault imports too.`),
       ),
       env,
       telegramActionKeyboard(env),
     );
   }
-  if (data === 'wallet:link') {
-    if (!env.TELEGRAM_STATE && !env.DB) {
-      return sendTelegramPanel(chatId, panelId, TELEGRAM_PERSISTENCE_REQUIRED, env);
-    }
-    return sendTelegramPanel(
-      chatId,
-      panelId,
-      tgMessage(tgTitle('🔗', 'Add a wallet', 'Choose which public wallet address to link, or set up a trading wallet.'), tgFootnote('Never send a private key or seed phrase to link a wallet.')),
-      env,
-      telegramWalletLinkKeyboard(),
-    );
-  }
-
-  const walletNetworkMatch = data.match(/^wallet:set:(evm|solana|near)$/);
-  if (walletNetworkMatch) {
-    if (!env.TELEGRAM_STATE && !env.DB) {
-      return sendTelegramMessage(chatId, TELEGRAM_PERSISTENCE_REQUIRED, env);
-    }
-    const network = walletNetworkMatch[1] as TelegramWalletNetwork;
-    const placeholders: Record<TelegramWalletNetwork, string> = {
-      evm: 'Public EVM address only',
-      solana: 'Public Solana address only',
-      near: 'e.g. alice.near',
-    };
-    // Force-reply prompts must be new messages; their plain text is matched on reply.
-    return sendTelegramMessage(chatId, TELEGRAM_WALLET_PROMPTS[network], env, {
-      force_reply: true,
-      input_field_placeholder: placeholders[network],
-    }, null);
+  const payMatch = data.match(/^token:pay:(\d+)$/);
+  if (payMatch) {
+    const chain = TELEGRAM_CHAINS.find((item) => item.id === Number(payMatch[1]));
+    const profile = await readTelegramProfile(chatId, env);
+    if (!chain || !profile) return sendTelegramPanel(chatId, panelId, TELEGRAM_PERSISTENCE_REQUIRED, env);
+    if (!profile.lastTokenAddress) return sendTelegramPanel(chatId, panelId, 'Paste the token address again to trade it.', env);
+    await writeTelegramProfile(chatId, { ...profile, fundingChainId: chain.id }, env);
+    return lookupTelegramToken(chatId, profile.lastTokenAddress, env, panelId);
   }
 
   const chainMatch = data.match(/^settings:chain:(\d+)$/);
@@ -2337,15 +2366,24 @@ async function handleTelegramSession(request: Request, env: Env, corsHeaders: Re
   const auth = await getTelegramRequestUser(request, env);
   if (!auth) return Response.json({ error: 'Telegram authentication expired or could not be verified.' }, { status: 401, headers: corsHeaders });
   const { user } = auth;
+  const userId = String(user.id);
 
-  const wallet = await getCustodialWallet(String(user.id), env);
-  // Same custodial account the bot uses, so the dashboard and Telegram always show identical wallets.
-  const nearAddress = wallet ? wallet.nearAddress ?? await ensureNearWallet(String(user.id), env).catch(() => null) : null;
+  // Same custodial accounts the bot uses, so the Mini App and Telegram always show identical wallets.
+  // Opening the Mini App before /start still lands on a ready wallet.
+  let wallet = await getCustodialWallet(userId, env).catch(() => null);
+  if (!wallet && env.DB && env.ENCRYPTION_KEY) wallet = await createCustodialWallet(userId, env).catch(() => null);
+  const nearAddress = wallet ? wallet.nearAddress ?? await ensureNearWallet(userId, env).catch(() => null) : null;
+  const wallets = env.DB
+    ? await env.DB.prepare(`SELECT * FROM wallet_accounts WHERE user_id = ?1 ORDER BY is_active DESC, created_at ASC`).bind(userId)
+      .all<WalletAccountRow>().then((rows) => (rows.results ?? []).map(publicWallet)).catch(() => [])
+    : [];
   return Response.json({
     user: { id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username },
     wallet: wallet ? { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress, nearAddress } : null,
+    wallets,
+    maxWallets: MAX_WALLETS_PER_USER,
     walletSource: wallet ? 'telegram' : null,
-  }, { headers: corsHeaders });
+  }, { headers: { ...corsHeaders, 'Cache-Control': 'no-store' } });
 }
 
 async function handleTelegramWalletCreate(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
@@ -2361,6 +2399,7 @@ async function handleTelegramWalletCreate(request: Request, env: Env, corsHeader
     const wallet = await storeWalletAccount(String(auth.user.id), generated, body.label || '', 'generated', env);
     return Response.json({ wallet: publicWallet(wallet), created: true }, { headers: corsHeaders });
   } catch (error) {
+    if (error instanceof WalletLimitError) return Response.json({ error: error.message }, { status: 409, headers: corsHeaders });
     console.error('Telegram wallet creation failed', error);
     return Response.json({ error: 'Wallet storage is unavailable. Apply migrations/0003_multi_wallets.sql to the production D1 database, then try again.' }, { status: 503, headers: corsHeaders });
   }
@@ -2386,6 +2425,12 @@ async function getTelegramRequestUser(request: Request, env: Env): Promise<{ use
   return user ? { user, body } : null;
 }
 
+class WalletLimitError extends Error {
+  constructor() {
+    super(`You already have ${MAX_WALLETS_PER_USER} wallets, the maximum. Delete one you no longer use to add another.`);
+  }
+}
+
 async function storeWalletAccount(
   userId: string,
   wallet: { evmAddress: string | null; evmPrivateKey: string | null; solanaAddress: string | null; solanaPrivateKey: string | null; nearAddress?: string | null; nearPrivateKey?: string | null },
@@ -2394,6 +2439,8 @@ async function storeWalletAccount(
   env: Env,
 ): Promise<WalletAccountRow> {
   if (!env.DB || !env.ENCRYPTION_KEY) throw new Error('Wallet storage is not configured.');
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS total FROM wallet_accounts WHERE user_id = ?1`).bind(userId).first<{ total: number }>();
+  if ((count?.total ?? 0) >= MAX_WALLETS_PER_USER) throw new WalletLimitError();
   const id = crypto.randomUUID();
   const encrypt = async (key: string | null | undefined) => key ? packEncryptedSecret(await encryptPrivateKey(key, env.ENCRYPTION_KEY!)) : null;
   const evmEncrypted = await encrypt(wallet.evmPrivateKey);
@@ -2537,22 +2584,33 @@ function dexActivity(pair: { priceChange?: { m5?: number; h1?: number; h6?: numb
   };
 }
 
+/** Market data goes stale fast: keep detections briefly (KV's minimum TTL is 60s). */
+const DETECTION_MEMORY_TTL_MS = 20_000;
+const DETECTION_KV_TTL_SECONDS = 60;
+/** Upstream market APIs get this long before a scan moves on without them. */
+const MARKET_FETCH_TIMEOUT_MS = 4_000;
+
+function fetchMarket(url: string): Promise<Response> {
+  return fetch(url, { signal: AbortSignal.timeout(MARKET_FETCH_TIMEOUT_MS) });
+}
+
 async function handleChainDetection(
   address: string,
   env: Env,
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  options: { fresh?: boolean } = {},
 ): Promise<Response> {
-  // Check cache first
+  // Check cache first (a refresh skips it and rewrites it with live data)
   const cacheKey = `detect:${address}`;
-  const memoryCached = telegramDetectionMemoryCache.get(cacheKey);
+  const memoryCached = options.fresh ? undefined : telegramDetectionMemoryCache.get(cacheKey);
   if (memoryCached && memoryCached.expiresAt > Date.now()) {
     return Response.json(memoryCached.value, { headers: { ...corsHeaders, 'X-Cache': 'MEMORY' } });
   }
   if (memoryCached) telegramDetectionMemoryCache.delete(cacheKey);
-  const cached = await env.CACHE?.get(cacheKey);
+  const cached = options.fresh ? null : await env.CACHE?.get(cacheKey);
   if (cached) {
     const value = JSON.parse(cached) as Record<string, unknown>;
-    telegramDetectionMemoryCache.set(cacheKey, { value, expiresAt: Date.now() + 300_000 });
+    telegramDetectionMemoryCache.set(cacheKey, { value, expiresAt: Date.now() + DETECTION_MEMORY_TTL_MS });
     return Response.json(value, { headers: { ...corsHeaders, 'X-Cache': 'HIT' } });
   }
 
@@ -2567,8 +2625,8 @@ async function handleChainDetection(
     result = await detectNearToken(nearId, env);
   } else if (isBase58) {
     // Solana token detection via DexScreener
-    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    const data = await response.json() as { pairs?: DexScreenerApiPair[] };
+    const response = await fetchMarket(`https://api.dexscreener.com/latest/dex/tokens/${address}`).catch(() => null);
+    const data = (await response?.json().catch(() => null) ?? {}) as { pairs?: DexScreenerApiPair[] };
     
     if (data.pairs && data.pairs.length > 0) {
       const pair = data.pairs.find((item: { baseToken?: { address?: string }; quoteToken?: { address?: string } }) => item.baseToken?.address === address || item.quoteToken?.address === address) ?? data.pairs[0];
@@ -2592,8 +2650,8 @@ async function handleChainDetection(
     }
   } else if (isEvm) {
     // EVM token detection via DexScreener
-    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    const data = await response.json() as { pairs?: DexScreenerApiPair[] };
+    const response = await fetchMarket(`https://api.dexscreener.com/latest/dex/tokens/${address}`).catch(() => null);
+    const data = (await response?.json().catch(() => null) ?? {}) as { pairs?: DexScreenerApiPair[] };
     
     if (data.pairs && data.pairs.length > 0) {
       const pair = data.pairs.find((item: { chainId?: string; baseToken?: { address?: string }; quoteToken?: { address?: string } }) => item.chainId === 'robinhood' && (item.baseToken?.address?.toLowerCase() === address.toLowerCase() || item.quoteToken?.address?.toLowerCase() === address.toLowerCase()))
@@ -2673,10 +2731,10 @@ async function handleChainDetection(
     return Response.json({ error: 'Token not found' }, { status: 404, headers: corsHeaders });
   }
 
-  // Cache for 5 minutes. Do not add KV write latency to the token response.
-  telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + 300_000 });
+  // Short-lived cache: repeat scans are instant while prices stay live. Do not add KV write latency to the response.
+  telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + DETECTION_MEMORY_TTL_MS });
   if (env.CACHE) {
-    void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 300 }).catch((error: unknown) => {
+    void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: DETECTION_KV_TTL_SECONDS }).catch((error: unknown) => {
       console.error('Token detection cache write failed', error);
     });
   }
@@ -2692,7 +2750,7 @@ async function handleChainDetection(
 async function detectNearToken(tokenId: string, env: Env): Promise<Record<string, unknown> | undefined> {
   type Pair = { chainId?: string; dexId?: string; pairAddress?: string; baseToken?: { address?: string; name?: string; symbol?: string }; quoteToken?: { address?: string; name?: string; symbol?: string }; priceUsd?: string; liquidity?: { usd?: number }; fdv?: number; priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number }; volume?: { h24?: number }; txns?: { h24?: { buys?: number; sells?: number } }; pairCreatedAt?: number };
   const [pairs, metadata] = await Promise.all([
-    fetch(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(tokenId)}`)
+    fetchMarket(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(tokenId)}`)
       .then(async (response) => response.ok ? ((await response.json()) as { pairs?: Pair[] }).pairs ?? [] : [])
       .catch(() => [] as Pair[]),
     getTokenMetadata(tokenId, nearRpcOptions(env)).catch(() => null),
@@ -2732,7 +2790,7 @@ async function detectNearToken(tokenId: string, env: Env): Promise<Record<string
 
 async function fetchGeckoLaunchpadPool(address: string, network: string): Promise<{ name: string; symbol: string; source: string; launchpad?: string; priceUsd: number; liquidity: number; volume24h: number; fdv: number; pairAddress: string; pairedAsset?: { symbol: string } } | null> {
   try {
-    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
+    const response = await fetchMarket(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
     if (!response.ok) return null;
     const payload = await response.json() as { data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }> };
     const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
@@ -2875,15 +2933,14 @@ async function handleTradeExecute(request: Request, env: Env, corsHeaders: Recor
       solana: SUPPORTED_CHAINS.find((chain) => chain.key === 'sol')!.rpcUrl,
     }, env);
     await recordTelegramReferral(String(auth.user.id), result, env);
-    const explorer = result.fromChainId !== undefined ? TELEGRAM_EXPLORERS[result.fromChainId] : undefined;
+    // The transaction lives on the chain that paid (NEAR for Ref swaps and NEAR-funded intents).
+    const explorer = TELEGRAM_EXPLORERS[result.venue === 'ref' ? NEAR_CHAIN_ID : result.fromChainId ?? NEAR_CHAIN_ID];
     return Response.json({
       txHash: result.txHash,
       confirmed: result.confirmed ?? true,
       venue: result.venue,
       continuationId: result.continuationId,
-      explorerUrl: result.venue === 'ref' || result.venue === 'intents'
-        ? `${NEAR_CHAIN.explorerTxUrl}${result.txHash}`
-        : explorer ? `${explorer}${result.txHash}` : undefined,
+      explorerUrl: explorer ? `${explorer}${result.txHash}` : undefined,
     }, { headers: corsHeaders });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Trade failed', code: 'TRADE_FAILED' }, { status: 400, headers: corsHeaders });
@@ -3114,9 +3171,13 @@ async function nativeBalanceUnits(chainId: number, address: string): Promise<big
 }
 
 function telegramIntentsSentMessage(result: ConfirmResult): string {
+  const origin = result.fromChainId !== undefined && result.fromChainId !== NEAR_CHAIN_ID
+    ? TELEGRAM_CHAINS.find((chain) => chain.id === result.fromChainId)
+    : undefined;
+  const bridge = result.venue === 'lifi' ? 'LI.FI' : 'NEAR Intents';
   return result.continuationId
     ? tgMessage(
-      tgTitle('🌉', 'Step 1 of 2 sent', 'NEAR is on its way through NEAR Intents.'),
+      tgTitle('🌉', `Step 1 of ${result.venue === 'lifi' ? 3 : 2} sent`, `${origin ? `${escapeTelegramHtml(origin.symbol)} from ${escapeTelegramHtml(origin.name)}` : 'NEAR'} is on its way through ${bridge}.`),
       tgCard([
         `Transaction: <code>${escapeTelegramHtml(result.txHash)}</code>`,
         'Usually lands in 1–3 minutes',
@@ -3141,13 +3202,18 @@ async function continueTelegramNearBuy(chatId: number, continuationId: string, e
     if (step.status === 'pending') {
       const time = new Date().toISOString().slice(11, 19);
       await sendTelegramPanel(chatId, panelId, tgMessage(
-        tgTitle('⏳', 'Still bridging…', `NEAR Intents status: ${escapeTelegramHtml(step.detail)}`),
+        tgTitle('⏳', 'Still bridging…', `Bridge status: ${escapeTelegramHtml(step.detail)}`),
         tgFootnote(`Checked ${time} UTC. Tap Continue again in a minute.`),
-      ), env, { inline_keyboard: [[{ text: '▶️ Continue — step 2', callback_data: `trade:cont:${continuationId}` }], [{ text: '◀️ Menu', callback_data: 'menu' }]] });
+      ), env, { inline_keyboard: [[{ text: '▶️ Continue — next step', callback_data: `trade:cont:${continuationId}` }], [{ text: '◀️ Menu', callback_data: 'menu' }]] });
       return;
     }
     if (step.status === 'failed') {
-      await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⚠️', 'Step 2 unavailable'), escapeTelegramHtml(step.detail)), env, telegramActionKeyboard(env));
+      await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⚠️', 'Next step unavailable'), escapeTelegramHtml(step.detail)), env, telegramActionKeyboard(env));
+      return;
+    }
+    if (step.trade.venue === 'ref' || step.trade.venue === 'intents') {
+      // Into a NEAR token: a Ref swap of the NEAR that arrived, or (after a LI.FI hop) NEAR Intents from the hub.
+      await sendTelegramPreparedTrade(chatId, step.trade, env);
       return;
     }
     // The coin landed on the hub chain (the target chain, or Base when NEAR Intents couldn't reach it).
@@ -3224,6 +3290,86 @@ function lifiSummary(trade: PendingTrade, pay: string, receiveSymbol: string, de
   };
 }
 
+/** Mini App summary for trades that land in a NEAR token (Ref swaps, NEAR Intents in, LI.FI hub hops). */
+function nearBoundSummary(trade: PendingTrade, env: Env): MiniAppTradeSummary {
+  const base = { tradeId: trade.id, side: trade.kind, expiresInSeconds: 90 };
+  if (trade.venue === 'ref') {
+    const swap = trade.nearSwap!;
+    const fee = BigInt(swap.fee?.amount ?? '0');
+    return {
+      ...base,
+      pay: `${formatUnits(BigInt(swap.quote.amountIn) + fee, swap.tokenInDecimals, 6)} ${swap.tokenInSymbol}`,
+      receive: `≈ ${formatUnits(swap.quote.expectedOut, swap.tokenOutDecimals, 6)} ${swap.tokenOutSymbol}`,
+      minimum: `${formatUnits(swap.quote.minOut, swap.tokenOutDecimals, 6)} ${swap.tokenOutSymbol}`,
+      route: `Ref Finance · ${swap.quote.hops} hop${swap.quote.hops === 1 ? '' : 's'}`,
+      steps: 1,
+      feeNote: fee > 0n ? '0.5% Hopr fee included' : trade.sourceContinuationId ? 'Hopr fee already paid in step 1' : 'No platform fee',
+    };
+  }
+  const chainName = getChainById(trade.fundingChainId)?.name ?? 'your chain';
+  const pay = `${formatUnits(trade.displayAmount, nativeDecimalsOf(trade.fundingChainId), 6)} ${trade.displaySymbol}`;
+  const feeNote = trade.feeBps
+    ? `0.5% platform fee · charged once${trade.venue === 'intents' && !env.ONECLICK_JWT ? ' + 0.25% 1Click routing fee' : ''}`
+    : 'Hopr fee already paid in step 1';
+  if (trade.hubContinuation) {
+    return {
+      ...base, pay, feeNote, steps: 3,
+      receive: `≈ ${formatUnits(trade.quote.estimate.toAmount, 18, 6)} ETH on Base → ${trade.hubContinuation.targetSymbol}`,
+      route: `${chainName} → Base · LI.FI, then NEAR Intents + Ref Finance`,
+    };
+  }
+  const intents = trade.intents!;
+  const out = `${formatUnits(intents.expectedOut, intents.outDecimals, 6)} ${intents.outSymbol}`;
+  return {
+    ...base, pay, feeNote,
+    receive: intents.continuation ? `≈ ${out} → ${intents.continuation.targetSymbol}` : `≈ ${out}`,
+    route: intents.continuation ? `${chainName} → NEAR · NEAR Intents, then Ref Finance` : `${chainName} → NEAR · NEAR Intents`,
+    steps: intents.continuation ? 2 : 1,
+  };
+}
+
+/** Mini App quote for a NEAR (NEP-141) token, paid from NEAR or any other supported chain. */
+async function prepareMiniAppNearTrade(userId: string, wallet: NonNullable<Awaited<ReturnType<typeof getCustodialWallet>>>, body: { side?: string; tokenAddress?: string; fundingChainId?: number; amount?: string; percent?: number }, slippage: number, env: Env): Promise<MiniAppTradeSummary> {
+  const tokenId = typeof body.tokenAddress === 'string' ? body.tokenAddress.trim().toLowerCase() : '';
+  if (!isNearAccountId(tokenId)) throw new Error('Unsupported NEAR token.');
+  const rpc = nearRpcOptions(env);
+  if (body.side === 'buy') {
+    const amount = String(body.amount ?? '');
+    if (!/^\d{1,12}(\.\d{1,18})?$/.test(amount) || !(Number(amount) > 0)) throw new Error('Enter a valid amount.');
+    const fundingChainId = Number(body.fundingChainId) || NEAR_CHAIN_ID;
+    if (fundingChainId !== NEAR_CHAIN_ID) {
+      const funding = getChainById(fundingChainId);
+      if (!funding) throw new Error('Unsupported funding chain.');
+      const trade = await prepareIncomingNearBuy({
+        userId, wallet, fundingChainId, amountUnits: decimalToUnits(amount, funding.type === 'SVM' ? 9 : 18), tokenAddress: tokenId, slippage,
+      }, env);
+      return nearBoundSummary(trade, env);
+    }
+    const metadata = await getTokenMetadata(tokenId, rpc);
+    const trade = await prepareNearSwap({
+      userId, kind: 'buy', tokenIn: NEAR_TOKEN, tokenOut: { id: tokenId, symbol: metadata.symbol, decimals: metadata.decimals },
+      amountInUnits: parseUnits(amount, NEAR_DECIMALS).toString(), slippage,
+    }, env);
+    return nearBoundSummary(trade, env);
+  }
+  if (body.side === 'sell') {
+    const percent = Number(body.percent);
+    if (![25, 50, 100].includes(percent)) throw new Error('Sell 25%, 50% or 100%.');
+    const accountId = await ensureNearWallet(userId, env);
+    const [metadata, held] = await Promise.all([
+      getTokenMetadata(tokenId, rpc),
+      viewFunction<string>(tokenId, 'ft_balance_of', { account_id: accountId }, rpc).catch(() => '0'),
+    ]);
+    const amount = (BigInt(held) * BigInt(percent)) / 100n;
+    if (amount === 0n) throw new Error(`Your NEAR wallet holds no ${metadata.symbol}.`);
+    const trade = await prepareNearSwap({
+      userId, kind: 'sell', tokenIn: { id: tokenId, symbol: metadata.symbol, decimals: metadata.decimals }, tokenOut: NEAR_TOKEN, amountInUnits: amount.toString(), slippage,
+    }, env);
+    return nearBoundSummary(trade, env);
+  }
+  throw new Error('side must be buy or sell.');
+}
+
 /**
  * Quote a Mini App trade with the user's Hopr (bot) wallet — the same flow
  * as the bot's buttons, confirmed later via /api/trade/execute.
@@ -3237,12 +3383,15 @@ async function handleTelegramTradePrepare(request: Request, env: Env, corsHeader
     if (!env.ENCRYPTION_KEY || !env.TELEGRAM_STATE) throw new Error('Trading is not configured on this bot.');
     const wallet = await getCustodialWallet(userId, env);
     if (!wallet) throw new Error('Create your Hopr wallet in the bot first.');
+    const slippage = Math.min(0.2, Math.max(0.001, Number(body.slippage) || 0.01));
+    if (Number(body.tokenChainId) === NEAR_CHAIN_ID) {
+      return Response.json(await prepareMiniAppNearTrade(userId, wallet, body, slippage, env), { headers: corsHeaders });
+    }
     const tokenChain = getChainById(Number(body.tokenChainId));
     const tokenAddress = typeof body.tokenAddress === 'string' ? body.tokenAddress.trim() : '';
     if (!tokenChain || !tokenAddress) throw new Error('Unsupported token.');
     const symbol = (body.tokenSymbol ?? 'token').slice(0, 20);
     const tokenDecimals = Number.isInteger(body.tokenDecimals) ? Number(body.tokenDecimals) : 18;
-    const slippage = Math.min(0.2, Math.max(0.001, Number(body.slippage) || 0.01));
 
     if (body.side === 'buy') {
       const amount = String(body.amount ?? '');
@@ -3312,6 +3461,9 @@ async function handleTelegramTradeContinue(request: Request, env: Env, corsHeade
     if (!wallet) throw new Error('Wallet not found.');
     const step = await continueNearFundedBuy(userId, id, wallet, nativeBalanceUnits, env);
     if (step.status !== 'ready') return Response.json(step, { headers: corsHeaders });
+    if (step.trade.venue === 'ref' || step.trade.venue === 'intents') {
+      return Response.json({ status: 'ready', ...nearBoundSummary(step.trade, env) }, { headers: corsHeaders });
+    }
     const chain = getChainById(step.continuation.hubChainId ?? step.continuation.targetChainId)!;
     const tokenDecimals = Number(auth.body.tokenDecimals) || 18;
     return Response.json({

@@ -14,7 +14,7 @@ import ChainLogo from './components/ChainLogo';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
-import { WalletProvider } from './context/WalletContext';
+import { OPEN_VAULT_EVENT, WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
 import { TELEGRAM_BOT_URL } from './services/api';
 
@@ -120,6 +120,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const [scanRequest, setScanRequest] = useState<ScanRequest | null>(null);
   const searchRef = useRef<HTMLElement>(null);
 
+  // The chain is known here (trending / pools / positions), so the scan skips chain detection.
   const scanFromRail = useCallback((address: string, chainId?: number) => {
     setScanRequest({ address, chainId, nonce: Date.now() });
     searchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -315,6 +316,14 @@ function AppContent() {
 
   const goHome = useCallback(() => navigate('dashboard'), [navigate]);
 
+  // Inside Telegram, any "connect a wallet" request opens the Wallet Vault (bot-synced wallets).
+  const inTelegram = Boolean(window.Telegram?.WebApp?.initData);
+  useEffect(() => {
+    const openVault = () => navigate('wallets');
+    window.addEventListener(OPEN_VAULT_EVENT, openVault);
+    return () => window.removeEventListener(OPEN_VAULT_EVENT, openVault);
+  }, [navigate]);
+
   const previewBlackHole = () => {
     setSplashRun((run) => run + 1);
     setPreloaderPhase('loading');
@@ -359,7 +368,7 @@ function AppContent() {
   return (
     <>
       {preloader}
-      <ConnectWalletModal />
+      {!inTelegram && <ConnectWalletModal />}
 
       <div className={`${dashboardClassName} relative min-h-screen text-white`}>
         <div className="app-backdrop" aria-hidden />

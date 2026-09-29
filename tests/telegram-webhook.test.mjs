@@ -79,7 +79,9 @@ test('help command lists working commands and shows navigation buttons', async (
   assert.equal(calls[0].url.endsWith('/sendMessage'), true);
   assert.equal(calls[0].body.chat_id, 321);
   assert.equal(calls[0].body.parse_mode, 'HTML');
-  assert.match(plain(calls[0].body.text), /setwallet <evm\|solana\|near>/);
+  assert.doesNotMatch(plain(calls[0].body.text), /setwallet|link a public/i);
+  assert.match(plain(calls[0].body.text), /create or import up to 10 wallets/);
+  assert.match(plain(calls[0].body.text), /Pay from any chain/);
   assert.match(plain(calls[0].body.text), /\/swap <amount> <from> <to>/);
   assert.match(plain(calls[0].body.text), /Confirm and submit button signs and submits/);
   assert.match(calls[0].body.text, /├ .*\n└ /, 'sections render as ├/└ trees');
@@ -95,7 +97,6 @@ test('help command lists working commands and shows navigation buttons', async (
     [{ text: '📡 Launch radar', callback_data: 'pools' }],
     [
       { text: '🎁 Refer & Earn', callback_data: 'referral' },
-      { text: '🔗 Link wallet', callback_data: 'wallet:link' },
       { text: '❓ Help', callback_data: 'help' },
     ],
   ]);
@@ -114,76 +115,35 @@ test('/pools and its inline filters use the shared feed, escape metadata and fit
   assert.match(callback.calls.at(-1).body.text, /Launch radar/);
 });
 
-test('private /setwallet stores an EVM address and confirms read-only use', async () => {
+test('/setwallet no longer links read-only wallets and points to create/import', async () => {
   const kv = createKv();
   const address = '0x1234567890abcdef1234567890abcdef12345678';
   const { calls } = await sendUpdate({ message: { chat: { id: 456, type: 'private' }, text: `/setwallet evm ${address}` } }, {
     extraEnv: { TELEGRAM_STATE: kv },
   });
-  assert.equal(JSON.parse(kv.values.get('telegram:456')).evmAddress, address);
-  assert.match(calls[0].body.text, /Only native balances are read/);
+  assert.equal(kv.values.size, 0);
+  assert.match(plain(calls[0].body.text), /Wallet linking was removed/);
+  assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[0].map((button) => button.callback_data), ['wallet:generate', 'wallet:import']);
 });
 
-test('Link wallet buttons prompt for a public address and save the private reply', async () => {
+test('old Link wallet buttons are no longer available', async () => {
+  for (const data of ['wallet:link', 'wallet:set:evm']) {
+    const { calls } = await sendUpdate({
+      callback_query: { id: 'link-old', data, message: { chat: { id: 812, type: 'private' } } },
+    }, { extraEnv: { TELEGRAM_STATE: createKv() } });
+    assert.deepEqual(calls.map((call) => call.url.split('/').at(-1)), ['answerCallbackQuery']);
+    assert.equal(calls[0].body.text, 'This button is no longer available.');
+  }
+});
+
+test('/wallet without a Hopr wallet offers create or import, never linking', async () => {
   const kv = createKv();
-  const extraEnv = { TELEGRAM_STATE: kv };
-  const chooseNetwork = await sendUpdate({
-    callback_query: { id: 'link-1', data: 'wallet:link', message: { chat: { id: 812, type: 'private' } } },
-  }, { extraEnv });
-  assert.deepEqual(chooseNetwork.calls.at(-1).body.reply_markup.inline_keyboard, [
-    [
-      { text: '🔗 Link EVM (read-only)', callback_data: 'wallet:set:evm' },
-      { text: '🔗 Link Solana (read-only)', callback_data: 'wallet:set:solana' },
-    ],
-    [{ text: '🔗 Link NEAR (read-only)', callback_data: 'wallet:set:near' }],
-    [{ text: '📦 Create trading wallet', callback_data: 'wallet:generate' }],
-    [{ text: '📥 Import private key', callback_data: 'wallet:import' }],
-    [{ text: '❓ Help', callback_data: 'help' }, { text: '◀️ Menu', callback_data: 'menu' }],
-  ]);
-
-  const prompt = await sendUpdate({
-    callback_query: { id: 'link-2', data: 'wallet:set:evm', message: { chat: { id: 812, type: 'private' } } },
-  }, { extraEnv });
-  assert.equal(prompt.calls.at(-1).body.reply_markup.force_reply, true);
-  assert.equal(prompt.calls.at(-1).body.reply_markup.input_field_placeholder, 'Public EVM address only');
-  assert.equal(prompt.calls.at(-1).body.parse_mode, undefined);
-
-  const address = '0x1234567890abcdef1234567890abcdef12345678';
-  const saved = await sendUpdate({
-    message: {
-      chat: { id: 812, type: 'private' },
-      text: address,
-      reply_to_message: { text: 'Reply to this message with a public EVM address only.', from: { is_bot: true } },
-    },
-  }, { extraEnv });
-  assert.equal(JSON.parse(kv.values.get('telegram:812')).evmAddress, address);
-  assert.match(saved.calls[0].body.text, /EVM public address linked/);
-});
-
-test('Link wallet explains that persistent setup is required when KV is absent', async () => {
-  const { calls } = await sendUpdate({
-    callback_query: { id: 'link-3', data: 'wallet:link', message: { chat: { id: 813, type: 'private' } } },
-  });
-  assert.match(calls.at(-1).body.text, /TELEGRAM_STATE/);
-});
-
-test('wallet command reads EVM and Solana native balances', async () => {
-  const kv = createKv();
-  await kv.put('telegram:456', JSON.stringify({
-    evmAddress: '0x1234567890abcdef1234567890abcdef12345678',
-    solanaAddress: '11111111111111111111111111111111',
-  }));
-  const { calls } = await sendUpdate({ message: { chat: { id: 456, type: 'private' }, text: '/wallet' } }, {
-    extraEnv: { TELEGRAM_STATE: kv },
-    externalFetch: async (url) => {
-      if (String(url).includes('solana.com')) return Response.json({ result: { value: 2500000000 } });
-      return Response.json({ result: '0x38d7ea4c68000' });
-    },
-  });
-  assert.match(calls.at(-1).body.text, /<b>Solana<\/b>: 2\.5 <code>SOL<\/code>/);
-  assert.match(calls.at(-1).body.text, /<b>Base<\/b>: 0\.001 <code>ETH<\/code>/);
-  assert.match(calls.at(-1).body.text, /<b>Arbitrum One<\/b>: 0\.001 <code>ETH<\/code>/);
-  assert.match(plain(calls.at(-1).body.text), /Linked wallet · read-only/);
+  await kv.put('telegram:456', JSON.stringify({ evmAddress: '0x1234567890abcdef1234567890abcdef12345678' }));
+  const { calls } = await sendUpdate({ message: { chat: { id: 456, type: 'private' }, text: '/wallet' } }, { extraEnv: { TELEGRAM_STATE: kv } });
+  assert.match(plain(calls.at(-1).body.text), /No wallet yet/);
+  assert.match(plain(calls.at(-1).body.text), /up to 10 wallets/);
+  assert.doesNotMatch(plain(calls.at(-1).body.text), /read-only|Link/);
+  assert.deepEqual(calls.at(-1).body.reply_markup.inline_keyboard[0].map((button) => button.callback_data), ['wallet:generate', 'wallet:import']);
 });
 
 test('/wallet <address> reads balances without requiring saved profile storage', async () => {
@@ -225,8 +185,9 @@ test('token address gets real market lookup details from DexScreener', async () 
     { text: '🟢 Buy 0.5 ETH', callback_data: 'trade:buy:0.5' },
     { text: '🟢 Buy 1.0 ETH', callback_data: 'trade:buy:1.0' },
   ]);
-  assert.deepEqual(keyboard[3].map((button) => button.text), ['✏️ Buy X', '⛓ Base', '🎚 Slip 1%']);
-  assert.equal(keyboard[4][1].url, 'https://basescan.org/token/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
+  assert.deepEqual(keyboard[3].map((button) => button.callback_data), ['token:pay:397', 'token:pay:1151111081099710', 'token:pay:4663']);
+  assert.deepEqual(keyboard[4].map((button) => button.text), ['✏️ Buy X', '⛓ Base', '🎚 Slip 1%']);
+  assert.equal(keyboard[5][1].url, 'https://basescan.org/token/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
 });
 
 test('dashboard-style trade callbacks require a stored token context before quoting', async () => {
@@ -238,12 +199,10 @@ test('dashboard-style trade callbacks require a stored token context before quot
 
 test('D1-backed Telegram profiles persist when KV is absent', async () => {
   const db = createD1();
-  const address = '0x1234567890abcdef1234567890abcdef12345678';
-  const { calls } = await sendUpdate({ message: { chat: { id: 900, type: 'private' }, text: `/setwallet evm ${address}` } }, {
+  await sendUpdate({ callback_query: { id: 'd1-chain', data: 'settings:chain:8453', message: { chat: { id: 900, type: 'private' } } } }, {
     extraEnv: { DB: db },
   });
-  assert.equal(db.rows.get(900).evm_address, address);
-  assert.match(calls[0].body.text, /EVM public address linked/);
+  assert.equal(db.rows.get(900).funding_chain_id, 8453);
 });
 
 test('website/API quote path forwards requests to LI.FI with the server-side key', async () => {
@@ -294,15 +253,6 @@ test('settings command explains persistence requirement when KV is not bound', a
   assert.match(calls[0].body.text, /TELEGRAM_STATE/);
 });
 
-test('rejects wallet linking in group chats to avoid exposing addresses', async () => {
-  const kv = createKv();
-  const { calls } = await sendUpdate({ message: { chat: { id: -42, type: 'group' }, text: '/setwallet evm 0x1234567890abcdef1234567890abcdef12345678' } }, {
-    extraEnv: { TELEGRAM_STATE: kv },
-  });
-  assert.match(calls[0].body.text, /only in a private chat/);
-  assert.equal(kv.values.size, 0);
-});
-
 test('blocks wallet balance queries in group chats', async () => {
   const { calls } = await sendUpdate({
     message: { chat: { id: -48, type: 'group' }, text: '/wallet 0x1234567890abcdef1234567890abcdef12345678' },
@@ -311,9 +261,9 @@ test('blocks wallet balance queries in group chats', async () => {
   assert.match(calls[0].body.text, /check wallet balances in a private chat/);
 });
 
-test('blocks the inline Link wallet button in group chats', async () => {
+test('blocks personal wallet buttons in group chats', async () => {
   const { calls } = await sendUpdate({
-    callback_query: { id: 'link-group', data: 'wallet:link', message: { chat: { id: -49, type: 'group' } } },
+    callback_query: { id: 'wallet-group', data: 'wallet:generate', message: { chat: { id: -49, type: 'group' } } },
   }, { extraEnv: { TELEGRAM_STATE: createKv() } });
   assert.deepEqual(calls.map((call) => call.url.split('/').at(-1)), ['answerCallbackQuery', 'sendMessage']);
   assert.match(calls.at(-1).body.text, /in a private chat/);

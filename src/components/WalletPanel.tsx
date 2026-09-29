@@ -19,11 +19,15 @@ export default function WalletPanel() {
   const [copied, setCopied] = useState<string | null>(null);
   const [walletMessage, setWalletMessage] = useState('');
 
+  // Inside Telegram the rows are the active Hopr wallet synced from the bot; on the web, browser wallets.
+  const hopr = wallet.isTelegram ? wallet.telegramWallet : null;
+  const asInfo = (address: string | null | undefined) => (address ? { address } : null);
   const connections = [
-    { vm: 'evm' as const, label: 'EVM', logo: 'base', info: wallet.evm },
-    { vm: 'svm' as const, label: 'Solana', logo: 'sol', info: wallet.svm },
-    { vm: 'near' as const, label: 'NEAR', logo: 'near', info: wallet.near },
+    { vm: 'evm' as const, label: 'EVM', logo: 'base', info: hopr ? asInfo(hopr.evmAddress) : wallet.evm },
+    { vm: 'svm' as const, label: 'Solana', logo: 'sol', info: hopr ? asInfo(hopr.solanaAddress) : wallet.svm },
+    { vm: 'near' as const, label: 'NEAR', logo: 'near', info: hopr ? asInfo(hopr.nearAddress) : wallet.near },
   ];
+  const activeVault = wallet.telegramWallets.find((item) => item.isActive) ?? wallet.telegramWallets[0];
   const anyConnected = connections.some((item) => item.info) || Boolean(wallet.telegramWallet);
   const funded = rows.filter((row) => row.balance === null || row.balance > 0n || row.stale);
   const empty = rows.filter((row) => row.balance === 0n && !row.stale);
@@ -69,18 +73,24 @@ export default function WalletPanel() {
 
       {/* Connections */}
       <div className="px-4 py-3 border-b border-gray-800/30 space-y-1.5">
+        {wallet.isTelegram && (
+          <div className="flex items-center justify-between pb-1 text-[11px] text-gray-500">
+            <span>{activeVault ? <>Active: <span className="font-medium text-gray-300">{activeVault.label}</span> · synced with the bot</> : wallet.isTelegramSyncing ? 'Syncing your bot wallets…' : 'No Hopr wallet yet'}</span>
+            {wallet.telegramWallets.length > 0 && <span className="font-mono">{wallet.telegramWallets.length}/{wallet.maxWallets}</span>}
+          </div>
+        )}
         {connections.map(({ vm, label, logo, info }) => (
           <div key={vm} className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <ChainLogo chainKey={logo} size={16} />
               <span className="w-12 text-xs text-gray-500">{label}</span>
-              {info ? <span className="truncate font-mono text-xs text-gray-300" title={info.address}>{short(info.address)}</span> : <span className="text-xs text-gray-600">Not connected</span>}
+              {info ? <span className="truncate font-mono text-xs text-gray-300" title={info.address}>{short(info.address)}</span> : <span className="text-xs text-gray-600">{wallet.isTelegram ? 'Not in this wallet' : 'Not connected'}</span>}
             </div>
             {info ? (
               <button onClick={() => copy(info.address)} className="p-1 hover:bg-gray-800 rounded transition-colors" aria-label={`Copy ${label} address`}>
                 {copied === info.address ? <span className="text-xs text-green-400">✓</span> : <Copy className="w-3 h-3 text-gray-500" />}
               </button>
-            ) : (
+            ) : wallet.isTelegram ? null : (
               <button onClick={() => wallet.openWalletModal(vm)} className="pressable flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-brand-300 hover:bg-gray-800">
                 <Plus className="h-3 w-3" /> Connect
               </button>
@@ -135,7 +145,7 @@ export default function WalletPanel() {
       )}
 
       <div className="px-4 py-3 border-t border-gray-800/30 flex items-center justify-between gap-2">
-        <button onClick={() => wallet.openWalletModal()} className="pressable text-xs font-medium text-brand-300 hover:text-brand-200">Manage wallets</button>
+        <button onClick={() => wallet.openWalletModal()} className="pressable text-xs font-medium text-brand-300 hover:text-brand-200">{wallet.isTelegram ? 'Wallet Vault · create or import' : 'Manage wallets'}</button>
         {TELEGRAM_BOT_URL && (
           <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="pressable flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-white">
             <ExternalLink className="w-3 h-3" /> Telegram bot

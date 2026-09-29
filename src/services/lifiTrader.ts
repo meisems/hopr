@@ -14,7 +14,7 @@
 // standing authorization to keep trading unattended.
 
 import { ethers } from 'ethers';
-import { Connection, VersionedTransaction, PublicKey } from '@solana/web3.js';
+import { Connection, VersionedTransaction, PublicKey, TransactionMessage, SystemProgram, Keypair } from '@solana/web3.js';
 import { decryptPrivateKey, unpackEncryptedSecret, type EncryptedSecret } from './walletService';
 
 const LIFI_QUOTE_URL = 'https://li.quest/v1/quote';
@@ -116,6 +116,35 @@ interface ExecuteParams {
 export interface ExecuteResult {
   txHash: string;
   status: 'SUBMITTED';
+}
+
+/** Native-coin deposit for a confirmed 1Click quote; never accepts opaque calldata. */
+export async function executeNativeDeposit(params: {
+  chainType: 'EVM' | 'SVM'; chainId: number; rpcUrl: string;
+  encryptedKey: EncryptedSecret; encryptionSecret: string;
+  fromAddress: string; depositAddress: string; amount: bigint;
+}): Promise<ExecuteResult> {
+  if (params.amount <= 0n) throw new Error('Invalid deposit amount');
+  const secret = await decryptPrivateKey(params.encryptedKey, params.encryptionSecret);
+  if (params.chainType === 'EVM') {
+    const provider = new ethers.JsonRpcProvider(params.rpcUrl);
+    const signer = new ethers.Wallet(secret, provider);
+    if (signer.address.toLowerCase() !== params.fromAddress.toLowerCase()) throw new Error('Your active wallet changed. Request a new quote.');
+    if ((await provider.getNetwork()).chainId !== BigInt(params.chainId)) throw new Error('Funding RPC is on the wrong chain');
+    const tx = await signer.sendTransaction({ to: params.depositAddress, value: params.amount, data: '0x' });
+    return { txHash: tx.hash, status: 'SUBMITTED' };
+  }
+  const bs58 = await import('bs58');
+  const keypair = Keypair.fromSecretKey(bs58.default.decode(secret));
+  if (keypair.publicKey.toBase58() !== params.fromAddress) throw new Error('Your active wallet changed. Request a new quote.');
+  const connection = new Connection(params.rpcUrl, 'confirmed');
+  const { blockhash } = await connection.getLatestBlockhash('confirmed');
+  const message = new TransactionMessage({ payerKey: keypair.publicKey, recentBlockhash: blockhash,
+    instructions: [SystemProgram.transfer({ fromPubkey: keypair.publicKey, toPubkey: new PublicKey(params.depositAddress), lamports: params.amount })],
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  transaction.sign([keypair]);
+  return { txHash: await connection.sendTransaction(transaction, { skipPreflight: false }), status: 'SUBMITTED' };
 }
 
 /**

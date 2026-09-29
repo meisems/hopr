@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, ExternalLink, Loader2, Rocket, Shield, TrendingDown, Wallet, XCircle, Zap } from 'lucide-react';
-import type { DetectedToken } from '../services/chainDetector';
+import { NEAR_CHAIN_ID, type DetectedToken } from '../services/chainDetector';
 import { getNetwork, NETWORKS } from '../services/chains';
 import { apiUrl } from '../services/api';
 import { getAssetBalance } from '../services/router';
@@ -40,14 +40,14 @@ async function call<T>(path: string, body: Record<string, unknown>): Promise<T> 
 const haptic = (style: 'light' | 'medium') => window.Telegram?.WebApp?.HapticFeedback?.impactOccurred(style);
 
 /**
- * Trading panel inside the Telegram Mini App for EVM and Solana tokens,
+ * Trading panel inside the Telegram Mini App for EVM, Solana and NEAR tokens,
  * signed by the user's Hopr (bot) wallet — the same wallet, quotes and
- * confirm step as the bot's buttons. Paying with NEAR runs as two steps
- * (NEAR Intents, then a LI.FI swap) and continues automatically.
+ * confirm step as the bot's buttons. Any chain can pay for any token: cross-VM
+ * routes run as steps (NEAR Intents, LI.FI, Ref Finance) that continue automatically.
  */
-export default function HoprWalletTradeCard({ token, onUseExternal }: { token: DetectedToken; onUseExternal?: () => void }) {
+export default function HoprWalletTradeCard({ token }: { token: DetectedToken }) {
   const tokenNetwork = getNetwork(token.chainId);
-  // Every chain can pay, including NEAR (bridged through NEAR Intents first).
+  // Every supported chain can pay for every token.
   const fundingOptions = NETWORKS;
   const [mode, setMode] = useState<'buy' | 'sell'>('buy');
   const [fundingChainId, setFundingChainId] = useState(token.chainId);
@@ -155,7 +155,7 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
         if (step.status === 'ready' && step.tradeId) {
           haptic('light');
           showQuote(step as TradeSummary);
-          setMessage('Step 1 landed. Confirm step 2 to finish the buy.');
+          setMessage('The bridge landed. Confirm the next step to continue the buy.');
           return;
         }
         if (step.status === 'failed') {
@@ -163,7 +163,7 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
           setMessage(step.detail ?? 'Step 2 is unavailable.');
           return;
         }
-        setMessage(`Step 1 of 2 · bridging through NEAR Intents (${step.detail ?? 'in progress'})…`);
+        setMessage(`Bridging (${step.detail ?? 'in progress'})…`);
         if (attempt < 150) pollContinuation(continuationId, attempt + 1);
       } catch {
         if (attempt < 150) pollContinuation(continuationId, attempt + 1);
@@ -182,7 +182,7 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
       setSummary(null);
       if (result.continuationId) {
         setStatus('bridging');
-        setMessage('Step 1 of 2 sent · bridging through NEAR Intents (usually 1–3 min)…');
+        setMessage(result.venue === 'lifi' ? 'Sent · bridging through LI.FI (usually 1–3 min)…' : 'Sent · bridging through NEAR Intents (usually 1–3 min)…');
         pollContinuation(result.continuationId);
         return;
       }
@@ -215,7 +215,6 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
       <div className="space-y-4 p-4">
         <div className="flex items-center justify-between rounded-xl bg-gray-800/40 px-3 py-2.5 text-xs">
           <span className="flex items-center gap-1.5 text-gray-300"><Shield className="h-3.5 w-3.5 text-brand-300" /> Hopr wallet · same as the bot</span>
-          {onUseExternal && <button onClick={onUseExternal} className="font-medium text-brand-300 hover:text-brand-200">Use another wallet</button>}
         </div>
 
         {mode === 'buy' && (
@@ -262,7 +261,7 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
               {status === 'ready' && summary ? (
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span className="font-semibold uppercase tracking-wide text-gray-400">{summary.steps > 1 ? 'Quote · 2 steps' : 'Quote'}</span>
+                    <span className="font-semibold uppercase tracking-wide text-gray-400">{summary.steps > 1 ? `Quote · ${summary.steps} steps` : 'Quote'}</span>
                     <span className={`font-mono ${secondsLeft <= 15 ? 'text-amber-300' : ''}`}>{expired ? 'expired' : `${secondsLeft}s`}</span>
                   </div>
                   {message && <p className="text-xs text-brand-200">{message}</p>}
@@ -332,7 +331,9 @@ export default function HoprWalletTradeCard({ token, onUseExternal }: { token: D
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
           <Wallet className="mt-0.5 h-3 w-3 shrink-0" />
           {mode === 'sell'
-            ? `Sells your Hopr-wallet ${token.symbol} position back to the coin you bought it with.`
+            ? token.chainId === NEAR_CHAIN_ID
+              ? `Sells the ${token.symbol} in your Hopr NEAR wallet for NEAR on Ref Finance.`
+              : `Sells your Hopr-wallet ${token.symbol} position back to the coin you bought it with.`
             : `Buys ${token.symbol} on ${tokenNetwork?.name ?? 'its chain'}. Every trade shows a live quote first and only executes when you confirm. 0.5% Hopr fee.`}
         </p>
       </div>

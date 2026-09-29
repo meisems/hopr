@@ -111,7 +111,7 @@ npm run telegram:configure
 
 The setup script calls Telegram's Bot API to register the webhook for messages and button callbacks, publish the bot commands, set the bot's profile description and "What can this bot do?" intro, and set the menu button to open the Mini App when `TELEGRAM_MINI_APP_URL` is provided. The dashboard validates Telegram Mini App `initData` server-side and then returns only the public addresses of the user's encrypted custodial wallet. The normal wallet-sync response contains no private keys. It is safe to rerun after deploying. Keep the token and webhook secret out of source control and logs.
 
-For persistent per-chat addresses and preferences, create a Cloudflare KV namespace (for example, `npx wrangler kv namespace create TELEGRAM_STATE`) and bind it to the Worker as `TELEGRAM_STATE` (Workers & Pages → your Worker → Settings → Bindings → Add → KV namespace). If deployments are managed by `wrangler.toml`, also add the returned namespace ID under a `[[kv_namespaces]]` entry with `binding = "TELEGRAM_STATE"`. Linked public wallets are read-only. Custodial wallets and confirmed trading require D1 migrations and ENCRYPTION_KEY. Never send a seed phrase in chat. Without this binding, `/wallet <address>`, `/balances <address>`, and token lookup work immediately, while saved-wallet and preference commands explain that persistence has not been configured.
+For persistent per-chat addresses and preferences, create a Cloudflare KV namespace (for example, `npx wrangler kv namespace create TELEGRAM_STATE`) and bind it to the Worker as `TELEGRAM_STATE` (Workers & Pages → your Worker → Settings → Bindings → Add → KV namespace). If deployments are managed by `wrangler.toml`, also add the returned namespace ID under a `[[kv_namespaces]]` entry with `binding = "TELEGRAM_STATE"`. Custodial wallets and confirmed trading require D1 migrations and ENCRYPTION_KEY. Never send a seed phrase in chat. Without this binding, `/wallet <address>`, `/balances <address>`, and token lookup work immediately, while saved-wallet and preference commands explain that persistence has not been configured.
 
 ## 🎯 Features
 
@@ -142,6 +142,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - NEAR ↔ NEAR: Ref Finance
 - NEAR ↔ tokens NEAR Intents lists (native coins, USDC, some majors): one NEAR Intents deposit
 - NEAR ↔ any other token: planned as steps through a hub coin — NEAR → ETH on Base (Intents) → token (LI.FI), or token → wNEAR/ETH → … — each step sized from what the previous one actually delivered. On the web the user signs each step; in Telegram, step 2 is one **▶️ Continue** tap (the Mini App continues automatically)
+- In the bot and the Mini App, **every supported chain pays for every token**. NEAR tokens bought with SOL, ETH (Base, Arbitrum, Robinhood) or BNB go through NEAR Intents into NEAR, then Ref Finance; Arc (not on NEAR Intents) first hops to ETH on Base with LI.FI. Token cards have Pay-with buttons for NEAR, SOL and Robinhood ETH; any other chain is picked in /settings
 
 ### Referrals
 - Referrers earn **25% of HOPR fee revenue after the routing provider share**. Under default authenticated 1Click terms, a 0.5% trade fee splits into 0.25% for 1Click and 0.25% for HOPR. A referred trade pays 0.0625% of volume to the referrer, leaving HOPR 0.1875%. For a 1% bridge, the corresponding amounts are 0.5%, 0.5%, 0.125%, and 0.375%. Without a referral HOPR keeps its entire share
@@ -153,18 +154,17 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - Requires migrations `0005`, `0006`, and `0007_intents_fee_policy.sql`. Missing LI.FI splits or historical 1Click agreements stay uncredited pending reconciliation. Existing credited balances are not rewritten: reconcile older payouts against provider statements before paying them. Custom 1Click partner terms require updating the accounting policy before use
 
 ### Dual Wallet Architecture
-- EVM, Solana and NEAR public wallet addresses can be linked to the Telegram bot for read-only balance checks
+- Each Telegram user has up to **10 Hopr wallets** (generated or imported, EVM + Solana + NEAR), managed from 💳 Wallets in the bot or the Mini App's Wallet Vault. `/start` creates the first one, and the Mini App syncs every wallet from the bot on open and whenever it returns to the foreground. Read-only wallet linking was removed
 - Every custodial wallet also has a NEAR implicit account (64-hex id derived from an ed25519 key). Wallets created before NEAR support get one automatically the first time the user opens the bot or the Mini App; the key is AES-256-GCM encrypted like the others
 - Telegram trading uses encrypted custodial keys; never send private keys or seed phrases in a group
 - Telegram is the wallet-generation and wallet-management entry point; the website dashboard is the platform for browser-wallet trading
 
 ### Telegram Bot
 - `/start`, `/help` – Welcome and help, with inline navigation buttons
-- `/setwallet evm <address>`, `/setwallet solana <address>`, `/setwallet near <account.near>` – Store public addresses for read-only balance checks
 - `/swap <amount> <from> <to>` – NEAR swaps via Ref Finance (e.g. `/swap 1 near usdc`); shows a quote with minimum received and one-time storage fees, then signs only after **Confirm swap**
-- NEAR token addresses (`token.near` or 64-hex ids) open a market card with Buy 0.5 / 1 / 5 NEAR and Sell 25/50/100% (sized from the live token balance)
+- NEAR token addresses (`token.near` or 64-hex ids) open a market card with Buy 0.5 / 1 / 5 NEAR (or presets in SOL / ETH / … when paying from another chain) and Sell 25/50/100% (sized from the live token balance)
 - `/importkey near <ed25519:key> [account.near]` – import a NEAR key; named accounts are verified on-chain to hold it as a full-access key, and an existing funded NEAR wallet is never overwritten
-- `/wallet` and `/balances` – Read native balances on the supported chains; the Wallet button also offers Link EVM and Link Solana prompts
+- `/wallet` and `/balances` – Read native balances of your active Hopr wallet; the Wallet button creates or imports wallets (up to 10)
 - `/settings` – Set and view a per-chat funding-chain and slippage preference
 - Send a token address – Look up market information from DexScreener
 - Telegram's native command suggestions and menu button are configured by `npm run telegram:configure`

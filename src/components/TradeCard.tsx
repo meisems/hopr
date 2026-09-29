@@ -82,7 +82,6 @@ export default function TradeCard({ token }: TradeCardProps) {
   const [holdings, setHoldings] = useState<bigint | null>(null);
   const [balanceRetry, setBalanceRetry] = useState(false);
   const [routePreview, setRoutePreview] = useState<{ path: string; via: string; steps: number } | null>(null);
-  const [useExternalWallet, setUseExternalWallet] = useState(false);
 
   const tokenNetwork = token ? getNetwork(token.chainId) : undefined;
   // Default funding chain: Settings' choice, else the token's own chain (a same-chain swap is cheapest).
@@ -161,11 +160,12 @@ export default function TradeCard({ token }: TradeCardProps) {
   // Inside the Telegram Mini App, trades default to the user's Hopr (bot) wallet — Telegram's
   // browser has no wallet extensions. NEAR tokens use Ref Finance; others use LI.FI / NEAR Intents.
   const inTelegramApp = Boolean(window.Telegram?.WebApp?.initData);
-  if (token?.chainType === 'NEAR' && inTelegramApp && wallet.telegramWallet?.nearAddress && !wallet.near) {
-    return <NearTradeCard token={token} />;
+  // Every token — EVM, Solana or NEAR — trades from the synced Hopr wallet, paid from any chain.
+  if (token && inTelegramApp && wallet.telegramWallet) {
+    return <HoprWalletTradeCard token={token} />;
   }
-  if (token && token.chainType !== 'NEAR' && inTelegramApp && wallet.telegramWallet && !useExternalWallet) {
-    return <HoprWalletTradeCard token={token} onUseExternal={() => setUseExternalWallet(true)} />;
+  if (token?.chainType === 'NEAR' && inTelegramApp && !wallet.near) {
+    return <NearTradeCard token={token} />;
   }
 
   if (!token || !tokenNetwork) {

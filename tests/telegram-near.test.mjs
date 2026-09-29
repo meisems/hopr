@@ -167,7 +167,7 @@ test('NEAR token address opens a NEAR market card with NEAR-denominated quick bu
   assert.match(card, /Route  Ref Finance · paid in NEAR/);
   assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[1].map((button) => button.callback_data), ['trade:buy:0.5', 'trade:buy:1', 'trade:buy:5']);
   assert.equal(calls[0].body.reply_markup.inline_keyboard[1][1].text, '🟢 Buy 1 NEAR');
-  assert.equal(calls[0].body.reply_markup.inline_keyboard[4][1].url, 'https://nearblocks.io/token/token.v2.ref-finance.near');
+  assert.equal(calls[0].body.reply_markup.inline_keyboard[5][1].url, 'https://nearblocks.io/token/token.v2.ref-finance.near');
   for (const row of calls[0].body.reply_markup.inline_keyboard) {
     for (const button of row) if (button.callback_data) assert.ok(Buffer.byteLength(button.callback_data) <= 64, button.callback_data);
   }
@@ -283,17 +283,94 @@ test('/swap refuses when the wallet cannot cover amount, storage and gas', async
   assert.match(plain(calls.at(-1).body.text), /Not enough NEAR/);
 });
 
-test('/setwallet near links a read-only NEAR account and /wallet near reads it', async () => {
-  const kv = createKv();
-  const linked = await sendUpdate({ message: { chat: { id: 76, type: 'private' }, text: '/setwallet near Alice.near' } }, { ...baseEnv, TELEGRAM_STATE: kv });
-  assert.equal(JSON.parse(kv.values.get('telegram:76')).nearAddress, 'alice.near');
-  assert.match(plain(linked[0].body.text), /NEAR public address linked/);
-
+test('/wallet near <account> reads a NEAR account without linking it', async () => {
   const network = createNearNetwork();
   const balance = await sendUpdate({ message: { chat: { id: 76, type: 'private' }, text: '/wallet near alice.near' } }, { ...baseEnv }, network);
   const text = plain(balance[0].body.text);
   assert.match(text, /NEAR · alice\.near/);
   assert.match(text, /NEAR: 9\.9981 NEAR/); // 10 NEAR minus 182 bytes of storage staking
+});
+
+/** NEAR network plus 1Click, Solana / EVM balance RPCs and LI.FI, recording every request. */
+function createIncomingNetwork() {
+  const near = createNearNetwork();
+  const requests = [];
+  const fetchImpl = async (url, init = {}) => {
+    const href = String(url);
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    requests.push({ href, body });
+    if (href.endsWith('/v0/tokens')) {
+      return Response.json([
+        { assetId: 'nep141:sol.omft.near', blockchain: 'sol', symbol: 'SOL', decimals: 9 },
+        { assetId: 'nep141:hood.omft.near', blockchain: 'hood', symbol: 'ETH', decimals: 18 },
+        { assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 },
+        { assetId: `nep141:${WRAP_NEAR}`, blockchain: 'near', symbol: 'wNEAR', decimals: 24, contractAddress: WRAP_NEAR },
+      ]);
+    }
+    if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: body.dry ? undefined : 'f'.repeat(64), amountOut: '5000000000000000000000000', minAmountOut: '4900000000000000000000000' } });
+    if (body?.method === 'getBalance') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: 5_000_000_000 } });
+    if (body?.method === 'eth_getBalance') return Response.json({ jsonrpc: '2.0', id: body.id, result: `0x${(50n * 10n ** 18n).toString(16)}` });
+    if (href.includes('li.quest/v1/quote')) return Response.json({ id: 'hub', estimate: { fromAmount: '10000000', toAmount: '3000000000000000', toAmountMin: '2900000000000000' }, transactionRequest: { to: '0x1', data: '0x', value: '0x0' } });
+    return near.fetchImpl(url, init);
+  };
+  return { broadcasts: near.broadcasts, requests, fetchImpl };
+}
+
+test('NEAR token cards offer pay-with NEAR, SOL and Robinhood ETH, with presets in the chosen coin', async () => {
+  const { kv, env } = await custodialSetup();
+  await kv.put('telegram:80', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  const calls = await sendUpdate({ callback_query: { id: 'pay', data: 'token:pay:1151111081099710', message: { message_id: 3, chat: { id: 80, type: 'private' } } } }, env, createNearNetwork());
+  assert.equal(JSON.parse(kv.values.get('telegram:80')).fundingChainId, 1151111081099710);
+  const keyboard = calls.at(-1).body.reply_markup.inline_keyboard;
+  assert.deepEqual(keyboard[1].map((button) => button.text), ['🟢 Buy 0.05 SOL', '🟢 Buy 0.1 SOL', '🟢 Buy 0.5 SOL']);
+  assert.deepEqual(keyboard[3].map((button) => button.text), ['Ⓝ NEAR', '✅ ◎ SOL', '🟩 Robinhood ETH']);
+  assert.match(plain(calls.at(-1).body.text), /Funding  ◎ Solana \(SOL\) · cross-chain/);
+});
+
+test('buying a NEAR token with SOL quotes NEAR Intents into NEAR, then a Ref swap', async () => {
+  const { kv, env, wallet } = await custodialSetup();
+  const network = createIncomingNetwork();
+  await kv.put('telegram:81', JSON.stringify({ fundingChainId: 1151111081099710, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 81, type: 'private' } } } }, env, network);
+  const text = plain(calls.at(-1).body.text);
+  assert.match(text, /You pay  0.1 SOL on Solana/);
+  assert.match(text, /Step 1  SOL → ≈ 5 NEAR on NEAR · NEAR Intents/);
+  assert.match(text, /Step 2  NEAR → USDC · Ref Finance/);
+  assert.equal(calls.at(-1).body.reply_markup.inline_keyboard[0][0].text, '✅ Confirm step 1');
+  const quotes = network.requests.filter((request) => request.href.endsWith('/v0/quote')).map((request) => request.body);
+  assert.deepEqual(quotes.map((quote) => quote.dry), [true, false]);
+  assert.equal(quotes[1].originAsset, 'nep141:sol.omft.near');
+  assert.equal(quotes[1].destinationAsset, `nep141:${WRAP_NEAR}`);
+  assert.equal(quotes[1].amount, '100000000');
+  assert.equal(quotes[1].recipient, wallet.near.address);
+  assert.equal(quotes[1].refundTo, wallet.solana);
+  assert.equal(network.broadcasts.length, 0, 'nothing is signed before Confirm');
+});
+
+test('buying a NEAR token with Robinhood ETH routes through NEAR Intents from hood', async () => {
+  const { kv, env } = await custodialSetup();
+  const network = createIncomingNetwork();
+  await kv.put('telegram:82', JSON.stringify({ fundingChainId: 4663, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.01', message: { message_id: 5, chat: { id: 82, type: 'private' } } } }, env, network);
+  assert.match(plain(calls.at(-1).body.text), /You pay  0.01 ETH on Robinhood Chain/);
+  const quote = network.requests.filter((request) => request.href.endsWith('/v0/quote')).at(-1).body;
+  assert.equal(quote.originAsset, 'nep141:hood.omft.near');
+  assert.equal(quote.amount, '10000000000000000');
+});
+
+test('Arc, which NEAR Intents does not reach, buys NEAR tokens via a LI.FI hop to Base', async () => {
+  const { kv, env } = await custodialSetup();
+  const network = createIncomingNetwork();
+  await kv.put('telegram:83', JSON.stringify({ fundingChainId: 5042, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:10', message: { message_id: 5, chat: { id: 83, type: 'private' } } } }, env, network);
+  const text = plain(calls.at(-1).body.text);
+  assert.match(text, /You pay  10 USDC on Arc Chain/);
+  assert.match(text, /Step 1  USDC → ≈ 0.003 ETH on Base · LI.FI/);
+  assert.match(text, /ETH → USDC on NEAR · NEAR Intents \+ Ref Finance/);
+  const lifi = new URL(network.requests.find((request) => request.href.includes('li.quest/v1/quote')).href);
+  assert.equal(lifi.searchParams.get('fromChain'), '5042');
+  assert.equal(lifi.searchParams.get('toChain'), '8453');
+  assert.equal(lifi.searchParams.get('fee'), '0.005');
 });
 
 test('read-only NEAR quote API needs no wallet', async () => {

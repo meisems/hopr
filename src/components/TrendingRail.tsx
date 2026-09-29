@@ -14,7 +14,9 @@ const TRENDING_NETWORKS: Record<string, number> = {
 };
 
 const CACHE_KEY = 'hopr-trending-v1';
-const CACHE_TTL_MS = 2 * 60 * 1000;
+const CACHE_TTL_MS = 45 * 1000;
+/** The rail refreshes itself while the page is visible. */
+const AUTO_REFRESH_MS = 45 * 1000;
 
 export interface TrendingToken {
   address: string;
@@ -109,11 +111,11 @@ function TokenAvatar({ token }: { token: TrendingToken }) {
   );
 }
 
-function TrendingCard({ token, rank, onSelect, duplicate }: { token: TrendingToken; rank: number; onSelect: (address: string) => void; duplicate?: boolean }) {
+function TrendingCard({ token, rank, onSelect, duplicate }: { token: TrendingToken; rank: number; onSelect: (address: string, chainId?: number) => void; duplicate?: boolean }) {
   const up = token.change24h >= 0;
   return (
     <button
-      onClick={() => onSelect(token.address)}
+      onClick={() => onSelect(token.address, token.chainId)}
       title={`Scan ${token.symbol}`}
       tabIndex={duplicate ? -1 : undefined}
       className="trend-card pressable group relative flex w-[204px] shrink-0 items-center gap-2.5 rounded-xl border border-gray-800/60 bg-gray-900/60 px-3 py-2.5 text-left hover:border-brand-400/40"
@@ -139,7 +141,7 @@ function TrendingCard({ token, rank, onSelect, duplicate }: { token: TrendingTok
  * pools — organic activity, not paid boosts). Scrolls as a slow marquee that
  * pauses on hover/focus; clicking a token scans it on the dashboard.
  */
-export default function TrendingRail({ onSelect }: { onSelect: (address: string) => void }) {
+export default function TrendingRail({ onSelect }: { onSelect: (address: string, chainId?: number) => void }) {
   const [tokens, setTokens] = useState<TrendingToken[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -162,7 +164,11 @@ export default function TrendingRail({ onSelect }: { onSelect: (address: string)
   useEffect(() => {
     const controller = new AbortController();
     void load(false, controller.signal);
-    return () => controller.abort();
+    // Keep "what's moving" live without a manual refresh; pause while the tab is hidden.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(true, controller.signal);
+    }, AUTO_REFRESH_MS);
+    return () => { controller.abort(); window.clearInterval(timer); };
   }, [load]);
 
   if (failed && !tokens) return null;

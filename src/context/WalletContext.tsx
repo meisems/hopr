@@ -30,6 +30,23 @@ interface TelegramWallet {
   nearAddress: string | null;
 }
 
+/** One wallet in the user's Hopr vault (generated in the bot or the Mini App, or imported). */
+export interface VaultWallet {
+  id: string;
+  label: string;
+  source: string;
+  evmAddress: string | null;
+  solanaAddress: string | null;
+  nearAddress?: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+/** Fired inside Telegram when something asks for a wallet: the app opens the Wallet Vault instead of a connect dialog. */
+export const OPEN_VAULT_EVENT = 'hopr:open-vault';
+
+const inTelegram = () => Boolean(window.Telegram?.WebApp?.initData);
+
 interface WalletContextValue {
   evm: ConnectedWallet | null;
   svm: ConnectedWallet | null;
@@ -42,7 +59,14 @@ interface WalletContextValue {
   source: 'browser' | 'telegram' | null;
   telegramWallet: TelegramWallet | null;
   telegramUser: { id: number; firstName?: string; username?: string } | null;
+  /** Every wallet in the user's Hopr vault, active first — the same list the bot manages. */
+  telegramWallets: VaultWallet[];
+  maxWallets: number;
+  /** Re-read the vault (after creating, importing, switching or deleting a wallet). */
+  syncTelegramWallets: () => Promise<void>;
   isTelegramSyncing: boolean;
+  /** True inside the Telegram Mini App, where every wallet is a Hopr vault wallet. */
+  isTelegram: boolean;
   isReady: boolean;
   evmWallets: EvmWalletInfo[];
   solanaWallets: SolanaWalletInfo[];
@@ -92,6 +116,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [solanaWallets, setSolanaWallets] = useState<SolanaWalletInfo[]>([]);
   const [telegramWallet, setTelegramWallet] = useState<TelegramWallet | null>(null);
   const [telegramUser, setTelegramUser] = useState<WalletContextValue['telegramUser']>(null);
+  const [telegramWallets, setTelegramWallets] = useState<VaultWallet[]>([]);
+  const [maxWallets, setMaxWallets] = useState(10);
   const [isTelegramSyncing, setIsTelegramSyncing] = useState(false);
   const [walletModal, setWalletModal] = useState<{ open: boolean; focus: Vm | null }>({ open: false, focus: null });
   const evmProviderRef = useRef<EvmWalletInfo | null>(null);
@@ -215,37 +241,58 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return () => unsubscribe?.();
   }, [near?.walletId]);
 
-  // Telegram Mini App: sync the custodial wallet created in the bot (display only).
+  // Telegram Mini App: sync the wallets created in the bot. Runs on open and whenever the app
+  // returns to the foreground, so a wallet made in the bot a moment ago is already here.
+  const syncTelegramWallets = useCallback(async () => {
+    const webApp = window.Telegram?.WebApp;
+    if (!webApp?.initData) return;
+    setIsTelegramSyncing(true);
+    try {
+      const response = await fetch(apiUrl('/api/telegram/session'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: webApp.initData }),
+      });
+      const data = await response.json() as {
+        user?: { id: number; firstName?: string; username?: string };
+        wallet?: { evmAddress?: string; solanaAddress?: string; nearAddress?: string | null } | null;
+        wallets?: VaultWallet[];
+        maxWallets?: number;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(data.error ?? 'Telegram authentication failed');
+      setTelegramUser(data.user ?? null);
+      setTelegramWallet(data.wallet ? {
+        evmAddress: data.wallet.evmAddress ?? null,
+        solanaAddress: data.wallet.solanaAddress ?? null,
+        nearAddress: data.wallet.nearAddress ?? null,
+      } : null);
+      setTelegramWallets(data.wallets ?? []);
+      if (data.maxWallets) setMaxWallets(data.maxWallets);
+    } catch (error) {
+      console.warn('Telegram wallet sync unavailable:', error instanceof Error ? error.message : error);
+    } finally {
+      setIsTelegramSyncing(false);
+    }
+  }, []);
+
   useEffect(() => {
     const webApp = window.Telegram?.WebApp;
     if (!webApp?.initData) return;
     webApp.ready();
     webApp.expand?.();
-    setIsTelegramSyncing(true);
-    fetch(apiUrl('/api/telegram/session'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: webApp.initData }),
-    })
-      .then(async (response) => {
-        const data = await response.json() as {
-          user?: { id: number; firstName?: string; username?: string };
-          wallet?: { evmAddress?: string; solanaAddress?: string; nearAddress?: string | null } | null;
-          error?: string;
-        };
-        if (!response.ok) throw new Error(data.error ?? 'Telegram authentication failed');
-        setTelegramUser(data.user ?? null);
-        if (data.wallet) {
-          setTelegramWallet({
-            evmAddress: data.wallet.evmAddress ?? null,
-            solanaAddress: data.wallet.solanaAddress ?? null,
-            nearAddress: data.wallet.nearAddress ?? null,
-          });
-        }
-      })
-      .catch((error) => console.warn('Telegram wallet sync unavailable:', error instanceof Error ? error.message : error))
-      .finally(() => setIsTelegramSyncing(false));
-  }, []);
+    void syncTelegramWallets();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void syncTelegramWallets();
+    };
+    const onActivated = () => void syncTelegramWallets();
+    document.addEventListener('visibilitychange', onVisible);
+    webApp.onEvent?.('activated', onActivated);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      webApp.offEvent?.('activated', onActivated);
+    };
+  }, [syncTelegramWallets]);
 
   const connectEvm = useCallback(async (walletId?: string) => {
     if (walletId === 'walletconnect') {
@@ -323,7 +370,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsTelegramSyncing(false);
     }
-  }, []);
+    await syncTelegramWallets();
+  }, [syncTelegramWallets]);
 
   const getSigners = useCallback((): Signers => ({
     evm: evm && evmProviderRef.current ? { provider: evmProviderRef.current.provider, address: evm.address } : undefined,
@@ -341,7 +389,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     source: telegramWallet ? 'telegram' : evm || svm || near ? 'browser' : null,
     telegramWallet,
     telegramUser,
+    telegramWallets,
+    maxWallets,
+    syncTelegramWallets,
     isTelegramSyncing,
+    isTelegram: inTelegram(),
     isReady: Boolean(evm || svm || near),
     evmWallets,
     solanaWallets,
@@ -356,9 +408,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     getSigners,
     addressFor: (vm: Vm) => (vm === 'evm' ? evm?.address : vm === 'svm' ? svm?.address : near?.address) ?? null,
     walletModal,
-    openWalletModal: (focus?: Vm) => setWalletModal({ open: true, focus: focus ?? null }),
+    // In Telegram every wallet lives in the Hopr vault, so "connect a wallet" opens the vault instead.
+    openWalletModal: (focus?: Vm) => {
+      if (inTelegram()) window.dispatchEvent(new CustomEvent(OPEN_VAULT_EVENT));
+      else setWalletModal({ open: true, focus: focus ?? null });
+    },
     closeWalletModal: () => setWalletModal({ open: false, focus: null }),
-  }), [evm, svm, near, telegramWallet, telegramUser, isTelegramSyncing, evmWallets, solanaWallets, connectEvm, connectSolana, connectNear, disconnectEvm, disconnectSolana, disconnectNear, createTelegramWallet, acceptReferralInvite, getSigners, walletModal]);
+  }), [evm, svm, near, telegramWallet, telegramUser, telegramWallets, maxWallets, syncTelegramWallets, isTelegramSyncing, evmWallets, solanaWallets, connectEvm, connectSolana, connectNear, disconnectEvm, disconnectSolana, disconnectNear, createTelegramWallet, acceptReferralInvite, getSigners, walletModal]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

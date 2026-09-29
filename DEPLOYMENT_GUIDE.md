@@ -267,7 +267,7 @@ npm run telegram:configure
 The script configures:
 
 - Telegram webhook delivery for `message` and `callback_query` updates
-- Slash-command suggestions: `/start`, `/menu`, `/help`, `/wallet`, `/setwallet`, `/balances`, and `/settings`
+- Slash-command suggestions: `/start`, `/menu`, `/help`, `/wallet`, `/balances`, and `/settings`
 - Telegram's native command menu button
 
 The command must complete successfully before testing inline buttons. It is safe to rerun after a Worker deployment.
@@ -296,7 +296,7 @@ For a custom Worker API domain:
 - [ ] Dashboard loads without a blank screen.
 - [ ] The Telegram preview shows `/start`, `/menu`, `/help`, `/wallet`, and `/settings` indicators.
 - [ ] The token action rows render: buy, custom, change chain, sell, settings, DexScreener, and dismiss.
-- [ ] Connected wallets sign in the wallet app; linked public addresses stay read-only.
+- [ ] Web: connected browser wallets sign in the wallet app. Mini App: the header shows the Hopr wallet synced from the bot and opens the Wallet Vault (no browser-wallet connect dialog).
 - [ ] Test the Mini App inside Telegram Web and mobile. Pages headers allow framing by https://web.telegram.org; remove any conflicting DENY header set by a proxy.
 
 ### Worker
@@ -317,12 +317,12 @@ curl -i https://hopr.<your-subdomain>.workers.dev/health
 
 In a private chat with the bot:
 
-1. Send `/start` and confirm the Wallet, Settings, Link wallet, and Commands buttons.
+1. Send `/start` and confirm the Wallets, Settings and Help buttons, and that the welcome shows a freshly created wallet (EVM, SOL, NEAR). Open the Mini App and confirm the same wallet appears without any extra step.
 2. Send `/menu` and confirm the action menu appears.
 3. Send `/help` and confirm `/menu` is listed.
 4. Send a token contract address and confirm the token card plus premium inline action rows.
 5. With a configured custodial wallet, tap Buy or Sell and review a live quote. Cancel first; fund and confirm a small trade only as a deliberate production acceptance test.
-6. If `TELEGRAM_STATE` is bound, test `/setwallet`, `/wallet`, and `/settings`.
+6. If `TELEGRAM_STATE` is bound, test `/wallet`, 💳 Wallets → Create wallet (up to 10; the 11th is refused), and `/settings`. Paste a NEAR token and check the Pay-with NEAR / SOL / Robinhood ETH buttons each quote.
 7. Open `/pools nearpaid`, `/pools pons`, `/pools pump`, `/pools tolly`, and `/pools argus`. Check venue attribution, pool links and timestamps.
 8. Follow a referral link, open the Mini App from the same Telegram account, and confirm the referral identity matches the bot. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
 

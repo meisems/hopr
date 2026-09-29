@@ -113,11 +113,22 @@ function pairExtras(pair: DexScreenerPair, scannedIsBase: boolean): Pick<Detecte
   };
 }
 
+/** Every scan lookup gets this long; a slow provider falls through to the next source instead of stalling the scan. */
+const SCAN_TIMEOUT_MS = 4_000;
+
+function scanFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(SCAN_TIMEOUT_MS) });
+}
+
 async function fetchDexScreener(address: string): Promise<DexScreenerPair[]> {
-  const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-  if (!res.ok) return [];
-  const data = (await res.json()) as { pairs?: DexScreenerPair[] };
-  return data.pairs ?? [];
+  try {
+    const res = await scanFetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { pairs?: DexScreenerPair[] };
+    return data.pairs ?? [];
+  } catch {
+    return [];
+  }
 }
 
 // Maps DexScreener's chainId slugs to our numeric chain ids for the chains we support.
@@ -146,7 +157,7 @@ const PONS_GET_LAUNCHED_TOKEN_SELECTOR = '0x3cf28b5a';
 async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: string; symbol: string; name: string } | null> {
   const data = `${PONS_GET_LAUNCHED_TOKEN_SELECTOR}${tokenAddress.slice(2).padStart(64, '0')}`;
   try {
-    const response = await fetch('https://rpc.mainnet.chain.robinhood.com', {
+    const response = await scanFetch('https://rpc.mainnet.chain.robinhood.com', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: PONS_V2_FACTORY, data }, 'latest'] }),
@@ -230,7 +241,7 @@ async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Prom
   const network = GECKO_NETWORK_SLUGS[chain.key];
   if (!network) return null;
   try {
-    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
+    const response = await scanFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
     if (!response.ok) return null;
     const payload = await response.json() as {
       data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }>;
@@ -333,7 +344,7 @@ function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackA
 /** eth_getCode probe: returns true if `address` has deployed bytecode on `rpcUrl`. */
 async function hasBytecode(rpcUrl: string, address: string): Promise<boolean> {
   try {
-    const res = await fetch(rpcUrl, {
+    const res = await scanFetch(rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -365,7 +376,7 @@ async function readErc20Metadata(
   try {
     const results = await Promise.all(
       calls.map(async ({ sig }) => {
-        const res = await fetch(rpcUrl, {
+        const res = await scanFetch(rpcUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -453,7 +464,7 @@ interface GeckoNearPool {
 /** Deepest GeckoTerminal pool for a NEAR token — also the pool id charts use. */
 async function fetchGeckoNearPool(tokenId: string): Promise<GeckoNearPool | null> {
   try {
-    const response = await fetch(`https://api.geckoterminal.com/api/v2/networks/near/tokens/${encodeURIComponent(tokenId)}/pools?page=1`);
+    const response = await scanFetch(`https://api.geckoterminal.com/api/v2/networks/near/tokens/${encodeURIComponent(tokenId)}/pools?page=1`);
     if (!response.ok) return null;
     const payload = await response.json() as { data?: Array<{ attributes?: Record<string, unknown>; relationships?: { base_token?: { data?: { id?: string } }; dex?: { data?: { id?: string } } } }> };
     const pools = (payload.data ?? []).filter((pool) => Number(pool.attributes?.reserve_in_usd ?? 0) > 0);
@@ -586,29 +597,28 @@ export async function detectChain(address: string, chainHint?: number): Promise<
         // PonsFamily can launch against a tokenized stock quote. Prefer the
         // canonical GeckoTerminal pool name on Robinhood so AAPL/GOOGL is
         // retained instead of being flattened to USD by another indexer.
-        if (chainId === 4663) {
-          const canonicalPool = await fetchGeckoTerminalMarket(address, chainInfo);
-          if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
-        }
+        const [canonicalPool, ponsPair] = await Promise.all([
+          chainId === 4663 ? fetchGeckoTerminalMarket(address, chainInfo) : null,
+          fetchPonsPairToken(address),
+        ]);
+        if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
         const detected = pairToDetectedToken(indexedPair, chainId, chainInfo, address);
-        const ponsPair = await fetchPonsPairToken(address);
         if (ponsPair) detected.pairedAsset = ponsPair;
         return detected;
       }
     }
 
-    const launchpadMarkets = await Promise.all(
-      SUPPORTED_CHAINS.filter((chain) => chain.type === 'EVM').map(async (chain) => ({
+    // Not on DexScreener: ask GeckoTerminal (launchpad pools) and probe bytecode on
+    // every EVM chain at the same time, so a fresh deployment costs one round trip.
+    const [launchpadMarkets, freshToken] = await Promise.all([
+      Promise.all(SUPPORTED_CHAINS.filter((chain) => chain.type === 'EVM').map(async (chain) => ({
         chain,
         market: await fetchGeckoTerminalMarket(address, chain),
-      }))
-    );
+      }))),
+      probeEvmChains(address).catch(() => null),
+    ]);
     const launchpadHit = launchpadMarkets.find((item) => item.market);
     if (launchpadHit?.market) return geckoMarketToToken(launchpadHit.market, launchpadHit.chain, address);
-
-    // Not indexed (fresh deployment, or a chain DexScreener doesn't cover,
-    // e.g. Robinhood Chain / Arc) — fall back to bytecode probing.
-    const freshToken = await probeEvmChains(address);
     if (freshToken && freshToken.chainId === 4663) {
       const ponsPair = await fetchPonsPairToken(address);
       if (ponsPair) freshToken.pairedAsset = ponsPair;

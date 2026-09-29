@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Search, Loader2, X, Zap, ClipboardPaste, History, CheckCircle2 } from 'lucide-react';
+import { Search, Loader2, X, Zap, ClipboardPaste, History, CheckCircle2, RefreshCw } from 'lucide-react';
 import { detectChain, DetectedToken, formatAddress, formatTokenPrice, chainKeyForId } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -23,6 +23,8 @@ type RecentScan = Pick<DetectedToken, 'address' | 'symbol' | 'chainId' | 'imageU
 const RECENTS_KEY = 'hopr-recent-scans';
 const MAX_RECENTS = 6;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/** A scanned token's market data refreshes itself this often, and cached scans older than this revalidate in the background. */
+const LIVE_REFRESH_MS = 15 * 1000;
 const detectionCache = new Map<string, { at: number; token: DetectedToken }>();
 
 function readRecents(): RecentScan[] {
@@ -65,9 +67,12 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
   const [canPaste, setCanPaste] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
+  const lastScan = useRef<{ address: string; chainId?: number; cacheKey: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   const { canMakeRequest, getTimeUntilNextRequest } = useRateLimiter({
-    maxRequests: 10,
+    maxRequests: 30,
     windowMs: 60 * 1000,
     onLimitReached: () => {
       const waitTime = getTimeUntilNextRequest();
@@ -94,11 +99,15 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
     setError('');
 
     const cacheKey = `${chainId ?? 'auto'}:${address.startsWith('0x') ? address.toLowerCase() : address}`;
+    lastScan.current = { address, chainId, cacheKey };
     const cached = detectionCache.get(cacheKey);
     if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+      // Instant result from cache; stale numbers are refreshed right behind it.
       setDetected(cached.token);
+      setUpdatedAt(cached.at);
       onTokenDetected(cached.token);
       remember(cached.token);
+      if (Date.now() - cached.at > LIVE_REFRESH_MS) void refreshLive(id);
       return;
     }
     if (!canMakeRequest()) return;
@@ -110,6 +119,7 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
       if (id !== requestId.current) return; // a newer scan superseded this one
       if (result) {
         detectionCache.set(cacheKey, { at: Date.now(), token: result });
+        setUpdatedAt(Date.now());
         setDetected(result);
         onTokenDetected(result);
         remember(result);
@@ -121,7 +131,34 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
     } finally {
       if (id === requestId.current) setLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canMakeRequest, onTokenDetected, remember]);
+
+  /** Re-read the current token's market data without clearing the card or spending the scan limit. */
+  const refreshLive = useCallback(async (id = requestId.current) => {
+    const current = lastScan.current;
+    if (!current) return;
+    setRefreshing(true);
+    try {
+      const result = await detectChain(current.address, current.chainId).catch(() => null);
+      if (!result || id !== requestId.current) return;
+      detectionCache.set(current.cacheKey, { at: Date.now(), token: result });
+      setUpdatedAt(Date.now());
+      setDetected(result);
+      onTokenDetected(result);
+    } finally {
+      if (id === requestId.current) setRefreshing(false);
+    }
+  }, [onTokenDetected]);
+
+  // Keep the scanned token's price live while it is on screen.
+  useEffect(() => {
+    if (!detected) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshLive();
+    }, LIVE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [detected?.address, detected?.chainId, refreshLive]);
 
   // Scans requested from elsewhere on the page.
   useEffect(() => {
@@ -162,6 +199,7 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
 
   const clearSearch = () => {
     requestId.current += 1;
+    lastScan.current = null;
     setQuery('');
     setDetected(null);
     setError('');
@@ -271,6 +309,9 @@ export default function SearchBar({ onTokenDetected, scanRequest }: SearchBarPro
                     <span className="truncate font-mono text-xs text-gray-500">{formatAddress(detected.address)}</span>
                   </div>
                 </div>
+                <button onClick={() => void refreshLive()} className="pressable shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-800 hover:text-white" aria-label="Refresh market data" title={updatedAt ? `Live · updated ${new Date(updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'Refresh'}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin text-brand-300' : ''}`} />
+                </button>
                 <div className="shrink-0 text-right">
                   <div className="font-mono text-sm font-semibold text-white">{formatTokenPrice(detected.priceUsd)}</div>
                   <div className={`font-mono text-xs font-medium ${detected.change24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
