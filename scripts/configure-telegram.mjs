@@ -9,6 +9,7 @@ export const TELEGRAM_COMMANDS = [
   { command: 'setwallet', description: '🔗 Link a public wallet (read-only)' },
   { command: 'balances', description: '🔄 Refresh native balances' },
   { command: 'positions', description: '📊 Open positions with live prices' },
+  { command: 'pools', description: '📡 Launchpad pools, liquidity & volume' },
   { command: 'swap', description: 'Ⓝ Swap on NEAR, e.g. /swap 1 near usdc' },
   { command: 'referral', description: '🎁 Refer & earn 25% of friends’ fees' },
   { command: 'settings', description: '⚙️ Funding chain & slippage' },

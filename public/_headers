@@ -1,5 +1,5 @@
 /*
-  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'self' https://web.telegram.org;
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()

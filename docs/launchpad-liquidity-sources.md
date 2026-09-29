@@ -1,16 +1,105 @@
-# Launchpad liquidity sources
+# Launch radar: pool discovery
 
-Verified references used by the launchpad liquidity fallback:
+The dashboard and Telegram `/pools` command share the endpoint
+`GET /api/launchpads/pools?source=pump`. This is bounded live discovery, not a
+complete launch-history index or a guarantee of swap support. No sample tokens
+are inserted when a provider fails.
 
-- Pump.fun bonding curve: https://pump.fun/docs/bonding-curve
-  - Pump.fun launches begin on an on-chain constant-product bonding curve and can later graduate to PumpSwap.
-- StonkFun developer page: https://www.stonkfun.xyz/developers
-  - StonkFun tokens use pools and may migrate from bonding-curve liquidity to post-migration pools.
-- PonsFamily integration docs: https://docs.ponsfamily.com/
-  - Pons launches are on Robinhood Chain (chain ID 4663), paired with WETH, with the canonical pool and liquidity state exposed on-chain.
-- GeckoTerminal API docs: https://apiguide.geckoterminal.com/
-  - Public token-pools data exposes `reserve_in_usd`, `volume_usd.h24`, `base_token_price_usd`, and pool metadata.
-- Tolly Labs market page: https://tollylabs.com/
-  - Public market listings visibly include market cap, liquidity, and 24-hour volume for Arc launchpad markets.
+## Sources
 
-Implementation uses GeckoTerminal token-pool lookup as a fallback after DexScreener, covering supported Solana, Arc, Robinhood Chain, Base, Arbitrum, and BNB networks. It is read-only and does not depend on private launchpad API keys.
+- **NEARPaid** (`nearpaid`): `get_config` and `list_launches` on `nearpaid.near`,
+  then `get_pool` on `dclv2.ref-labs.near` and both tokens' `ft_metadata`.
+  Pool identity must match the factory record. Reads up to ten live pools among
+  the latest twenty launches. Price uses `current_point`, ordering, decimals,
+  and Rhea's quote-token USD price. Liquidity values reported pool inventories
+  at that price, not executable depth. Cumulative volume is never presented as
+  24h volume. References: [NEARPaid](https://nearpaid.com), its public production
+  client and contract methods, [Rhea prices](https://api.ref.finance/list-token-price).
+- **pons** (`pons`): GeckoTerminal venue IDs `pons-dot-family`, `pons-v2`, and
+  `pons-v2-dex` on `robinhood`. Attribution requires the exact venue ID, not a
+  symbol or generic Uniswap venue. References: [pons docs](https://docs.ponsfamily.com/),
+  [venue registry](https://api.geckoterminal.com/api/v2/networks/robinhood/dexes).
+- **Pump.fun** (`pump`): indexed `pump-fun` pools on Solana, including bonding
+  curves. **PumpSwap** (`pumpswap`) is separate: a pool there is not proof the
+  token launched on Pump.fun. Depleted pools remain visible with reported zero
+  liquidity. References: [Pump.fun](https://pump.fun),
+  [Solana venue registry](https://api.geckoterminal.com/api/v2/networks/solana/dexes).
+- **Tolly** (`tolly`): public
+  `https://api.tollylabs.com/tokens?scope=tolly&sort=volume&dir=desc&limit=40&offset=0`.
+  Only records explicitly marked `tolly: true` are attributed. v4 liquidity is
+  accepted only from `poolmanager-extsload` or `pools-trade-api`, never aggregate
+  singleton-manager balances. Reference: [Tolly](https://tollylabs.com) and its
+  public market client/API.
+- **Argus** (`argus`): GeckoTerminal `argus` on `arc`. v4 pools retain the full
+  32-byte ID, not a PoolManager address. References:
+  [Argus repository](https://github.com/arguspad/argus-world),
+  [Arc venue registry](https://api.geckoterminal.com/api/v2/networks/arc/dexes).
+- Additional Solana venues: **LaunchLab** (`raydium-launchlab`), **Moonit**
+  (`moonit`), **LetsBonk** (`letsbonk-fun`), from the public Solana venue registry.
+
+## Refresh and limitations
+
+The selected source polls every two minutes while visible. Sorts apply to the
+fetched snapshot, including “newest in feed.” Missing metrics remain unknown,
+not zero. Cards link to their actual pool. Token scans preserve the known chain
+to avoid identical EVM addresses resolving to a different network.
+
+Worker memory and `CACHE` KV share successful snapshots between web and bot.
+Fresh data is reused for two minutes. During outages, snapshots up to one day
+old are explicitly marked stale with the original timestamp. Partial venue
+failures are marked partial. The fetch time does not imply latest-block data.
+
+## Setup
+
+1. Deploy the Worker with the `CACHE` KV binding in `wrangler.toml`.
+2. Build with `VITE_API_URL` pointing to the Worker's HTTPS origin, or route
+   same-origin `/api/*` to it. A plain Vite server has no Worker API.
+3. Configure `NEAR_RPC_URL` for reliable sustained NEARPaid reads.
+4. Run `npm run telegram:configure` with the existing bot/webhook environment
+   to register `/pools`. Examples: `/pools nearpaid`, `/pools pons`, `/pools argus`.
+5. Run `node --import tsx scripts/verify-launchpads.mjs [source...]` for read-only
+   provider checks. Selecting a few sources reduces public API quota use.
+
+No database migration or new npm package is needed for Launch radar. Public
+provider quotas still apply; KV caching does not remove those limits.
+
+## Trading coverage
+
+Discovery does not add direct launchpad swap adapters. LI.FI, NEAR Intents or Ref
+must return an executable route for the selected token and amount. NEARPaid uses
+Rhea DCL, which is different from the existing classic Ref swap plan. Tokens
+liquid only on DCL need a compatible aggregator route or a direct DCL adapter.
+Pump bonding curves and custom Argus hooks also require router support. Do not
+bridge funds to a destination merely because a pool is listed.
+
+No funded mainnet transactions were performed during discovery validation.
+## Trading shortcuts and PnL cards
+
+Launch radar supports in-feed name/symbol/contract filtering. Quick buy opens the
+selected token's trading panel in place; the amount presets use the existing
+wallet signing or Telegram quote/confirm flow. No transaction runs on token
+selection. Virtuals (Base) is included using its exact indexed venue IDs.
+
+Telegram /pools now provides token and Quick Buy buttons. Buttons bind the
+shown token, chain, funding chain and amount to an immutable, chat-specific KV
+snapshot for 15 minutes. Configure CACHE or TELEGRAM_STATE. A changed ranking,
+expired snapshot or a different chat cannot redirect that button to another
+token. Quick Buy requests a live quote; confirmation remains required.
+
+In Positions, use Share PnL card. The 2880×1800 PNG has an original procedural
+space background and the HOPR vector logo. Mobile file sharing is offered where
+the browser supports it, with PNG download as a fallback. No wallet address is
+included. The card is an estimate from settled, locally recorded dashboard
+activity and current wallet valuation, excluding untracked transfers and gas.
+Missing costs suppress PnL export. Legacy cross-chain entries without a recorded
+recipient cannot safely be assigned to a destination wallet and are excluded.
+This does not import historical bot trades or provide audited lifetime PnL.
+
+Source coverage is explicit, not a promise to index every launchpad. A listed
+token still needs a supported execution route. Direct DCL and custom bonding
+curve execution adapters are not supplied by these UI shortcuts.
+
+Multi-step execution now checks every quoted leg before the first signature.
+The bot also checks the final LI.FI token route before offering a NEAR bridge
+for confirmation. Quotes can still change during settlement; this check is
+not atomic execution and does not guarantee later liquidity.
