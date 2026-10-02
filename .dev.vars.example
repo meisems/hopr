@@ -12,7 +12,7 @@ ENCRYPTION_KEY=                # 32+ random bytes; encrypts every wallet key. Ne
 # --- Transactions & quotes (strongly recommended in production) --------------
 LIFI_API_KEY=                  # LI.FI partner key: quotes for every EVM/Solana trade. Without it all users share an anonymous quota.
 ONECLICK_JWT=                  # NEAR Intents 1Click key: cross-chain NEAR routes (default 50/50 app-fee split)
-HOPR_INTENTS_FEE_ACCOUNT=      # Hopr's NEAR account that receives NEAR Intents / Ref Finance fees
+HOPR_INTENTS_FEE_ACCOUNT=hoprtg.near  # Hopr's NEAR fee account (also set in wrangler.toml)
 
 # --- Keyed RPCs: used FIRST for balances, portfolio and sending transactions ---
 # Public backups (verified) stay behind these, so the bot keeps working if a key runs out.

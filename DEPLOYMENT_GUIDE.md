@@ -222,8 +222,7 @@ Hopr charges 0.5% on trades and 1% on bridges. Migrations `0005_referrals.sql`, 
 ```bash
 # LI.FI API key (partner portal) — required: without it all users share the worker's small anonymous quota.
 npx wrangler secret put LIFI_API_KEY
-# Hopr's NEAR account (must exist on mainnet): receives the NEAR Intents and Ref Finance fees.
-npx wrangler secret put HOPR_INTENTS_FEE_ACCOUNT
+# Hopr's NEAR fee account is hoprtg.near, set as a plain variable in wrangler.toml (no secret needed).
 # NEAR Intents API key — default authenticated terms split the submitted fee 50/50.
 # Without a key, 1Click adds 0.25% on top and HOPR keeps the submitted fee.
 npx wrangler secret put ONECLICK_JWT

@@ -4,3 +4,4 @@ dist/
 build/
 *.log
 .dev.vars
+package-lock.json

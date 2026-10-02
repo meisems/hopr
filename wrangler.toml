@@ -18,12 +18,13 @@ main = "workers/index.ts"
 #                            for reads and transactions, ahead of verified public backups.
 #   See .dev.vars.example for the full list; GET /health shows which are set.
 # Variables (plain vars are fine):
-#   HOPR_INTENTS_FEE_ACCOUNT Hopr's NEAR fee account (NEAR Intents + Ref swap fee)
+#   HOPR_INTENTS_FEE_ACCOUNT Hopr's NEAR fee account (NEAR Intents + Ref swap fee) — set to hoprtg.near below
 #   TELEGRAM_BOT_USERNAME    Bot username for invite links (optional; getMe is used otherwise)
 #   REFERRAL_MIN_PAYOUT_USD  Minimum referral claim (default 5)
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"
+HOPR_INTENTS_FEE_ACCOUNT = "hoprtg.near"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "hopr-db"
@@ -44,6 +45,8 @@ route = "staging.hopr.pages.dev/*"
 # Variables
 [vars]
 ENVIRONMENT = "production"
+# Receives Hopr's NEAR fees (NEAR Intents app fee + Ref Finance swap fee).
+HOPR_INTENTS_FEE_ACCOUNT = "hoprtg.near"
 
 [[d1_databases]]
 binding = "DB"
