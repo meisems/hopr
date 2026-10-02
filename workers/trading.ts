@@ -444,7 +444,8 @@ export async function prepareBuy(params: {
 export async function prepareTokenSell(params: {
   userId: string;
   wallet: CustodialWallet;
-  walletId: string;
+  /** Signing wallet; absent = the active wallet. */
+  walletId?: string;
   chainId: number;
   tokenAddress: string;
   amountUnits: string;
@@ -462,7 +463,8 @@ export async function prepareTokenSell(params: {
     id: crypto.randomUUID(),
     userId: params.userId,
     kind: 'sell',
-    walletId: params.walletId,
+    ...(params.walletId ? { walletId: params.walletId } : {}),
+    // Bundle and order sells read balances on-chain; they don't close the recorded position.
     bundle: true,
     quote,
     fromAddress: owner,

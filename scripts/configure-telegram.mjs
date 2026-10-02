@@ -4,6 +4,7 @@ export const TELEGRAM_COMMANDS = [
   { command: 'start', description: '⚡ Start Hopr' },
   { command: 'menu', description: '◆ Main menu with your portfolio' },
   { command: 'portfolio', description: '💼 Every token you hold on 7 chains' },
+  { command: 'orders', description: '🎯 Limit sell, take profit & stop loss' },
   { command: 'help', description: '❓ Every command, explained' },
   { command: 'wallet', description: '👛 Wallets: balances, switch, import' },
   { command: 'balances', description: '🔄 Native balances on every chain' },

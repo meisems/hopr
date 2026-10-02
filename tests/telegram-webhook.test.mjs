@@ -108,7 +108,7 @@ test('help command lists working commands and shows navigation buttons', async (
       { text: '🎁 Refer & Earn', callback_data: 'referral' },
       { text: '❓ Help', callback_data: 'help' },
     ],
-    [{ text: '🔄 Refresh', callback_data: 'menu' }],
+    [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '🔄 Refresh', callback_data: 'menu' }],
   ]);
 });
 

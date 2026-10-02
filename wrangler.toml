@@ -75,3 +75,10 @@ persist = true
 enabled = false
 head_sampling_rate = 1
 persist = true
+
+# Every minute: check limit sell / take profit / stop loss orders and execute triggered ones.
+[triggers]
+crons = ["* * * * *"]
+
+[env.production.triggers]
+crons = ["* * * * *"]

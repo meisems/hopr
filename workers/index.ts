@@ -40,6 +40,8 @@ import { getNetwork } from '../src/services/chains';
 import { tracked, readNativeBalance, nativePricesUsd, type TrackedAmount } from './balances';
 import { forgetPortfolio, loadPortfolio, NATIVE, pendingPortfolioLoad, quickNativeBalance, quickTokenBalance, type Portfolio, type TrackedToken } from './portfolio';
 import { apiKeyStatus, applyRpcConfig, solanaBroadcastRpcs, transactionRpc, type RpcEnv } from './rpcConfig';
+import { chainMarkets } from './portfolio';
+import { cancelOrder, createOrder, listOrders, ORDER_LABEL, OrderError, runOrderSweep, type LimitOrder, type OrderKind } from './orders';
 import {
   generateDualWallet,
   decryptPrivateKey,
@@ -306,7 +308,7 @@ function telegramActionKeyboard(): TelegramKeyboard {
         { text: '🎁 Refer & Earn', callback_data: 'referral' },
         { text: '❓ Help', callback_data: 'help' },
       ],
-      [{ text: '🔄 Refresh', callback_data: 'menu' }],
+      [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '🔄 Refresh', callback_data: 'menu' }],
     ],
   };
 }
@@ -390,6 +392,11 @@ function telegramTokenKeyboard(address: string, context: TokenKeyboardContext = 
       [
         { text: '🧺 Bundle buy', callback_data: 'bundle:buy' },
         { text: '🧺 Bundle sell', callback_data: 'bundle:sell' },
+      ],
+      [
+        { text: '🎯 Limit sell', callback_data: 'order:new:limit' },
+        { text: '📈 Take profit', callback_data: 'order:new:tp' },
+        { text: '🛑 Stop loss', callback_data: 'order:new:sl' },
       ],
     ],
   };
@@ -476,6 +483,14 @@ async function checkRateLimit(
 }
 
 export default {
+  /** Cron trigger (wrangler.toml [triggers]): every minute, check and execute limit / TP / SL orders. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    applyRpcConfig(env);
+    ctx.waitUntil(sweepOrders(env).then((result) => {
+      if (result.triggered || result.interrupted) console.log('Order sweep', JSON.stringify(result));
+    }).catch((error) => console.error('Order sweep failed', error)));
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -633,6 +648,8 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       || /^lp:(view|buy):[a-f0-9]{24}:[0-5]$/.test(data)
       || /^trade:cont:[0-9a-f]{8}$/.test(data)
       || ['wallet:generate', 'wallet:import', 'wallet:export', 'wallet:preferred', 'wallet:list', 'wallet:rename', 'wallet:delete', 'wallet:delete:confirm'].includes(data)
+      || data === 'orders' || data === 'order:place' || data === 'order:discard' || data === 'order:price'
+      || /^order:new:(limit|tp|sl)$/.test(data) || /^order:at:(limit|tp|sl):\d{1,4}$/.test(data) || /^order:size:(25|50|100)$/.test(data) || /^order:cancel:[0-9a-f]{10}$/.test(data)
       || /^bundle:(buy|sell)(:\d{1,6}(\.\d{1,6})?)?$/.test(data) || /^bundle:confirm:[0-9a-f]{8}$/.test(data) || data === 'bundle:cancel'
       || /^wallet:use:[\w:-]{1,52}$/.test(data)
       || /^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(data)
@@ -654,7 +671,7 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       callback_query_id: callback.id,
       ...(telegramCallbackToast(data) ? { text: telegramCallbackToast(data) } : {}),
     });
-    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle')) && chatType !== 'private') {
+    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle') || data.startsWith('order')) && chatType !== 'private') {
       await acknowledged;
       await sendTelegramMessage(chatId, '🔒 For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return;
@@ -681,6 +698,8 @@ function telegramCallbackToast(data: string): string | undefined {
   if (/^trade:(buy|sell):/.test(data)) return 'Fetching a live quote…';
   if (data.startsWith('trade:confirm:')) return 'Submitting…';
   if (data.startsWith('bundle:confirm:')) return 'Submitting every wallet…';
+  if (data === 'order:place') return 'Placing order…';
+  if (data.startsWith('order:cancel:')) return 'Cancelling…';
   if (/^bundle:(buy|sell):/.test(data)) return 'Quoting every wallet…';
   if (data.startsWith('trade:cont:')) return 'Checking the bridge…';
   if (data === 'referral') return 'Loading your referrals…';
@@ -704,6 +723,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     '/portfolio — every token you hold on all 7 chains, live prices',
     '/pools — launchpad pools, liquidity and volume',
     '🧺 Bundle buy / sell — trade a token from every wallet at once, one confirmation',
+    '🎯 Limit sell · 📈 Take profit · 🛑 Stop loss — automatic sells, checked every minute (/orders)',
     'Only the <b>Confirm and submit</b> button signs and submits a trade',
   ]),
   tgSection('💳', 'Wallet', [
@@ -733,6 +753,10 @@ async function handleTelegramMessage(
   replyToMessage?: TelegramMessage['reply_to_message'],
   firstName?: string,
 ): Promise<void> {
+  if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_ORDER_PRICE_PROMPT)) {
+    await setTelegramOrderPrice(chatId, text, env);
+    return;
+  }
   if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_RENAME_PROMPT)) {
     await renameTelegramWallet(chatId, text, env);
     return;
@@ -790,6 +814,14 @@ async function handleTelegramMessage(
       return;
     }
     await showTelegramPools(chatId, id as LaunchpadId, env);
+    return;
+  }
+  if (command === '/orders' || command === '/limit' || command === '/tp' || command === '/sl') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, '🔒 Open /orders in a private chat with this bot.', env);
+      return;
+    }
+    await showTelegramOrders(chatId, env);
     return;
   }
   if (command === '/positions' || command === '/portfolio' || command === '/pnl') {
@@ -2311,6 +2343,20 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
   if (data === 'positions' || data === 'positions:fresh') return showTelegramPositions(chatId, env, panelId, data === 'positions:fresh');
   if (data === 'wallet:list' || data === 'wallet:preferred') return showTelegramWalletList(chatId, env, panelId);
   if (data === 'wallet:rename') return promptTelegramWalletRename(chatId, env);
+  if (data === 'orders') return showTelegramOrders(chatId, env, panelId);
+  if (data.startsWith('order:new:')) return startTelegramOrder(chatId, data.slice('order:new:'.length) as OrderKind, env, panelId);
+  if (data.startsWith('order:at:')) {
+    const [, , kind, percent] = data.split(':');
+    return setTelegramOrderTrigger(chatId, kind as OrderKind, Number(percent), env, panelId);
+  }
+  if (data === 'order:price') return promptTelegramOrderPrice(chatId, env);
+  if (data.startsWith('order:size:')) return reviewTelegramOrder(chatId, Number(data.slice('order:size:'.length)), env, panelId);
+  if (data === 'order:place') return placeTelegramOrder(chatId, env, panelId);
+  if (data === 'order:discard') return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('✖️', 'Order discarded'), 'Nothing was placed.'), env, telegramActionKeyboard());
+  if (data.startsWith('order:cancel:')) {
+    const cancelled = await cancelOrder(env, String(chatId), data.slice('order:cancel:'.length)).catch(() => false);
+    return showTelegramOrders(chatId, env, panelId, cancelled ? '✅ Order cancelled.' : 'That order already executed or was cancelled.');
+  }
   if (data === 'bundle:buy' || data === 'bundle:sell') return showTelegramBundleMenu(chatId, data === 'bundle:buy' ? 'buy' : 'sell', env, panelId);
   if (data.startsWith('bundle:buy:') || data.startsWith('bundle:sell:')) {
     const [, kind, value] = data.split(':');
@@ -2661,6 +2707,265 @@ async function handleChainDetection(
 
 const TELEGRAM_BUY_X_PROMPT = '✏️ Buy X — reply with how much';
 const TELEGRAM_RENAME_PROMPT = '✏️ Rename wallet — reply with a new name for';
+const TELEGRAM_ORDER_PRICE_PROMPT = '🎯 Limit sell — reply with the USD price to sell';
+
+// ---------------------------------------------------------------------------
+// Limit sell · take profit · stop loss (workers/orders.ts holds the order book and sweep)
+// ---------------------------------------------------------------------------
+
+const ORDER_ICON: Record<OrderKind, string> = { limit: '🎯', tp: '📈', sl: '🛑' };
+const ORDER_PRESETS: Record<OrderKind, number[]> = { limit: [10, 25, 50, 100], tp: [25, 50, 100, 200], sl: [10, 20, 30, 50] };
+const ORDER_DRAFT_TTL_SECONDS = 15 * 60;
+const orderDraftKey = (chatId: number) => `orderdraft:v1:${chatId}`;
+
+interface OrderDraft {
+  kind: OrderKind; chainId: number; tokenAddress: string; symbol: string; referencePriceUsd: number;
+  triggerPriceUsd?: number; sellPercent?: number; walletId: string | null; walletLabel: string; slippage: number;
+}
+
+const ORDERS_MIGRATION_HINT = 'Orders need migrations/0008_limit_orders.sql applied to the database.';
+const isMissingOrdersTable = (error: unknown) => /no such table: limit_orders/.test(String(error));
+
+/** Live USD prices for tokens on one chain: DexScreener / DefiLlama in one request, the full scanner for the rest. */
+async function orderPrices(chainId: number, addresses: string[]): Promise<Map<string, number>> {
+  const markets = await chainMarkets(chainId, addresses).catch(() => new Map<string, { priceUsd: number }>());
+  const out = new Map<string, number>();
+  for (const [address, market] of markets) if (market.priceUsd > 0) out.set(address.toLowerCase(), market.priceUsd);
+  const missing = addresses.filter((address) => !out.has(address.toLowerCase())).slice(0, 10);
+  await Promise.all(missing.map(async (address) => {
+    const detected = await detectTokenOnChain(address, chainId).catch(() => null);
+    if (detected && detected.priceUsd > 0 && detected.marketStatus !== 'stale') out.set(address.toLowerCase(), detected.priceUsd);
+  }));
+  return out;
+}
+
+function formatOrderTrigger(order: Pick<LimitOrder, 'kind' | 'trigger_price_usd' | 'reference_price_usd'>): string {
+  const change = ((order.trigger_price_usd / order.reference_price_usd) - 1) * 100;
+  const sign = change >= 0 ? '+' : '−';
+  return `${order.kind === 'sl' ? '≤' : '≥'} ${formatTokenPriceUsd(order.trigger_price_usd)} (${sign}${Number(Math.abs(change).toFixed(1))}%)`;
+}
+
+async function startTelegramOrder(chatId: number, kind: OrderKind, env: Env, panelId?: number): Promise<void> {
+  const userId = String(chatId);
+  const [profile, accounts] = await Promise.all([readTelegramProfile(chatId, env).catch(() => null), listWalletAccounts(userId, env)]);
+  if (!profile?.lastTokenAddress || !profile.lastTokenChainId) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle(ORDER_ICON[kind], 'Pick a token first'), `Paste a token address, then tap ${ORDER_ICON[kind]} ${ORDER_LABEL[kind]} on its card.`), env, telegramActionKeyboard());
+    return;
+  }
+  const wallet = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+  const legacy = wallet ? null : await getCustodialWallet(userId, env).catch(() => null);
+  if (!wallet && !legacy) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle(ORDER_ICON[kind], 'Orders need a Hopr wallet'), 'Create one in 💳 Wallets first.'), env, telegramWalletSetupKeyboard());
+    return;
+  }
+  const prices = await orderPrices(profile.lastTokenChainId, [profile.lastTokenAddress]);
+  const price = prices.get(profile.lastTokenAddress.toLowerCase());
+  const symbol = profile.lastTokenSymbol ?? 'token';
+  if (!price) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle(ORDER_ICON[kind], ORDER_LABEL[kind]), `No live price for ${escapeTelegramHtml(symbol)} right now — orders need one to trigger. Try again in a moment.`), env, { inline_keyboard: [[{ text: '◀️ Back to token', callback_data: 'token:refresh:last' }]] });
+    return;
+  }
+  const draft: OrderDraft = {
+    kind, chainId: profile.lastTokenChainId, tokenAddress: profile.lastTokenAddress, symbol, referencePriceUsd: price,
+    walletId: wallet?.id ?? null, walletLabel: wallet?.label ?? 'W1', slippage: (profile.slippagePercent ?? 1) / 100,
+  };
+  await (env.TELEGRAM_STATE ?? env.CACHE)?.put(orderDraftKey(chatId), JSON.stringify(draft), { expirationTtl: ORDER_DRAFT_TTL_SECONDS });
+  const sign = kind === 'sl' ? '−' : '+';
+  const what = kind === 'sl' ? 'Sells automatically if the price falls to the level you pick — limits your loss.'
+    : kind === 'tp' ? 'Sells automatically once the price rises to the level you pick — locks in profit.'
+      : 'Sells automatically once the price reaches your target price.';
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle(ORDER_ICON[kind], `${ORDER_LABEL[kind]} · ${escapeTelegramHtml(symbol)}`, what),
+    tgCard([`Price now  <b>${formatTokenPriceUsd(price)}</b>`, `Wallet  <b>${escapeTelegramHtml(draft.walletLabel)}</b> (active)`]),
+    tgFootnote('Pick the trigger, relative to the price now.'),
+  ), env, { inline_keyboard: [
+    ORDER_PRESETS[kind].map((percent) => ({ text: `${sign}${percent}%`, callback_data: `order:at:${kind}:${percent}` })),
+    ...(kind === 'limit' ? [[{ text: '✏️ Exact price', callback_data: 'order:price' }]] : []),
+    [{ text: '✖️ Cancel', callback_data: 'order:discard' }],
+  ] });
+}
+
+async function readOrderDraft(chatId: number, env: Env): Promise<OrderDraft | null> {
+  const raw = await (env.TELEGRAM_STATE ?? env.CACHE)?.get(orderDraftKey(chatId)).catch(() => null);
+  try {
+    return raw ? JSON.parse(raw) as OrderDraft : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveOrderDraft(chatId: number, draft: OrderDraft, env: Env): Promise<void> {
+  await (env.TELEGRAM_STATE ?? env.CACHE)?.put(orderDraftKey(chatId), JSON.stringify(draft), { expirationTtl: ORDER_DRAFT_TTL_SECONDS });
+}
+
+const ORDER_EXPIRED = tgMessage(tgTitle('⌛', 'Order setup expired'), 'Open the token again and tap 🎯 / 📈 / 🛑 to start over.');
+
+async function setTelegramOrderTrigger(chatId: number, kind: OrderKind, percent: number, env: Env, panelId?: number): Promise<void> {
+  const draft = await readOrderDraft(chatId, env);
+  if (!draft || draft.kind !== kind || !(percent > 0) || (kind === 'sl' && percent >= 100)) {
+    await sendTelegramPanel(chatId, panelId, ORDER_EXPIRED, env, telegramActionKeyboard());
+    return;
+  }
+  draft.triggerPriceUsd = draft.referencePriceUsd * (kind === 'sl' ? 1 - percent / 100 : 1 + percent / 100);
+  await saveOrderDraft(chatId, draft, env);
+  await showOrderSizes(chatId, draft, env, panelId);
+}
+
+async function promptTelegramOrderPrice(chatId: number, env: Env): Promise<void> {
+  const draft = await readOrderDraft(chatId, env);
+  if (!draft) {
+    await sendTelegramMessage(chatId, ORDER_EXPIRED, env);
+    return;
+  }
+  await sendTelegramMessage(chatId, `${TELEGRAM_ORDER_PRICE_PROMPT} ${draft.symbol} at (now ${formatTokenPriceUsd(draft.referencePriceUsd)})`, env, {
+    force_reply: true,
+    input_field_placeholder: 'USD price, e.g. 0.0042',
+  }, null);
+}
+
+async function setTelegramOrderPrice(chatId: number, text: string, env: Env): Promise<void> {
+  const draft = await readOrderDraft(chatId, env);
+  const price = Number(text.trim().replace(/^\$/, '').replace(',', '.'));
+  if (!draft) {
+    await sendTelegramMessage(chatId, ORDER_EXPIRED, env);
+    return;
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('🎯', 'Price not understood'), 'Reply with just a number in USD, e.g. <code>0.0042</code>. Tap ✏️ Exact price to try again.'), env);
+    return;
+  }
+  if (price <= draft.referencePriceUsd) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('🎯', 'Target is below the price now'), `A limit sell triggers when the price rises to it. ${escapeTelegramHtml(draft.symbol)} is at ${formatTokenPriceUsd(draft.referencePriceUsd)} — use 🛑 Stop loss to sell on the way down.`), env);
+    return;
+  }
+  draft.triggerPriceUsd = price;
+  await saveOrderDraft(chatId, draft, env);
+  await showOrderSizes(chatId, draft, env);
+}
+
+async function showOrderSizes(chatId: number, draft: OrderDraft, env: Env, panelId?: number): Promise<void> {
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle(ORDER_ICON[draft.kind], `${ORDER_LABEL[draft.kind]} · ${escapeTelegramHtml(draft.symbol)}`),
+    tgCard([`Trigger  <b>${formatOrderTrigger({ kind: draft.kind, trigger_price_usd: draft.triggerPriceUsd!, reference_price_usd: draft.referencePriceUsd })}</b>`, `Price now  ${formatTokenPriceUsd(draft.referencePriceUsd)}`]),
+    tgFootnote(`How much of ${escapeTelegramHtml(draft.walletLabel)}'s ${escapeTelegramHtml(draft.symbol)} should it sell?`),
+  ), env, { inline_keyboard: [
+    [25, 50, 100].map((size) => ({ text: `🔴 Sell ${size}%`, callback_data: `order:size:${size}` })),
+    [{ text: '✖️ Cancel', callback_data: 'order:discard' }],
+  ] });
+}
+
+async function reviewTelegramOrder(chatId: number, size: number, env: Env, panelId?: number): Promise<void> {
+  const draft = await readOrderDraft(chatId, env);
+  if (!draft?.triggerPriceUsd) {
+    await sendTelegramPanel(chatId, panelId, ORDER_EXPIRED, env, telegramActionKeyboard());
+    return;
+  }
+  draft.sellPercent = size;
+  await saveOrderDraft(chatId, draft, env);
+  const chainName = TELEGRAM_CHAIN_NAMES[draft.chainId] ?? 'its chain';
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle(ORDER_ICON[draft.kind], `Place ${ORDER_LABEL[draft.kind].toLowerCase()}?`),
+    tgCard([
+      `Token  <b>${escapeTelegramHtml(draft.symbol)}</b> on ${escapeTelegramHtml(chainName)}`,
+      `When  price <b>${formatOrderTrigger({ kind: draft.kind, trigger_price_usd: draft.triggerPriceUsd, reference_price_usd: draft.referencePriceUsd })}</b>`,
+      `Sell  <b>${size}%</b> of what ${escapeTelegramHtml(draft.walletLabel)} holds then · into ${draft.chainId === NEAR_CHAIN_ID ? 'NEAR' : escapeTelegramHtml(getChainById(draft.chainId)?.nativeSymbol ?? 'the native coin')}`,
+      `Slippage  ${Number((draft.slippage * 100).toFixed(2))}% · platform fee ${HOPR_FEE_PERCENT}%`,
+    ]),
+    `⚠️ <b>Executes automatically.</b> When the price triggers, Hopr signs and sends this sell without asking again. Prices are checked every minute, so the fill can differ from the trigger in fast markets.`,
+  ), env, { inline_keyboard: [[{ text: '✅ Place order', callback_data: 'order:place' }, { text: '✖️ Cancel', callback_data: 'order:discard' }]] });
+}
+
+async function placeTelegramOrder(chatId: number, env: Env, panelId?: number): Promise<void> {
+  const draft = await readOrderDraft(chatId, env);
+  if (!draft?.triggerPriceUsd || !draft.sellPercent) {
+    await sendTelegramPanel(chatId, panelId, ORDER_EXPIRED, env, telegramActionKeyboard());
+    return;
+  }
+  try {
+    await createOrder(env, {
+      userId: String(chatId), walletId: draft.walletId, chainId: draft.chainId, tokenAddress: draft.tokenAddress, symbol: draft.symbol, kind: draft.kind,
+      triggerPriceUsd: draft.triggerPriceUsd, referencePriceUsd: draft.referencePriceUsd, sellPercent: draft.sellPercent, slippage: draft.slippage,
+    });
+  } catch (error) {
+    const message = isMissingOrdersTable(error) ? ORDERS_MIGRATION_HINT : error instanceof Error ? error.message : 'Order not placed';
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⚠️', 'Order not placed'), escapeTelegramHtml(message)), env, telegramActionKeyboard());
+    return;
+  }
+  await (env.TELEGRAM_STATE ?? env.CACHE)?.delete(orderDraftKey(chatId)).catch(() => undefined);
+  await showTelegramOrders(chatId, env, panelId, `✅ ${ORDER_LABEL[draft.kind]} placed for ${escapeTelegramHtml(draft.symbol)}.`);
+}
+
+async function showTelegramOrders(chatId: number, env: Env, panelId?: number, notice?: string): Promise<void> {
+  let orders: Awaited<ReturnType<typeof listOrders>>;
+  try {
+    orders = await listOrders(env, String(chatId));
+  } catch (error) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('🎯', 'Orders'), escapeTelegramHtml(isMissingOrdersTable(error) ? ORDERS_MIGRATION_HINT : 'Orders could not be loaded.')), env, telegramActionKeyboard());
+    return;
+  }
+  const line = (order: LimitOrder) => `${ORDER_ICON[order.kind]} <b>${escapeTelegramHtml(order.symbol)}</b> ${chainEmoji(order.chain_id)} · sell ${order.sell_percent}% ${formatOrderTrigger(order)}${order.status === 'executing' ? ' · <i>selling…</i>' : order.attempts > 0 ? ` · <i>retrying</i>` : ''}`;
+  const done = (order: LimitOrder) => `${order.status === 'filled' ? '✅' : '⚠️'} ${escapeTelegramHtml(ORDER_LABEL[order.kind])} · <b>${escapeTelegramHtml(order.symbol)}</b>${order.status === 'failed' && order.error ? ` · <i>${escapeTelegramHtml(order.error.slice(0, 80))}</i>` : ''}`;
+  const cancelButtons = orders.open.filter((order) => order.status === 'active').slice(0, 10).map((order) => ({ text: `✖️ ${ORDER_ICON[order.kind]} ${order.symbol.slice(0, 10)}`, callback_data: `order:cancel:${order.id}` }));
+  const rows: TelegramButton[][] = [];
+  for (let index = 0; index < cancelButtons.length; index += 2) rows.push(cancelButtons.slice(index, index + 2));
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('🎯', 'Orders', 'Limit sell · take profit · stop loss — checked every minute'),
+    notice ? `<b>${notice}</b>` : null,
+    orders.open.length ? tgCard(orders.open.map(line)) : tgCard(['No open orders', 'Open a token and tap 🎯 Limit sell, 📈 Take profit or 🛑 Stop loss']),
+    orders.recent.length ? `<b>Recent</b>\n${tgCard(orders.recent.map(done))}` : null,
+    tgFootnote('Triggered orders sell automatically from the wallet they were placed with.'),
+  ), env, { inline_keyboard: [...rows, [{ text: '🔄 Refresh', callback_data: 'orders' }, { text: '💼 Portfolio', callback_data: 'positions' }, { text: '◀️ Menu', callback_data: 'menu' }]] });
+}
+
+/** Sells a triggered order from its wallet: the chosen share of the live balance, quoted and signed now. */
+async function executeOrder(order: LimitOrder, env: Env): Promise<{ txHash: string; explorerUrl?: string }> {
+  const userId = order.user_id;
+  if (!env.ENCRYPTION_KEY || !env.TELEGRAM_STATE) throw new OrderError('Trading is not configured on this bot.', true);
+  const accounts = await listWalletAccounts(userId, env);
+  const row = order.wallet_id ? accounts.find((account) => account.id === order.wallet_id) : null;
+  if (order.wallet_id && !row) throw new OrderError('The wallet this order was placed with no longer exists.', true);
+  const legacy = row ? null : await getCustodialWallet(userId, env);
+  const wallet = row ? { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null } : legacy;
+  if (!wallet) throw new OrderError('No Hopr wallet on file.', true);
+  const isNear = order.chain_id === NEAR_CHAIN_ID;
+  const owner = isNear ? wallet.nearAddress ?? null : order.chain_id === 1151111081099710 ? wallet.solanaAddress : wallet.evmAddress;
+  if (!owner) throw new OrderError('The wallet has no account on this chain.', true);
+  const rpc = nearRpcOptions(env);
+  const held = await quickTokenBalance(order.chain_id, order.token_address, owner, rpc, 6_000);
+  if (held === null) throw new OrderError('The token balance could not be read.');
+  const amount = (BigInt(held.amount) * BigInt(order.sell_percent)) / 100n;
+  if (amount <= 0n) throw new OrderError(`The wallet holds no ${order.symbol} any more.`, true);
+  const walletId = order.wallet_id ?? undefined;
+  const trade = isNear
+    ? await (async () => {
+      const metadata = await getTokenMetadata(order.token_address, rpc);
+      return prepareNearSwap({ userId, kind: 'sell', tokenIn: { id: order.token_address, symbol: metadata.symbol, decimals: metadata.decimals }, tokenOut: NEAR_TOKEN, amountInUnits: amount.toString(), slippage: order.slippage, walletId }, env);
+    })()
+    : await prepareTokenSell({ userId, wallet, walletId, chainId: order.chain_id, tokenAddress: order.token_address, amountUnits: amount.toString(), slippage: order.slippage }, env);
+  const result = await confirmTrade(userId, trade.id, { evm: (chainId: number) => transactionRpc(chainId), solana: () => transactionRpc(1151111081099710), solanaBroadcast: solanaBroadcastRpcs }, env);
+  await recordTelegramReferral(userId, result, env);
+  forgetPortfolio(wallet);
+  const explorer = TELEGRAM_EXPLORERS[result.venue === 'ref' ? NEAR_CHAIN_ID : result.fromChainId ?? order.chain_id];
+  return { txHash: result.txHash, explorerUrl: explorer ? `${explorer}${encodeURIComponent(result.txHash)}` : undefined };
+}
+
+/** The cron job: one pass over every active order. Exported for tests. */
+export function sweepOrders(env: Env) {
+  return runOrderSweep(env, {
+    prices: orderPrices,
+    execute: (order) => executeOrder(order, env),
+    notify: async (order, outcome) => {
+      const chatId = Number(order.user_id);
+      const title = `${ORDER_ICON[order.kind]} ${ORDER_LABEL[order.kind]} · ${escapeTelegramHtml(order.symbol)}`;
+      const text = outcome.status === 'filled'
+        ? tgMessage(`✅ <b>${title} filled</b>`, tgCard([`Triggered at ${formatTokenPriceUsd(outcome.priceUsd)} · sold ${order.sell_percent}%`, `Transaction  ${outcome.explorerUrl ? `<a href="${outcome.explorerUrl}">${escapeTelegramHtml(outcome.txHash.slice(0, 12))}…</a>` : `<code>${escapeTelegramHtml(outcome.txHash)}</code>`}`]))
+        : outcome.status === 'failed'
+          ? tgMessage(`⚠️ <b>${title} could not sell</b>`, escapeTelegramHtml(outcome.error), tgFootnote('The order is closed. Check your wallet, then place a new one if needed.'))
+          : tgMessage(`⏳ <b>${title} triggered</b>`, `The sell did not go through yet (${escapeTelegramHtml(outcome.error)}). It retries automatically while the price stays past the trigger.`);
+      await sendTelegramMessage(chatId, text, env, { inline_keyboard: [[{ text: '🎯 Orders', callback_data: 'orders' }, { text: '💼 Portfolio', callback_data: 'positions:fresh' }]] });
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Wallet names (default W1, W2 … from nextWalletLabel; renamable here)

@@ -334,6 +334,10 @@ In a private chat with the bot:
 8. Follow a `t.me/<bot>?start=ref_<code>` link from a second Telegram account and confirm `/referral` on the first account counts the friend. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
 9. Open the website in a regular browser, scan a token, and tap **Open … in the bot**: the bot should open on that token's trading panel. The site shows no trade card, wallet connect, Bridge, Wallets or Rewards pages outside Telegram.
 
+### Limit / take-profit / stop-loss orders
+
+`migrations/0008_limit_orders.sql` (applied by `npx wrangler d1 migrations apply hopr-db --remote`) creates the order book. `wrangler.toml` registers a cron trigger (`* * * * *`, for both the default and `production` environments) that runs the worker's `scheduled` handler every minute to check prices and execute triggered orders. After deploying, confirm it under Workers → hopr → Settings → Triggers, and watch the `Order sweep` log lines when an order fires. Orders sign with the stored wallet keys, so `ENCRYPTION_KEY`, `TELEGRAM_STATE` and a keyed RPC per chain (see above) must be configured.
+
 ### Bot profile picture
 
 The logo set lives in `public/brand/` (`logo-icon.svg`, `logo-mark.svg`, `logo-full.svg`). Telegram's Bot API cannot set a bot's photo, so upload `public/brand/bot-avatar.png` (640×640, circle-safe) once in @BotFather: `/setuserpic` → choose the bot → send the image.

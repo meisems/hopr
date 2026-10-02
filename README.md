@@ -163,6 +163,12 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - Claims above the minimum create USDC payout requests to the owner's wallet (Telegram users: their Hopr EVM wallet); operators list and mark them paid through the admin endpoints
 - Requires migrations `0005`, `0006`, and `0007_intents_fee_policy.sql`. Missing LI.FI splits or historical 1Click agreements stay uncredited pending reconciliation. Existing credited balances are not rewritten: reconcile older payouts against provider statements before paying them. Custom 1Click partner terms require updating the accounting policy before use
 
+### 🎯 Limit sell · 📈 Take profit · 🛑 Stop loss
+- From any token card: pick the trigger (take profit +25…200%, stop loss −10…50%, or a limit price — preset or exact USD), then how much to sell (25 / 50 / 100% of the wallet's balance at that moment). `/orders` lists open orders with cancel buttons and recent fills
+- A cron trigger checks every open order each minute (one price request per chain, DexScreener → DefiLlama → the full scanner). A triggered order is claimed atomically, sold from the wallet it was placed with (LI.FI into the chain's coin, or Ref / Rhea DCL into NEAR) and reported in Telegram with the transaction link
+- **Placing an order authorizes that automatic sell** — it executes without another confirmation. Failed sells retry while the price stays past the trigger (up to 3 attempts); an order interrupted mid-sell is closed and reported, never re-sold blindly. Up to 20 open orders per user
+- Needs `migrations/0008_limit_orders.sql` and the `[triggers] crons` entry in `wrangler.toml`
+
 ### 🧺 Bundle buy / sell
 - Every token card has **🧺 Bundle buy** and **🧺 Bundle sell**. Bundle buy quotes the same amount from every wallet with enough funds on the pay-from chain; bundle sell sells 25 / 50 / 100% of what each wallet actually holds. One combined quote, one confirmation; each wallet signs its own transaction, and wallets that can't trade are listed with the reason
 - Bundles use one-step routes: EVM / Solana tokens through LI.FI (pay from any EVM or Solana chain, sells settle in the chain's coin), NEAR tokens through Ref / Rhea DCL with NEAR
