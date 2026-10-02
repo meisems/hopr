@@ -1151,15 +1151,30 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
       .filter(Boolean).join(' · ') || null,
   ].filter((line): line is string => Boolean(line));
 
+  // A zero here means "not reported", never a real $0: show a dash and say why.
+  const marketStatus = typeof token.marketStatus === 'string' ? token.marketStatus : price > 0 ? 'live' : 'none';
+  const marketSource = typeof token.marketSource === 'string' ? token.marketSource : 'DexScreener';
+  const usdOrDash = (value: number) => value > 0 ? `<b>${formatCompactUsd(value)}</b>` : '—';
+  const observed = typeof token.marketObservedAt === 'number' ? new Date(token.marketObservedAt).toISOString().slice(11, 16) : null;
+  const holders = typeof token.holders === 'number' && token.holders > 0 ? token.holders : null;
+  const marketNote = marketStatus === 'stale'
+    ? `⚠️ <i>Market providers are busy — last known numbers${observed ? ` from ${observed} UTC` : ''}. Tap 🔄 Refresh.</i>`
+    : marketStatus === 'partial'
+      ? `ℹ️ <i>Price via ${escapeTelegramHtml(marketSource)} · no indexed pool yet, so liquidity and volume are not known.</i>`
+      : marketStatus === 'none'
+        ? '⏳ <i>No market data yet — a brand-new token, or the market providers are busy. Tap 🔄 Refresh in a moment.</i>'
+        : null;
   const result = tgMessage(
     `🪙 <b>${escapeTelegramHtml(symbol)}  |  ${escapeTelegramHtml(name)}</b>\n<code>${escapeTelegramHtml(address)}</code>\n${tgCard(identity)}`,
     tgSection('📊', 'Market', [
-      `Price  <b>${formatTokenPriceUsd(price)}</b>`,
-      `MC / FDV  <b>${formatCompactUsd(fdv)}</b>`,
-      `Liquidity  <b>${formatCompactUsd(liquidity)}</b> ${liquidityBadge(liquidity)}`,
-      `Volume 24h  <b>${formatCompactUsd(volume)}</b>`,
+      `Price  ${price > 0 ? `<b>${formatTokenPriceUsd(price)}</b>` : '—'}`,
+      `MC / FDV  ${usdOrDash(fdv)}`,
+      `Liquidity  ${liquidity > 0 ? `<b>${formatCompactUsd(liquidity)}</b> ${liquidityBadge(liquidity)}` : '—'}`,
+      `Volume 24h  ${usdOrDash(volume)}`,
+      ...(holders ? [`Holders  <b>${formatCount(holders)}</b>`] : []),
     ]),
-    tgSection('📈', 'Price change', [
+    marketNote,
+    price > 0 && tgSection('📈', 'Price change', [
       changes.m5 !== undefined || changes.h1 !== undefined || changes.h6 !== undefined
         ? `5m ${formatChangeShort(changes.m5)} · 1h ${formatChangeShort(changes.h1)} · 6h ${formatChangeShort(changes.h6)} · 24h ${formatChangeShort(change)}`
         : `24h  ${formatPercentChange(change)}`,
@@ -1169,7 +1184,7 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
       nearViaRef ? 'Route  Ref Finance · paid in NEAR' : `Funding  ${chainEmoji(fundingChain.id)} ${escapeTelegramHtml(fundingChain.name)} (${fundingSymbol})${fundingChain.id !== chainId ? ' · cross-chain' : ''}`,
       `Slippage  ${slippage}% · every trade is quoted before you confirm`,
     ]),
-    tgFootnote(`DexScreener · ${telegramUtcTime()} · Scan only — no transaction was submitted.`),
+    tgFootnote(`${escapeTelegramHtml(marketSource)} · ${telegramUtcTime()} · Scan only — no transaction was submitted.`),
   );
 
   // Persist alongside sending the card; the KV write starts first, so a tap on the new buttons sees this token.
@@ -2514,24 +2529,14 @@ async function nextWalletLabel(userId: string, env: Env): Promise<string> {
   return `W${highest + 1}`;
 }
 
-/** Trader-facing activity fields shared by every DexScreener-backed detection result. */
-function dexActivity(pair: { priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number }; txns?: { h24?: { buys?: number; sells?: number } }; pairCreatedAt?: number }) {
-  return {
-    priceChanges: pair.priceChange ?? {},
-    txns24h: pair.txns?.h24,
-    pairCreatedAt: pair.pairCreatedAt,
-  };
-}
-
-/** Market data goes stale fast: keep detections briefly (KV's minimum TTL is 60s). */
+/** Market data goes stale fast: keep live detections briefly (KV's minimum TTL is 60s). */
 const DETECTION_MEMORY_TTL_MS = 20_000;
 const DETECTION_KV_TTL_SECONDS = 60;
-/** Upstream market APIs get this long before a scan moves on without them. */
-const MARKET_FETCH_TIMEOUT_MS = 4_000;
-
-function fetchMarket(url: string): Promise<Response> {
-  return fetch(url, { signal: AbortSignal.timeout(MARKET_FETCH_TIMEOUT_MS) });
-}
+/** A result without market data is only held this long (absorbs a double tap, never hides a recovery). */
+const DETECTION_MISS_TTL_MS = 5_000;
+/** Last good market numbers per token, shown (labelled) when every provider is busy. */
+const LAST_MARKET_TTL_SECONDS = 7 * 24 * 60 * 60;
+const MARKET_FIELDS = ['priceUsd', 'liquidity', 'volume24h', 'fdv', 'change24h', 'priceChanges', 'txns24h', 'pairCreatedAt', 'pairAddress', 'geckoNetwork', 'liquiditySource', 'pairedAsset', 'holders', 'marketSource'] as const;
 
 async function handleChainDetection(
   address: string,
@@ -2553,83 +2558,47 @@ async function handleChainDetection(
     return Response.json(value, { headers: { ...corsHeaders, 'X-Cache': 'HIT' } });
   }
 
-  // Detect chain
+  // Shared with the website: DexScreener raced against GeckoTerminal (and Jupiter on Solana), the deepest
+  // base-side pool on a Hopr chain, venue attribution, then DefiLlama prices and on-chain probes as backups.
   const isBase58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
   const isEvm = /^0x[a-fA-F0-9]{40}$/.test(address);
   const nearId = !isBase58 && !isEvm && isNearAccountId(address.toLowerCase()) ? address.toLowerCase() : null;
+  if (!nearId && !isBase58 && !isEvm) return Response.json({ error: 'Token not found' }, { status: 404, headers: corsHeaders });
 
-  let result;
-
-  if (nearId) {
-    result = await detectNearToken(nearId, env);
-  } else if (isBase58 || isEvm) {
-    // Shared with the dashboard: DexScreener raced against a one-call GeckoTerminal search, the deepest
-    // pool on a Hopr chain, venue attribution (Flap, Four.meme, Uniswap…), then bytecode probes over backup RPCs.
-    const detected = await detectTokenOnChain(address).catch(() => null);
-    // A Solana mint nobody has indexed is not a market the bot can quote.
-    const unindexedSolana = detected?.chainType === 'SVM' && detected.freshDeployment && detected.symbol === 'UNKNOWN';
-    if (detected && !unindexedSolana) result = { ...detected, address, dexId: detected.liquiditySource ?? (detected.freshDeployment ? 'unindexed' : undefined) };
-  }
-
-  if (!result) {
+  const detected = await detectTokenOnChain(nearId ?? address).catch(() => null);
+  if (!detected) {
     return Response.json({ error: 'Token not found' }, { status: 404, headers: corsHeaders });
+  }
+  let result: Record<string, unknown> = { ...detected, address: nearId ?? address, dexId: detected.liquiditySource ?? (detected.freshDeployment ? 'unindexed' : undefined) };
+
+  // Remember good numbers; when no provider answered this time, show the last known ones (labelled).
+  const lastKey = `mkt:v1:${detected.chainId}:${(nearId ?? address).toLowerCase()}`;
+  const store = env.CACHE ?? env.TELEGRAM_STATE;
+  const live = detected.marketStatus === 'live' && detected.priceUsd > 0;
+  if (live) {
+    const snapshot = Object.fromEntries(MARKET_FIELDS.map((field) => [field, detected[field]]));
+    void store?.put(lastKey, JSON.stringify({ ...snapshot, observedAt: Date.now() }), { expirationTtl: LAST_MARKET_TTL_SECONDS }).catch(() => undefined);
+  } else {
+    const last = await store?.get(lastKey).catch(() => null);
+    try {
+      const known = last ? JSON.parse(last) as Record<string, unknown> & { observedAt?: number; priceUsd?: number } : null;
+      if (known && Number(known.priceUsd) > 0 && !(detected.priceUsd > 0 && detected.liquidity > 0)) {
+        result = { ...result, ...known, marketStatus: 'stale', marketObservedAt: known.observedAt, freshDeployment: false };
+      }
+    } catch {
+      // corrupted entry: ignore
+    }
   }
 
   // Short-lived cache: repeat scans are instant while prices stay live. Do not add KV write latency to the response.
-  telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + DETECTION_MEMORY_TTL_MS });
-  if (env.CACHE) {
+  telegramDetectionMemoryCache.set(cacheKey, { value: result, expiresAt: Date.now() + (live ? DETECTION_MEMORY_TTL_MS : DETECTION_MISS_TTL_MS) });
+  if (env.CACHE && live) {
     void env.CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: DETECTION_KV_TTL_SECONDS }).catch((error: unknown) => {
       console.error('Token detection cache write failed', error);
     });
   }
 
   return Response.json(result, { headers: { ...corsHeaders, 'X-Cache': 'MISS' } });
-}
-
-/**
- * NEP-141 token lookup: DexScreener market data (chain slug `near`) with
- * on-chain ft_metadata for decimals. A contract with metadata but no indexed
- * pool is still reported, with zeroed market stats.
- */
-async function detectNearToken(tokenId: string, env: Env): Promise<Record<string, unknown> | undefined> {
-  type Pair = { chainId?: string; dexId?: string; pairAddress?: string; baseToken?: { address?: string; name?: string; symbol?: string }; quoteToken?: { address?: string; name?: string; symbol?: string }; priceUsd?: string; liquidity?: { usd?: number }; fdv?: number; priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number }; volume?: { h24?: number }; txns?: { h24?: { buys?: number; sells?: number } }; pairCreatedAt?: number };
-  const [pairs, metadata] = await Promise.all([
-    fetchMarket(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(tokenId)}`)
-      .then(async (response) => response.ok ? ((await response.json()) as { pairs?: Pair[] }).pairs ?? [] : [])
-      .catch(() => [] as Pair[]),
-    getTokenMetadata(tokenId, nearRpcOptions(env)).catch(() => null),
-  ]);
-  const nearPairs = pairs
-    .filter((pair) => pair.chainId === 'near' && (pair.baseToken?.address === tokenId || pair.quoteToken?.address === tokenId))
-    .sort((left, right) => (right.liquidity?.usd ?? 0) - (left.liquidity?.usd ?? 0));
-  const pair = nearPairs[0];
-  if (!pair && !metadata) return undefined;
-
-  const scannedIsQuote = pair?.quoteToken?.address === tokenId && pair.baseToken?.address !== tokenId;
-  const token = scannedIsQuote ? pair?.quoteToken : pair?.baseToken;
-  const paired = scannedIsQuote ? pair?.baseToken : pair?.quoteToken;
-  // DexScreener prices the pair's base token; invert for a quote-side scan only when it is priced in USD terms we can trust.
-  const priceUsd = pair && !scannedIsQuote ? Number(pair.priceUsd) || 0 : 0;
-  return {
-    address: tokenId,
-    name: token?.name ?? metadata?.name ?? tokenId,
-    symbol: token?.symbol ?? metadata?.symbol ?? 'UNKNOWN',
-    decimals: metadata?.decimals ?? 18,
-    chainId: NEAR_CHAIN_ID,
-    chainType: 'NEAR',
-    chainName: NEAR_CHAIN.name,
-    chainColor: NEAR_CHAIN.color,
-    priceUsd,
-    liquidity: pair?.liquidity?.usd ?? 0,
-    fdv: pair?.fdv ?? 0,
-    change24h: pair && !scannedIsQuote ? pair.priceChange?.h24 ?? 0 : 0,
-    volume24h: pair?.volume?.h24 ?? 0,
-    pairAddress: pair?.pairAddress,
-    pairedAsset: paired?.symbol ? { address: paired.address, name: paired.name, symbol: paired.symbol } : undefined,
-    dexId: pair?.dexId ?? 'unindexed',
-    freshDeployment: !pair,
-    ...(pair && !scannedIsQuote ? dexActivity(pair) : pair ? { txns24h: pair.txns?.h24, pairCreatedAt: pair.pairCreatedAt } : {}),
-  };
 }
 
 // ---------------------------------------------------------------------------

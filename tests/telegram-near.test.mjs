@@ -164,7 +164,7 @@ test('NEAR token address opens a NEAR market card with NEAR-denominated quick bu
     },
   });
   const card = plain(calls[0].body.text);
-  assert.match(card, /Ⓝ NEAR · 🏪 RHEA FINANCE/);
+  assert.match(card, /Ⓝ NEAR · 🏪 Rhea/);
   assert.match(card, /Route  Ref Finance · paid in NEAR/);
   assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[1].map((button) => button.callback_data), ['trade:buy:0.5', 'trade:buy:1', 'trade:buy:5']);
   assert.equal(calls[0].body.reply_markup.inline_keyboard[1][1].text, '🟢 Buy 1 NEAR');

@@ -100,7 +100,22 @@ export async function nativePricesUsd(): Promise<Record<string, number>> {
     }
     priceCache = { at: Date.now(), prices };
   } catch {
-    // Balances still render without USD values.
+    // Fall through to the backup provider below.
+  }
+  if (!priceCache) {
+    // Backup provider for native coin prices (NEAR Intents' list unavailable).
+    try {
+      const ids: Record<string, string> = { ETH: 'ethereum', BNB: 'binancecoin', SOL: 'solana', NEAR: 'near' };
+      const response = await fetch(`https://coins.llama.fi/prices/current/${Object.values(ids).map((id) => `coingecko:${id}`).join(',')}`, { signal: AbortSignal.timeout(5000) });
+      const data = response.ok ? await response.json() as { coins?: Record<string, { price?: number }> } : {};
+      for (const [symbol, id] of Object.entries(ids)) {
+        const price = Number(data.coins?.[`coingecko:${id}`]?.price);
+        if (price > 0) prices[symbol] = price;
+      }
+      if (Object.keys(prices).length > 1) priceCache = { at: Date.now(), prices };
+    } catch {
+      // Balances still render without USD values.
+    }
   }
   return priceCache?.prices ?? prices;
 }

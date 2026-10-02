@@ -123,6 +123,7 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - Base58 → Solana SPL Token detection
 - 0x... → Multi-chain EVM probing (DexScreener + RPC fallback)
 - DexScreener is raced against a single GeckoTerminal cross-network search; the deepest pool wins and its venue is named (Flap, Four.meme, Pump.fun, Clanker, Uniswap, PancakeSwap, Aerodrome…)
+- Market data never depends on one provider: DexScreener and GeckoTerminal (retried when throttled), Jupiter for Solana (price, FDV, liquidity, volume, holders), DefiLlama prices plus the on-chain supply for FDV, and the token's last known numbers (labelled with their time) when every provider is busy. Pools where the token is the base are preferred; a quote-side pool is priced from its exchange rate. Unknown values show "—" with an explanation, never a fake $0
 - On-chain reads race up to six verified backup RPCs per chain, so one slow or dead RPC never stalls a scan
 - Launch radar tracks Flap (live from its on-chain launch events on BNB, Robinhood and Base), Four.meme, Clanker, Bankr, Bags, Meteora DBC, Pump.fun and more, plus Uniswap, PancakeSwap and Aerodrome pools
 

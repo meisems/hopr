@@ -335,8 +335,33 @@ export async function chainMarkets(chainId: number, addresses: string[], fetchIm
       // Holdings still render without USD values.
     }
   }));
+  // A different provider prices what DexScreener missed or could not answer for (busy / rate limited).
+  const unpriced = missing.filter((address) => !out.has(address.toLowerCase()));
+  const llamaChain = LLAMA_CHAINS[chainId];
+  if (unpriced.length && llamaChain) {
+    for (let index = 0; index < unpriced.length; index += 50) {
+      const chunk = unpriced.slice(index, index + 50);
+      try {
+        const response = await fetchImpl(`https://coins.llama.fi/prices/current/${chunk.map((address) => `${llamaChain}:${address}`).join(',')}`, { signal: AbortSignal.timeout(4_000) });
+        const data = response.ok ? await response.json() as { coins?: Record<string, { price?: number; symbol?: string; confidence?: number }> } : {};
+        for (const [key, coin] of Object.entries(data.coins ?? {})) {
+          const address = key.slice(llamaChain.length + 1).toLowerCase();
+          if (!(Number(coin.price) > 0) || (coin.confidence ?? 1) < 0.8) continue;
+          // DefiLlama prices only listed, traded tokens; it has no pool depth, so count it as a real market.
+          const market: Market = { priceUsd: Number(coin.price), change24h: null, symbol: coin.symbol ?? '', liquidityUsd: MIN_LIQUIDITY_USD };
+          out.set(address, market);
+          marketCache.set(`${chainId}:${address}`, { at: Date.now(), market });
+        }
+      } catch {
+        // Holdings still render without USD values.
+      }
+    }
+  }
   return out;
 }
+
+/** DefiLlama chain slugs (Robinhood Chain is not covered). */
+const LLAMA_CHAINS: Record<number, string> = { 8453: 'base', 42161: 'arbitrum', 56: 'bsc', 5042: 'arc', [SOLANA_CHAIN_ID]: 'solana', [NEAR_CHAIN_ID]: 'near' };
 
 /** Below this a priced, untracked token is treated as dust/spam and hidden. */
 const MIN_VISIBLE_USD = 0.01;

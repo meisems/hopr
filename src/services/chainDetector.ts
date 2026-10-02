@@ -73,6 +73,20 @@ export interface DetectedToken {
   pairCreatedAt?: number;
   /** DexScreener pair page. */
   pairUrl?: string;
+  /**
+   * How complete the market numbers are: 'live' (pool data), 'partial' (a
+   * price, but no indexed pool yet), 'stale' (last known, providers busy) or
+   * 'none' (no market data). Zero values are unknown unless status is 'live'.
+   */
+  marketStatus?: 'live' | 'partial' | 'stale' | 'none';
+  /** Provider the market numbers came from (DexScreener, GeckoTerminal, Jupiter, DefiLlama). */
+  marketSource?: string;
+  /** When stale numbers were last read live (ms since epoch). */
+  marketObservedAt?: number;
+  /** Holder count, when the provider reports it (Jupiter). */
+  holders?: number;
+  /** Solana mint confirmed on-chain even though no market answered. */
+  onChain?: boolean;
 }
 
 const BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -92,9 +106,12 @@ interface DexScreenerPair {
   baseToken: { address: string; name: string; symbol: string };
   quoteToken?: { address: string; name: string; symbol: string };
   priceUsd?: string;
+  /** Base token price in quote-token units (used to price a token scanned on the quote side). */
+  priceNative?: string;
   liquidity?: { usd?: number };
   volume?: { h24?: number };
   fdv?: number;
+  marketCap?: number;
   priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number };
   dexId?: string;
   txns?: { h24?: { buys?: number; sells?: number } };
@@ -118,19 +135,34 @@ function pairExtras(pair: DexScreenerPair, scannedIsBase: boolean): Pick<Detecte
 /** Every scan lookup gets this long; a slow provider falls through to the next source instead of stalling the scan. */
 const SCAN_TIMEOUT_MS = 4_000;
 
+// Market APIs sit behind bot protection; an identified JSON client is far less likely to be challenged
+// (Cloudflare Workers send no User-Agent by default).
+const SCAN_HEADERS = { Accept: 'application/json', 'User-Agent': 'HoprBot/1.0 (+https://t.me/hopr)' };
+
 function scanFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(SCAN_TIMEOUT_MS) });
+  return fetch(url, { ...init, headers: { ...SCAN_HEADERS, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(SCAN_TIMEOUT_MS) });
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** GET JSON with one retry on throttling, server errors and timeouts (a busy provider is not "no market"). */
+async function scanJson<T>(url: string): Promise<T | null> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await scanFetch(url);
+      if (response.ok) return await response.json() as T;
+      if (response.status !== 429 && response.status < 500 && response.status !== 403) return null;
+    } catch {
+      // timeout or network error: retry once
+    }
+    if (attempt === 0) await sleep(400);
+  }
+  return null;
 }
 
 async function fetchDexScreener(address: string): Promise<DexScreenerPair[]> {
-  try {
-    const res = await scanFetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    if (!res.ok) return [];
-    const data = (await res.json()) as { pairs?: DexScreenerPair[] };
-    return data.pairs ?? [];
-  } catch {
-    return [];
-  }
+  const data = await scanJson<{ pairs?: DexScreenerPair[] }>(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+  return data?.pairs ?? [];
 }
 
 // Maps DexScreener's chainId slugs to our numeric chain ids for the chains we support.
@@ -179,6 +211,11 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
   const token = isQuote && pair.quoteToken ? pair.quoteToken : pair.baseToken;
   const paired = isQuote ? pair.baseToken : pair.quoteToken;
   const robinhoodDefaultPair = chainInfo.id === 4663 && !paired ? { symbol: 'WETH', name: 'Wrapped Ether' } : undefined;
+  // DexScreener prices the pair's base token. Scanned on the quote side, the token's price is
+  // base price ÷ base-per-quote rate, and the pair's FDV belongs to the other token.
+  const basePrice = Number(pair.priceUsd ?? 0);
+  const native = Number(pair.priceNative ?? 0);
+  const priceUsd = isQuote ? (basePrice > 0 && native > 0 ? basePrice / native : 0) : basePrice;
   return {
     address: token.address,
     name: token.name,
@@ -188,17 +225,19 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     chainType: chainInfo.type,
     chainName: chainInfo.name,
     chainColor: chainInfo.color,
-    priceUsd: Number(pair.priceUsd ?? 0),
+    priceUsd: Number.isFinite(priceUsd) ? priceUsd : 0,
     liquidity: pair.liquidity?.usd ?? 0,
     volume24h: pair.volume?.h24 ?? 0,
-    fdv: pair.fdv ?? 0,
-    change24h: pair.priceChange?.h24 ?? 0,
+    fdv: isQuote ? 0 : pair.fdv ?? pair.marketCap ?? 0,
+    change24h: isQuote ? 0 : pair.priceChange?.h24 ?? 0,
     pairAddress: pair.pairAddress,
     geckoNetwork: GECKO_NETWORKS[pair.chainId.toLowerCase()],
     freshDeployment: false,
     liquiditySource: source,
     launchpad: launchpadFromVenue(pair.dexId),
     pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : robinhoodDefaultPair,
+    marketStatus: 'live',
+    marketSource: 'DexScreener',
     ...pairExtras(pair, !isQuote),
   };
 }
@@ -273,15 +312,10 @@ function geckoPoolToMarket(pool: GeckoPool, address: string): GeckoPoolMarket | 
 async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Promise<GeckoPoolMarket | null> {
   const network = GECKO_NETWORK_SLUGS[chain.key];
   if (!network) return null;
-  try {
-    const response = await scanFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
-    if (!response.ok) return null;
-    const payload = await response.json() as { data?: GeckoPool[] };
-    const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
-    return pool ? geckoPoolToMarket(pool, address) : null;
-  } catch {
-    return null;
-  }
+  const payload = await scanJson<{ data?: GeckoPool[] }>(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
+  // The deepest pool, not merely the first one listed.
+  const pool = [...(payload?.data ?? [])].sort((left, right) => Number(right.attributes?.reserve_in_usd ?? 0) - Number(left.attributes?.reserve_in_usd ?? 0))[0];
+  return pool ? geckoPoolToMarket(pool, address) : null;
 }
 
 /**
@@ -290,9 +324,8 @@ async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Prom
  */
 async function fetchGeckoSearchMarket(address: string): Promise<{ market: GeckoPoolMarket; chain: ChainInfo } | null> {
   try {
-    const response = await scanFetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(address)}`);
-    if (!response.ok) return null;
-    const payload = await response.json() as { data?: GeckoPool[] };
+    const payload = await scanJson<{ data?: GeckoPool[] }>(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(address)}`);
+    if (!payload) return null;
     const evm = address.startsWith('0x');
     const matches = (tokenRef: string | undefined, network: string) => !!tokenRef
       && (evm ? tokenRef.toLowerCase() === `${network}_${address.toLowerCase()}` : tokenRef === `${network}_${address}`);
@@ -352,7 +385,112 @@ function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackA
     liquiditySource: market.source,
     launchpad: market.launchpad ?? detectLaunchpad(market.source),
     pairedAsset: market.pairedAsset,
+    marketStatus: 'live',
+    marketSource: 'GeckoTerminal',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Backup market sources from other providers, so one throttled API never
+// turns a real token into "$0 everything" or "no market found".
+// ---------------------------------------------------------------------------
+
+type JupiterToken = {
+  id: string; name?: string; symbol?: string; decimals?: number; icon?: string; usdPrice?: number; fdv?: number; mcap?: number;
+  liquidity?: number; holderCount?: number; stats24h?: { priceChange?: number; buyVolume?: number; sellVolume?: number; numBuys?: number; numSells?: number };
+  stats1h?: { priceChange?: number }; stats5m?: { priceChange?: number }; stats6h?: { priceChange?: number }; firstPool?: { createdAt?: string };
+};
+
+/** Solana market data from Jupiter's token index: price, FDV, liquidity, 24h volume and holders. */
+async function fetchJupiterToken(mint: string): Promise<DetectedToken | null> {
+  const tokens = await scanJson<JupiterToken[]>(`https://lite-api.jup.ag/tokens/v2/search?query=${encodeURIComponent(mint)}`);
+  const token = tokens?.find((item) => item.id === mint);
+  if (!token || !(Number(token.usdPrice) > 0)) return null;
+  const solana = SUPPORTED_CHAINS.find((chain) => chain.key === 'sol')!;
+  const created = token.firstPool?.createdAt ? Date.parse(token.firstPool.createdAt) : NaN;
+  return {
+    address: mint,
+    name: token.name ?? 'Solana token',
+    symbol: token.symbol ?? 'UNKNOWN',
+    decimals: token.decimals ?? 9,
+    chainId: solana.id,
+    chainType: 'SVM',
+    chainName: solana.name,
+    chainColor: solana.color,
+    priceUsd: Number(token.usdPrice),
+    liquidity: Number(token.liquidity ?? 0),
+    volume24h: Number(token.stats24h?.buyVolume ?? 0) + Number(token.stats24h?.sellVolume ?? 0),
+    fdv: Number(token.fdv ?? token.mcap ?? 0),
+    change24h: Number(token.stats24h?.priceChange ?? 0),
+    priceChanges: { m5: token.stats5m?.priceChange, h1: token.stats1h?.priceChange, h6: token.stats6h?.priceChange, h24: token.stats24h?.priceChange },
+    txns24h: token.stats24h?.numBuys !== undefined ? { buys: token.stats24h.numBuys ?? 0, sells: token.stats24h.numSells ?? 0 } : undefined,
+    pairCreatedAt: Number.isFinite(created) ? created : undefined,
+    imageUrl: token.icon,
+    holders: token.holderCount,
+    geckoNetwork: 'solana',
+    freshDeployment: false,
+    liquiditySource: 'Jupiter',
+    marketStatus: Number(token.liquidity ?? 0) > 0 ? 'live' : 'partial',
+    marketSource: 'Jupiter',
+  };
+}
+
+/** DefiLlama chain slugs (Robinhood Chain is not covered). */
+const LLAMA_CHAINS: Record<number, string> = { 8453: 'base', 42161: 'arbitrum', 56: 'bsc', 5042: 'arc', 1151111081099710: 'solana', [NEAR_CHAIN_ID]: 'near' };
+
+type LlamaPrice = { chainId: number; price: number; symbol?: string; decimals?: number };
+
+/** Prices for one address on several chains in one DefiLlama request; confident quotes only. */
+async function fetchLlamaPrices(address: string, chainIds: number[]): Promise<LlamaPrice[]> {
+  const keys = chainIds.filter((id) => LLAMA_CHAINS[id]).map((id) => `${LLAMA_CHAINS[id]}:${address}`);
+  if (!keys.length) return [];
+  const data = await scanJson<{ coins?: Record<string, { price?: number; symbol?: string; decimals?: number; confidence?: number }> }>(`https://coins.llama.fi/prices/current/${keys.join(',')}`);
+  return Object.entries(data?.coins ?? {}).flatMap(([key, coin]) => {
+    const chainId = Number(Object.entries(LLAMA_CHAINS).find(([, slug]) => key.startsWith(`${slug}:`))?.[0]);
+    return Number(coin.price) > 0 && (coin.confidence ?? 1) >= 0.8 && Number.isFinite(chainId)
+      ? [{ chainId, price: Number(coin.price), symbol: coin.symbol, decimals: coin.decimals }] : [];
+  });
+}
+
+/** ERC-20 totalSupply() in whole tokens (for FDV when a source has only a price). */
+async function readTotalSupply(chainId: number, address: string, decimals: number): Promise<number | null> {
+  try {
+    const supply = await jsonRpcRace<string>(chainId, 'eth_call', [{ to: address, data: '0x18160ddd' }, 'latest'], { validate: isHex, timeoutMs: 2_500 });
+    if (!supply || supply === '0x') return null;
+    const units = BigInt(supply);
+    const base = 10n ** BigInt(decimals);
+    return Number(units / base) + Number(units % base) / Number(base);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fill what the primary source left empty: a price (and FDV from the
+ * on-chain supply) from DefiLlama for tokens no DEX indexer answered for,
+ * and FDV for quote-side scans.
+ */
+export async function enrichMarket(token: DetectedToken): Promise<DetectedToken> {
+  const hasPrice = token.priceUsd > 0;
+  if (hasPrice && token.fdv > 0) return token;
+  const enriched = { ...token };
+  if (!hasPrice) {
+    const [llama] = await fetchLlamaPrices(token.address, [token.chainId]).catch(() => []);
+    if (!llama) return { ...token, marketStatus: token.marketStatus === 'live' ? 'live' : 'none' };
+    enriched.priceUsd = llama.price;
+    enriched.marketStatus = token.liquidity > 0 ? 'live' : 'partial';
+    enriched.marketSource = token.marketSource ?? 'DefiLlama';
+    if (token.symbol === 'UNKNOWN' && llama.symbol) enriched.symbol = llama.symbol.toUpperCase();
+    if (llama.decimals !== undefined) enriched.decimals = llama.decimals;
+  }
+  if (!(enriched.fdv > 0) && token.chainType === 'EVM') {
+    const supply = await readTotalSupply(token.chainId, token.address, enriched.decimals);
+    if (supply) enriched.fdv = supply * enriched.priceUsd;
+  } else if (!(enriched.fdv > 0) && token.chainType === 'SVM') {
+    const jupiter = await fetchJupiterToken(token.address).catch(() => null);
+    if (jupiter?.fdv) enriched.fdv = jupiter.fdv;
+  }
+  return enriched;
 }
 
 /** Hex result of a read-only call, raced across the chain's backup RPCs. */
@@ -431,6 +569,7 @@ async function probeEvmChains(address: string): Promise<DetectedToken | null> {
     name: metadata?.name ?? 'Unknown Token',
     symbol: metadata?.symbol ?? 'UNKNOWN',
     decimals: metadata?.decimals ?? 18,
+    marketStatus: 'none',
     chainId: hit.chain.id,
     chainType: 'EVM',
     chainName: hit.chain.name,
@@ -518,33 +657,93 @@ async function detectNearToken(tokenId: string): Promise<DetectedToken | null> {
     freshDeployment: !pair && !geckoPool,
     liquiditySource: source,
     pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : undefined,
+    marketStatus: pair || geckoPool ? 'live' : 'none',
+    marketSource: pair ? 'DexScreener' : geckoPool ? 'GeckoTerminal' : undefined,
     ...(pair ? pairExtras(pair, isBase) : {}),
   };
 }
 
-/** The deepest DexScreener pair holding the scanned token (either side) on a Hopr chain. */
+/**
+ * The DexScreener pair to describe the scanned token with, on a Hopr chain.
+ * Pairs where the token is the base are preferred (their price, FDV and
+ * changes describe the token itself); a quote-side pair is used only when it
+ * is far deeper or nothing else exists, and its price is then inverted.
+ */
 function bestPair(pairs: DexScreenerPair[], address: string, allow: (chainId: number) => boolean = () => true): DexScreenerPair | undefined {
   const evm = isEvmAddress(address);
   const same = (candidate?: string) => !!candidate && (evm ? candidate.toLowerCase() === address.toLowerCase() : candidate === address);
-  return pairs
+  const eligible = pairs
     .filter((pair) => {
       const chainId = DEXSCREENER_CHAIN_SLUGS[pair.chainId.toLowerCase()];
       return chainId !== undefined && allow(chainId) && (same(pair.baseToken.address) || same(pair.quoteToken?.address));
     })
-    .sort((left, right) => (right.liquidity?.usd ?? 0) - (left.liquidity?.usd ?? 0))[0];
+    .sort((left, right) => (right.liquidity?.usd ?? 0) - (left.liquidity?.usd ?? 0));
+  const deepest = eligible[0];
+  const deepestBase = eligible.find((pair) => same(pair.baseToken.address));
+  if (!deepest || !deepestBase || deepestBase === deepest) return deepestBase ?? deepest;
+  // A base-side pool with real depth wins; otherwise the (much deeper) quote-side pool.
+  return (deepestBase.liquidity?.usd ?? 0) >= Math.min(1_000, (deepest.liquidity?.usd ?? 0) * 0.01) ? deepestBase : deepest;
 }
 
 /** GeckoTerminal is asked this long after DexScreener if DexScreener has not answered yet. */
 const GECKO_HEDGE_MS = 600;
 const SOLANA_ID = 1151111081099710;
 
+/** A Solana mint that exists on-chain (its account is owned by a token program). */
+async function solanaMintExists(mint: string): Promise<boolean> {
+  try {
+    const account = await jsonRpcRace<{ value: { owner?: string } | null }>(SOLANA_ID, 'getAccountInfo', [mint, { encoding: 'base64', dataSlice: { offset: 0, length: 0 } }], {
+      timeoutMs: 3_000, validate: (value) => value !== undefined && value !== null && 'value' in value,
+    });
+    return Boolean(account.value?.owner && /^Token/.test(account.value.owner));
+  } catch {
+    return false;
+  }
+}
+
+/** Every detection ends here: fill gaps from backup sources and label how complete the market data is. */
+async function finalize(token: DetectedToken | null): Promise<DetectedToken | null> {
+  if (!token) return null;
+  const labelled: DetectedToken = { ...token, marketStatus: token.marketStatus ?? (token.freshDeployment && !(token.priceUsd > 0) ? 'none' : 'live') };
+  return enrichMarket(labelled).catch(() => labelled);
+}
+
+async function solanaFallback(address: string): Promise<DetectedToken | null> {
+  const solChain = SUPPORTED_CHAINS.find((c) => c.key === 'sol')!;
+  // Neither DEX indexer nor Jupiter answered: a mint that exists on-chain is still a real token.
+  const exists = await solanaMintExists(address);
+  if (!exists) return null;
+  return {
+    address,
+    name: 'Unverified SPL Token',
+    symbol: 'UNKNOWN',
+    decimals: 9,
+    chainId: solChain.id,
+    chainType: 'SVM',
+    chainName: solChain.name,
+    chainColor: solChain.color,
+    priceUsd: 0,
+    liquidity: 0,
+    volume24h: 0,
+    fdv: 0,
+    change24h: 0,
+    freshDeployment: true,
+    onChain: true,
+    marketStatus: 'none',
+  };
+}
+
 export async function detectChain(address: string, chainHint?: number): Promise<DetectedToken | null> {
+  return finalize(await detectChainRaw(address, chainHint));
+}
+
+async function detectChainRaw(address: string, chainHint?: number): Promise<DetectedToken | null> {
   // Pool discovery knows the chain. Do not let the same EVM address on another chain win.
   if (chainHint !== undefined) {
     if (chainHint === NEAR_CHAIN_ID) return isNearAccountId(address) ? detectNearToken(address) : null;
     const chain = SUPPORTED_CHAINS.find((c) => c.id === chainHint);
     if (!chain || (chain.type === 'EVM' ? !isEvmAddress(address) : !isBase58(address))) return null;
-    // Both market sources at once; whichever finds the token first answers.
+    // Every market source at once; whichever finds the token first answers.
     const indexed = await firstHit<DetectedToken>([
       { delayMs: 0, run: async () => {
         const market = await fetchGeckoTerminalMarket(address, chain);
@@ -554,6 +753,7 @@ export async function detectChain(address: string, chainHint?: number): Promise<
         const pair = bestPair(await fetchDexScreener(address), address, (id) => id === chainHint);
         return pair ? pairToDetectedToken(pair, chain.id, chain, address) : null;
       } },
+      ...(chain.type === 'SVM' ? [{ delayMs: 300, run: () => fetchJupiterToken(address) }] : []),
     ]);
     if (indexed) return indexed;
     if (chain.type === 'EVM') {
@@ -562,7 +762,7 @@ export async function detectChain(address: string, chainHint?: number): Promise<
       return { address, ...metadata, chainId: chain.id, chainName: chain.name, chainType: 'EVM', chainColor: chain.color,
         priceUsd: 0, liquidity: 0, volume24h: 0, fdv: 0, change24h: 0, freshDeployment: true };
     }
-    return null;
+    return solanaFallback(address);
   }
   const nearId = address.trim().toLowerCase();
   if (!isEvmAddress(address) && !isBase58(address) && isNearAccountId(nearId)) {
@@ -576,31 +776,14 @@ export async function detectChain(address: string, chainHint?: number): Promise<
         const pair = bestPair(await fetchDexScreener(address), address, (id) => id === SOLANA_ID);
         return pair ? pairToDetectedToken(pair, solChain.id, solChain, address) : null;
       } },
+      // Jupiter indexes every tradable Solana token (pump.fun included) and is a different provider.
+      { delayMs: 300, run: () => fetchJupiterToken(address) },
       { delayMs: GECKO_HEDGE_MS, run: async () => {
         const market = await fetchGeckoTerminalMarket(address, solChain);
         return market ? geckoMarketToToken(market, solChain, address) : null;
       } },
     ]);
-    if (indexed) return indexed;
-
-    // Not indexed yet — we can't probe Solana bytecode the same way as EVM,
-    // so report it as a fresh/unverified Solana mint pending indexing.
-    return {
-      address,
-      name: 'Unverified SPL Token',
-      symbol: 'UNKNOWN',
-      decimals: 9,
-      chainId: solChain.id,
-      chainType: 'SVM',
-      chainName: solChain.name,
-      chainColor: solChain.color,
-      priceUsd: 0,
-      liquidity: 0,
-      volume24h: 0,
-      fdv: 0,
-      change24h: 0,
-      freshDeployment: true,
-    };
+    return indexed ?? solanaFallback(address);
   }
 
   if (isEvmAddress(address)) {
@@ -636,13 +819,30 @@ export async function detectChain(address: string, chainHint?: number): Promise<
     clearTimeout(probeTimer);
     if (indexed) return indexed;
 
-    // Not indexed anywhere (fresh deployment): find the chain by its bytecode, racing backup RPCs.
-    const freshToken = await (probe ?? probeEvmChains(address).catch(() => null));
-    if (freshToken && freshToken.chainId === 4663) {
-      const ponsPair = await fetchPonsPairToken(address);
-      if (ponsPair) freshToken.pairedAsset = ponsPair;
+    // Not indexed by a DEX tracker (fresh deployment, or the trackers are busy): find the chain by
+    // its bytecode and, at the same time, ask DefiLlama which chain prices it.
+    const evmIds = SUPPORTED_CHAINS.filter((c) => c.type === 'EVM').map((c) => c.id);
+    const [freshToken, prices] = await Promise.all([
+      probe ?? probeEvmChains(address).catch(() => null),
+      fetchLlamaPrices(address, evmIds).catch(() => [] as LlamaPrice[]),
+    ]);
+    const priced = prices.find((item) => item.chainId === freshToken?.chainId) ?? prices[0];
+    let token = freshToken;
+    if (priced && (!token || token.chainId !== priced.chainId)) {
+      const chain = SUPPORTED_CHAINS.find((c) => c.id === priced.chainId)!;
+      const metadata = await readErc20Metadata(chain.id, address);
+      token = { address, name: metadata?.name ?? priced.symbol ?? 'Token', symbol: metadata?.symbol ?? priced.symbol?.toUpperCase() ?? 'UNKNOWN',
+        decimals: metadata?.decimals ?? priced.decimals ?? 18, chainId: chain.id, chainType: 'EVM', chainName: chain.name, chainColor: chain.color,
+        priceUsd: 0, liquidity: 0, volume24h: 0, fdv: 0, change24h: 0, freshDeployment: true };
     }
-    return freshToken;
+    if (token && priced && token.chainId === priced.chainId) {
+      token = { ...token, priceUsd: priced.price, marketStatus: 'partial', marketSource: 'DefiLlama' };
+    }
+    if (token && token.chainId === 4663) {
+      const ponsPair = await fetchPonsPairToken(address);
+      if (ponsPair) token.pairedAsset = ponsPair;
+    }
+    return token;
   }
 
   return null;
