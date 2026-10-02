@@ -26,7 +26,8 @@ import {
   buildRefSwapPlan,
   getNearBalance,
   getTokenMetadata,
-  getRefSwapQuote,
+  getNearSwapQuote,
+  routeIntermediateTokens,
   HOPR_FEE_BPS,
   NATIVE_NEAR,
   NEAR_CHAIN_ID,
@@ -171,10 +172,16 @@ export async function ensureNearWallet(userId: string, env: TradingEnv): Promise
 }
 
 /** The encrypted key for the user's NEAR account (the same wallet row getCustodialWallet reads). */
-async function getNearSigner(userId: string, env: TradingEnv): Promise<{ accountId: string; encryptedKey: EncryptedSecret }> {
+async function getNearSigner(userId: string, env: TradingEnv, walletId?: string): Promise<{ accountId: string; encryptedKey: EncryptedSecret }> {
   if (!env.DB) throw new Error('DB binding required');
   type Row = { near_address: string | null; near_encrypted_key: string | null };
   let row: Row | null = null;
+  if (walletId) {
+    // A bundle trade signs with the wallet it was quoted for, not the active one.
+    row = await env.DB.prepare(`SELECT near_address, near_encrypted_key FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(walletId, userId).first<Row>();
+    if (!row?.near_address || !row.near_encrypted_key) throw new Error('That wallet has no NEAR account yet.');
+    return { accountId: row.near_address, encryptedKey: unpackEncryptedSecret(row.near_encrypted_key) };
+  }
   try {
     row = await env.DB.prepare(
       `SELECT near_address, near_encrypted_key FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
@@ -252,10 +259,18 @@ export async function createCustodialWallet(userId: string, env: TradingEnv): Pr
 async function getEncryptedKey(
   userId: string,
   chainType: 'EVM' | 'SVM',
-  env: TradingEnv
+  env: TradingEnv,
+  walletId?: string,
 ): Promise<EncryptedSecret> {
   if (!env.DB) throw new Error('DB binding required');
   let row: { evm_encrypted_key: string; solana_encrypted_key: string } | null = null;
+  if (walletId) {
+    // A bundle trade signs with the wallet it was quoted for, not the active one.
+    row = await env.DB.prepare(`SELECT evm_encrypted_key, solana_encrypted_key FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`)
+      .bind(walletId, userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
+    if (!row) throw new Error('That wallet no longer exists.');
+    return unpackEncryptedSecret(chainType === 'EVM' ? row.evm_encrypted_key : row.solana_encrypted_key);
+  }
   try {
     row = await env.DB.prepare(
       `SELECT evm_encrypted_key, solana_encrypted_key FROM wallet_accounts WHERE user_id = ?1 AND evm_encrypted_key IS NOT NULL AND solana_encrypted_key IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
@@ -277,6 +292,10 @@ export interface PendingTrade {
   id: string;
   userId: string;
   kind: 'buy' | 'sell';
+  /** Signing wallet for bundle trades; absent = the active wallet. */
+  walletId?: string;
+  /** Part of a bundle: a sell does not close the user's recorded position for the token. */
+  bundle?: boolean;
   /** Execution venue; absent on quotes stored before NEAR support (treated as LI.FI). */
   venue?: 'lifi' | 'ref' | 'intents';
   quote: LifiQuote;
@@ -307,6 +326,8 @@ export interface PendingTrade {
     quote: RefSwapQuote;
     outputStorageDeposit: string;
     wrapStorageDeposit: string;
+    /** Registrations for tokens a multi-leg route passes through (e.g. RHEA). */
+    intermediateStorageDeposits?: Record<string, string>;
     tokenInSymbol: string;
     tokenOutSymbol: string;
     tokenInDecimals: number;
@@ -360,6 +381,8 @@ export async function prepareBuy(params: {
   slippage: number;
   /** Hopr fee fraction; 0 for the second step of a NEAR-funded buy (fee already paid in step 1). */
   fee?: number;
+  /** Bundle buys: the wallet that signs (default: the active wallet). */
+  walletId?: string;
 }, env: TradingEnv): Promise<PendingTrade> {
   const fundingChain = getChainByKey(params.fundingChainKey);
   const targetChain = getChainById(params.targetChainId);
@@ -394,6 +417,7 @@ export async function prepareBuy(params: {
     id: crypto.randomUUID(),
     userId: params.userId,
     kind: 'buy',
+    ...(params.walletId ? { walletId: params.walletId, bundle: true } : {}),
     quote,
     fromAddress,
     feeBps: Math.round((params.fee ?? HOPR_FEE_BPS.swap / 10_000) * 10_000),
@@ -407,6 +431,52 @@ export async function prepareBuy(params: {
     fundingTokenAddress,
     displayAmount: params.fundingAmountUnits,
     displaySymbol: fundingChain.nativeSymbol,
+    createdAt: Date.now(),
+  };
+  await storePendingTrade(trade, env);
+  return trade;
+}
+
+/**
+ * Bundle sell: sell `amountUnits` of a token held by one wallet into the
+ * coin of the token's own chain (one LI.FI swap, signed by that wallet).
+ */
+export async function prepareTokenSell(params: {
+  userId: string;
+  wallet: CustodialWallet;
+  walletId: string;
+  chainId: number;
+  tokenAddress: string;
+  amountUnits: string;
+  slippage: number;
+}, env: TradingEnv): Promise<PendingTrade> {
+  const chain = getChainById(params.chainId);
+  if (!chain) throw new Error('Unsupported chain');
+  const owner = chain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const native = chain.id === ARC_CHAIN_ID ? ARC_NATIVE_USDC : nativeTokenAddress(chain.key);
+  const quote = await getQuote({
+    fromChain: String(chain.id), toChain: String(chain.id), fromToken: params.tokenAddress, toToken: native,
+    fromAmount: params.amountUnits, fromAddress: owner, toAddress: owner, slippage: params.slippage, fee: HOPR_FEE_BPS.swap / 10_000,
+  }, env.LIFI_API_KEY ?? '');
+  const trade: PendingTrade = {
+    id: crypto.randomUUID(),
+    userId: params.userId,
+    kind: 'sell',
+    walletId: params.walletId,
+    bundle: true,
+    quote,
+    fromAddress: owner,
+    feeBps: HOPR_FEE_BPS.swap,
+    fromChainType: chain.type,
+    fromChainKey: chain.key,
+    toChainId: chain.id,
+    toChainType: chain.type,
+    fromTokenAddress: params.tokenAddress,
+    toTokenAddress: native,
+    fundingChainId: chain.id,
+    fundingTokenAddress: native,
+    displayAmount: params.amountUnits,
+    displaySymbol: chain.nativeSymbol,
     createdAt: Date.now(),
   };
   await storePendingTrade(trade, env);
@@ -497,22 +567,28 @@ export async function prepareNearSwap(params: {
   slippage: number; // fraction, e.g. 0.01
   /** Zero for a continuation whose platform fee was already paid. */
   feeBps?: number;
+  /** Bundle trades: the wallet that signs (default: the active wallet). */
+  walletId?: string;
 }, env: TradingEnv): Promise<PendingTrade> {
   const rpc = nearRpcOptions(env);
-  const accountId = await ensureNearWallet(params.userId, env);
-  // Hopr's 0.5% is taken from the input inside the swap transaction; the rest is swapped.
+  const accountId = params.walletId ? (await getNearSigner(params.userId, env, params.walletId)).accountId : await ensureNearWallet(params.userId, env);
+  // Hopr's 0.75% is taken from the input inside the swap transaction; the rest is swapped.
   const feeAccount = env.HOPR_INTENTS_FEE_ACCOUNT?.trim() ?? '';
   const { net, fee } = splitHoprFee(BigInt(params.amountInUnits), feeAccount ? params.feeBps ?? HOPR_FEE_BPS.swap : 0);
-  const quote = await getRefSwapQuote({ tokenIn: params.tokenIn.id, tokenOut: params.tokenOut.id, amountIn: net.toString(), slippage: params.slippage });
+  // Best of Ref's smart router and Rhea DCL pools (launchpad tokens often trade only on DCL).
+  const quote = await getNearSwapQuote({ tokenIn: params.tokenIn.id, tokenOut: params.tokenOut.id, amountIn: net.toString(), slippage: params.slippage, accountId, rpc });
+  const usesWnear = params.tokenIn.id === NATIVE_NEAR || (params.tokenOut.id === NATIVE_NEAR && quote.legs?.at(-1)?.venue === 'dcl');
 
-  const [outputStorageDeposit, wrapStorageDeposit, feeStorageDeposit, balance] = await Promise.all([
+  const [outputStorageDeposit, wrapStorageDeposit, feeStorageDeposit, balance, intermediates] = await Promise.all([
     params.tokenOut.id === NATIVE_NEAR ? 0n : storageDepositNeeded(params.tokenOut.id, accountId, rpc),
-    params.tokenIn.id === NATIVE_NEAR ? storageDepositNeeded(WRAP_NEAR, accountId, rpc) : 0n,
+    usesWnear ? storageDepositNeeded(WRAP_NEAR, accountId, rpc) : 0n,
     fee > 0n ? storageDepositNeeded(refInputContract(params.tokenIn.id), feeAccount, rpc) : 0n,
     getNearBalance(accountId, [], rpc),
+    Promise.all(routeIntermediateTokens(quote).map(async (token) => [token, await storageDepositNeeded(token, accountId, rpc)] as const)),
   ]);
+  const intermediateStorageDeposits = Object.fromEntries(intermediates.filter(([, deposit]) => deposit > 0n));
   const hoprFee: RefSwapFee | null = fee > 0n ? { account: feeAccount, amount: fee, storageDeposit: feeStorageDeposit } : null;
-  const needed = planAttachedDeposit(buildRefSwapPlan(quote, { outputStorageDeposit, wrapStorageDeposit }, hoprFee)) + NEAR_GAS_RESERVE_YOCTO;
+  const needed = planAttachedDeposit(buildRefSwapPlan(quote, { outputStorageDeposit, wrapStorageDeposit, intermediateStorageDeposits }, hoprFee)) + NEAR_GAS_RESERVE_YOCTO;
   if (!balance.exists || BigInt(balance.availableYocto) < needed) {
     throw new Error(`Not enough NEAR: this swap needs about ${formatNearAmount(needed)} NEAR including storage and gas, and your wallet has ${formatNearAmount(balance.availableYocto)} NEAR available.`);
   }
@@ -525,6 +601,7 @@ export async function prepareNearSwap(params: {
     id: crypto.randomUUID(),
     userId: params.userId,
     kind: params.kind,
+    ...(params.walletId ? { walletId: params.walletId, bundle: true } : {}),
     venue: 'ref',
     quote: {
       id: `ref:${crypto.randomUUID()}`,
@@ -536,6 +613,7 @@ export async function prepareNearSwap(params: {
       quote,
       outputStorageDeposit: outputStorageDeposit.toString(),
       wrapStorageDeposit: wrapStorageDeposit.toString(),
+      ...(Object.keys(intermediateStorageDeposits).length ? { intermediateStorageDeposits: Object.fromEntries(Object.entries(intermediateStorageDeposits).map(([token, deposit]) => [token, deposit.toString()])) } : {}),
       tokenInSymbol: params.tokenIn.symbol,
       tokenOutSymbol: params.tokenOut.symbol,
       tokenInDecimals: params.tokenIn.decimals,
@@ -803,7 +881,7 @@ export async function prepareIncomingNearBuy(params: {
     // Validate the final pool before offering a funding transaction.
     const input = BigInt(preview.minAmountOut ?? preview.amountOut!) * 98n / 100n - NEAR_GAS_RESERVE_YOCTO;
     if (input <= 0n) throw new Error('Amount too small for NEAR gas and the final swap');
-    await getRefSwapQuote({ tokenIn: WRAP_NEAR, tokenOut: params.tokenAddress, amountIn: input.toString(), slippage: params.slippage });
+    await getNearSwapQuote({ tokenIn: WRAP_NEAR, tokenOut: params.tokenAddress, amountIn: input.toString(), slippage: params.slippage, rpc });
   }
   const balance = nearBefore;
   const wrapped = !direct && nearBefore.exists
@@ -1147,7 +1225,7 @@ export async function confirmTrade(
   if (trade.fromChainType === 'NEAR') throw new Error('Unsupported NEAR quote. Request a new quote.');
 
   const [encryptedKey, evmRpcUrl, solanaRpcUrl] = await Promise.all([
-    getEncryptedKey(userId, trade.fromChainType, env),
+    getEncryptedKey(userId, trade.fromChainType, env, trade.walletId),
     trade.fromChainType === 'EVM' ? rpcUrls.evm(SUPPORTED_CHAINS.find((c) => c.key === trade.fromChainKey)!.id) : undefined,
     trade.fromChainType === 'SVM' ? rpcUrls.solana() : undefined,
   ]);
@@ -1197,7 +1275,7 @@ export async function confirmTrade(
           result.txHash
         )
         .run();
-    } else {
+    } else if (!trade.bundle) {
       await env.DB.prepare(
         `UPDATE user_trades SET status = 'SOLD', sell_tx_hash = ?1, updated_at = CURRENT_TIMESTAMP
            WHERE user_id = ?2 AND target_token_address = ?3 AND status = 'SUBMITTED'`
@@ -1223,12 +1301,13 @@ export async function confirmTrade(
 async function confirmNearSwap(userId: string, trade: PendingTrade, env: TradingEnv): Promise<ConfirmResult> {
   const swap = trade.nearSwap;
   if (!swap) throw new Error('This NEAR quote is incomplete. Request a new quote.');
-  const signer = await getNearSigner(userId, env);
+  const signer = await getNearSigner(userId, env, trade.walletId);
   if (signer.accountId !== swap.accountId) throw new Error('Your active wallet changed since this quote. Request a new quote.');
 
   const plans = buildRefSwapPlan(swap.quote, {
     outputStorageDeposit: BigInt(swap.outputStorageDeposit),
     wrapStorageDeposit: BigInt(swap.wrapStorageDeposit),
+    intermediateStorageDeposits: Object.fromEntries(Object.entries(swap.intermediateStorageDeposits ?? {}).map(([token, deposit]) => [token, BigInt(deposit)])),
   }, swap.fee ? { account: swap.fee.account, amount: BigInt(swap.fee.amount), storageDeposit: BigInt(swap.fee.storageDeposit) } : null);
   const privateKey = await decryptPrivateKey(signer.encryptedKey, env.ENCRYPTION_KEY!);
   const result = await executeNearTransactions(signer.accountId, privateKey, plans, nearRpcOptions(env));
@@ -1247,7 +1326,7 @@ async function confirmNearSwap(userId: string, trade: PendingTrade, env: Trading
         dbTradeId, userId, trade.toTokenAddress, String(NEAR_CHAIN_ID), swap.quote.minOut,
         String(NEAR_CHAIN_ID), trade.fromTokenAddress, swap.quote.amountIn, result.confirmed ? 'CONFIRMED' : 'SUBMITTED', txHash,
       ).run();
-    } else {
+    } else if (!trade.bundle) {
       // NEAR sells are sized from the live token balance, so only a full exit closes the position.
       const remaining = BigInt(await viewFunction<string>(trade.fromTokenAddress, 'ft_balance_of', { account_id: signer.accountId }, nearRpcOptions(env)).catch(() => '1'));
       if (remaining === 0n) {

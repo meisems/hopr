@@ -72,6 +72,41 @@ export function venueName(venue: string | undefined): string {
  * as soon as every earlier task came back empty; the first non-null result
  * wins. A slow primary source costs at most its delay before the backup runs.
  */
+/**
+ * Ask every source (each after its own delay) and collect every answer.
+ * Resolves once all have finished, or `graceMs` after the first answer —
+ * so one slow provider adds at most the grace period. Answers keep task order.
+ */
+export function allHits<T>(tasks: Array<{ run: () => Promise<T | null | undefined>; delayMs: number }>, graceMs: number): Promise<T[]> {
+  return new Promise((resolve) => {
+    const hits: Array<T | undefined> = tasks.map(() => undefined);
+    let finished = 0;
+    let done = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const settle = () => {
+      if (done) return;
+      done = true;
+      timers.forEach(clearTimeout);
+      if (grace) clearTimeout(grace);
+      resolve(hits.filter((hit): hit is T => hit !== undefined));
+    };
+    if (!tasks.length) { resolve([]); return; }
+    tasks.forEach((task, index) => {
+      timers.push(setTimeout(() => {
+        task.run().then((value) => {
+          if (value === null || value === undefined || done) return;
+          hits[index] = value;
+          grace ??= setTimeout(settle, graceMs);
+        }, () => undefined).finally(() => {
+          finished += 1;
+          if (finished === tasks.length) settle();
+        });
+      }, task.delayMs));
+    });
+  });
+}
+
 export function firstHit<T>(tasks: Array<{ run: () => Promise<T | null | undefined>; delayMs: number }>): Promise<T | null> {
   return new Promise((resolve) => {
     let done = false;

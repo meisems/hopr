@@ -13,7 +13,7 @@
 
 import { getTokenMetadata, isNearAccountId, NEAR_CHAIN, NEAR_CHAIN_ID } from './nearService';
 import { jsonRpcRace } from './rpcPool';
-import { firstHit, launchpadFromVenue, venueName } from './venues';
+import { allHits, launchpadFromVenue, venueName } from './venues';
 
 export { NEAR_CHAIN, NEAR_CHAIN_ID };
 
@@ -87,6 +87,8 @@ export interface DetectedToken {
   holders?: number;
   /** Solana mint confirmed on-chain even though no market answered. */
   onChain?: boolean;
+  /** Best chart page for the token when it is not a DexScreener pair (e.g. its nearly.trade page). */
+  chartUrl?: string;
 }
 
 const BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -622,7 +624,55 @@ async function fetchGeckoNearPool(tokenId: string): Promise<GeckoNearPool | null
   }
 }
 
+type NearlyLaunchDetail = {
+  token?: string; name?: string; symbol?: string; icon?: string; pool_id?: string; quote?: string; price_usd?: number; fdv_usd?: number; near_usd?: number;
+  liquidity_near?: number; volume_24h_near?: number; change_24h?: number; created_at_ms?: number; holders?: number; buys?: number; sells?: number;
+};
+
+/** nearly.trade's own market data for one of its launches (price, FDV, pool depth, volume, holders). */
+async function fetchNearlyToken(tokenId: string): Promise<DetectedToken | null> {
+  if (!tokenId.endsWith('.nearlytrade.near')) return null;
+  const launch = await scanJson<NearlyLaunchDetail>(`https://nearly.trade/api/launch/${encodeURIComponent(tokenId)}`);
+  if (!launch || launch.token !== tokenId || !(Number(launch.price_usd) > 0)) return null;
+  const nearUsd = Number(launch.near_usd ?? 0);
+  const icon = typeof launch.icon === 'string' ? (launch.icon.startsWith('/') ? `https://nearly.trade${launch.icon}` : launch.icon) : undefined;
+  return {
+    address: tokenId,
+    name: launch.name ?? tokenId,
+    symbol: launch.symbol ?? 'UNKNOWN',
+    decimals: 18, // nearly.trade mints 1B tokens with 18 decimals; ft_metadata from the indexed path wins when read
+    chainId: NEAR_CHAIN_ID,
+    chainType: 'NEAR',
+    chainName: NEAR_CHAIN.name,
+    chainColor: NEAR_CHAIN.color,
+    priceUsd: Number(launch.price_usd),
+    liquidity: Number(launch.liquidity_near ?? 0) * nearUsd,
+    volume24h: Number(launch.volume_24h_near ?? 0) * nearUsd,
+    fdv: Number(launch.fdv_usd ?? 0),
+    change24h: Number(launch.change_24h ?? 0),
+    priceChanges: { h24: Number(launch.change_24h ?? 0) },
+    txns24h: launch.buys !== undefined ? { buys: Number(launch.buys ?? 0), sells: Number(launch.sells ?? 0) } : undefined,
+    pairCreatedAt: Number(launch.created_at_ms) || undefined,
+    holders: Number(launch.holders) || undefined,
+    imageUrl: icon,
+    freshDeployment: false,
+    liquiditySource: 'Rhea DCL',
+    launchpad: 'Nearly',
+    pairedAsset: launch.quote ? { address: launch.quote, symbol: launch.quote === 'wrap.near' ? 'wNEAR' : launch.quote === 'token.rhealab.near' ? 'RHEA' : launch.quote } : undefined,
+    chartUrl: `https://nearly.trade/t/${encodeURIComponent(tokenId)}`,
+    marketStatus: 'live',
+    marketSource: 'nearly.trade',
+  };
+}
+
 async function detectNearToken(tokenId: string): Promise<DetectedToken | null> {
+  const [indexed, nearly] = await Promise.all([detectIndexedNearToken(tokenId), fetchNearlyToken(tokenId).catch(() => null)]);
+  // A launchpad's own numbers and the DEX indexers' are merged; the launchpad's chart page wins.
+  const merged = mergeMarket([indexed, nearly].filter((item): item is DetectedToken => item !== null));
+  return merged && nearly ? { ...merged, chartUrl: nearly.chartUrl, launchpad: nearly.launchpad, decimals: indexed?.decimals ?? merged.decimals } : merged;
+}
+
+async function detectIndexedNearToken(tokenId: string): Promise<DetectedToken | null> {
   const [pairs, geckoPool, metadata] = await Promise.all([
     fetchDexScreener(tokenId).catch(() => [] as DexScreenerPair[]),
     fetchGeckoNearPool(tokenId),
@@ -701,6 +751,51 @@ async function solanaMintExists(mint: string): Promise<boolean> {
   }
 }
 
+/** After the first provider answers, the others get this long to add what they know. */
+const MERGE_GRACE_MS = 1_200;
+
+/**
+ * Combine what every provider reported into one token: the deepest market
+ * supplies the price and pool, any field it lacks comes from the others, and
+ * token-wide figures (liquidity, 24h volume) take the most complete value.
+ */
+export function mergeMarket(results: DetectedToken[]): DetectedToken | null {
+  if (!results.length) return null;
+  const priced = results.filter((item) => item.priceUsd > 0);
+  const ranked = [...(priced.length ? priced : results)].sort((left, right) => right.liquidity - left.liquidity);
+  const primary = ranked[0];
+  const others = results.filter((item) => item !== primary);
+  const pick = <K extends keyof DetectedToken>(key: K, valid: (value: DetectedToken[K]) => boolean): DetectedToken[K] =>
+    (valid(primary[key]) ? primary[key] : others.find((item) => valid(item[key]))?.[key] ?? primary[key]);
+  const positive = (value: unknown) => typeof value === 'number' && value > 0;
+  const present = (value: unknown) => value !== undefined && value !== null && value !== '';
+  const named = (value: string | undefined) => Boolean(value) && !/^(Unknown|Unverified)/.test(value ?? '');
+  const sources = [...new Set(results.filter((item) => item.priceUsd > 0 || item.liquidity > 0).map((item) => item.marketSource).filter(Boolean))];
+  return {
+    ...primary,
+    name: named(primary.name) ? primary.name : others.find((item) => named(item.name))?.name ?? primary.name,
+    symbol: primary.symbol !== 'UNKNOWN' ? primary.symbol : others.find((item) => item.symbol !== 'UNKNOWN')?.symbol ?? primary.symbol,
+    priceUsd: pick('priceUsd', positive),
+    liquidity: Math.max(...results.map((item) => item.liquidity || 0)),
+    volume24h: Math.max(...results.map((item) => item.volume24h || 0)),
+    fdv: pick('fdv', positive),
+    change24h: primary.change24h || others.find((item) => item.change24h)?.change24h || 0,
+    priceChanges: pick('priceChanges', present),
+    txns24h: pick('txns24h', present),
+    pairCreatedAt: pick('pairCreatedAt', positive),
+    pairAddress: pick('pairAddress', present),
+    geckoNetwork: pick('geckoNetwork', present),
+    pairUrl: pick('pairUrl', present),
+    imageUrl: pick('imageUrl', present),
+    holders: pick('holders', positive),
+    pairedAsset: pick('pairedAsset', present),
+    launchpad: pick('launchpad', present),
+    freshDeployment: results.every((item) => item.freshDeployment),
+    marketStatus: results.some((item) => item.marketStatus === 'live') ? 'live' : primary.marketStatus,
+    marketSource: sources.length ? sources.join(' · ') : primary.marketSource,
+  };
+}
+
 /** Every detection ends here: fill gaps from backup sources and label how complete the market data is. */
 async function finalize(token: DetectedToken | null): Promise<DetectedToken | null> {
   if (!token) return null;
@@ -743,18 +838,18 @@ async function detectChainRaw(address: string, chainHint?: number): Promise<Dete
     if (chainHint === NEAR_CHAIN_ID) return isNearAccountId(address) ? detectNearToken(address) : null;
     const chain = SUPPORTED_CHAINS.find((c) => c.id === chainHint);
     if (!chain || (chain.type === 'EVM' ? !isEvmAddress(address) : !isBase58(address))) return null;
-    // Every market source at once; whichever finds the token first answers.
-    const indexed = await firstHit<DetectedToken>([
-      { delayMs: 0, run: async () => {
-        const market = await fetchGeckoTerminalMarket(address, chain);
-        return market ? geckoMarketToToken(market, chain, address) : null;
-      } },
+    // Every market source at once; their answers are merged field by field.
+    const indexed = mergeMarket(await allHits<DetectedToken>([
       { delayMs: 0, run: async () => {
         const pair = bestPair(await fetchDexScreener(address), address, (id) => id === chainHint);
         return pair ? pairToDetectedToken(pair, chain.id, chain, address) : null;
       } },
-      ...(chain.type === 'SVM' ? [{ delayMs: 300, run: () => fetchJupiterToken(address) }] : []),
-    ]);
+      { delayMs: 0, run: async () => {
+        const market = await fetchGeckoTerminalMarket(address, chain);
+        return market ? geckoMarketToToken(market, chain, address) : null;
+      } },
+      ...(chain.type === 'SVM' ? [{ delayMs: 0, run: () => fetchJupiterToken(address) }] : []),
+    ], MERGE_GRACE_MS));
     if (indexed) return indexed;
     if (chain.type === 'EVM') {
       const metadata = await readErc20Metadata(chain.id, address);
@@ -771,18 +866,18 @@ async function detectChainRaw(address: string, chainHint?: number): Promise<Dete
 
   if (isBase58(address)) {
     const solChain = SUPPORTED_CHAINS.find((c) => c.key === 'sol')!;
-    const indexed = await firstHit<DetectedToken>([
+    const indexed = mergeMarket(await allHits<DetectedToken>([
       { delayMs: 0, run: async () => {
         const pair = bestPair(await fetchDexScreener(address), address, (id) => id === SOLANA_ID);
         return pair ? pairToDetectedToken(pair, solChain.id, solChain, address) : null;
       } },
       // Jupiter indexes every tradable Solana token (pump.fun included) and is a different provider.
-      { delayMs: 300, run: () => fetchJupiterToken(address) },
-      { delayMs: GECKO_HEDGE_MS, run: async () => {
+      { delayMs: 0, run: () => fetchJupiterToken(address) },
+      { delayMs: 300, run: async () => {
         const market = await fetchGeckoTerminalMarket(address, solChain);
         return market ? geckoMarketToToken(market, solChain, address) : null;
       } },
-    ]);
+    ], MERGE_GRACE_MS));
     return indexed ?? solanaFallback(address);
   }
 
@@ -790,8 +885,8 @@ async function detectChainRaw(address: string, chainHint?: number): Promise<Dete
     // A token with no market yet is found on-chain; start that probe if the markets are slow.
     let probe: Promise<DetectedToken | null> | null = null;
     const probeTimer = setTimeout(() => { probe = probeEvmChains(address).catch(() => null); }, GECKO_HEDGE_MS + 400);
-    const indexed = await firstHit<DetectedToken>([
-      // DexScreener first: it covers Uniswap, PancakeSwap, Aerodrome and launchpads like Flap and Four.meme.
+    const hits = await allHits<DetectedToken>([
+      // DexScreener: it covers Uniswap, PancakeSwap, Aerodrome and launchpads like Flap and Four.meme.
       { delayMs: 0, run: async () => {
         const indexedPair = bestPair(await fetchDexScreener(address), address, (id) => id !== SOLANA_ID);
         if (!indexedPair) return null;
@@ -811,11 +906,14 @@ async function detectChainRaw(address: string, chainHint?: number): Promise<Dete
         return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
       } },
       // One GeckoTerminal search across every chain (launchpad pools DexScreener hasn't indexed).
-      { delayMs: GECKO_HEDGE_MS, run: async () => {
+      { delayMs: 300, run: async () => {
         const hit = await fetchGeckoSearchMarket(address);
         return hit && hit.chain.type === 'EVM' ? geckoMarketToToken(hit.market, hit.chain, address) : null;
       } },
-    ]);
+    ], MERGE_GRACE_MS);
+    // Merge only answers about the same chain as the deepest one (an address can exist on several chains).
+    const deepest = [...hits].sort((left, right) => right.liquidity - left.liquidity)[0];
+    const indexed = mergeMarket(hits.filter((hit) => hit.chainId === deepest?.chainId));
     clearTimeout(probeTimer);
     if (indexed) return indexed;
 
@@ -846,6 +944,33 @@ async function detectChainRaw(address: string, chainHint?: number): Promise<Dete
   }
 
   return null;
+}
+
+/** DexScreener's chain slugs: dexscreener.com/<slug>/<token address> opens the token's top pair. */
+const DEXSCREENER_SLUGS: Record<number, string> = {
+  1151111081099710: 'solana', 42161: 'arbitrum', 8453: 'base', 56: 'bsc', 4663: 'robinhood', 5042: 'arc', [NEAR_CHAIN_ID]: 'near',
+};
+const GECKOTERMINAL_NETWORKS: Record<number, string> = {
+  1151111081099710: 'solana', 42161: 'arbitrum', 8453: 'base', 56: 'bsc', 4663: 'robinhood', 5042: 'arc', [NEAR_CHAIN_ID]: 'near',
+};
+
+/**
+ * A chart page that opens straight on the token (not a search page): the
+ * launchpad's own page when there is one, DexScreener's token page when
+ * DexScreener lists it, else GeckoTerminal's pool or token page (which
+ * redirects to the token's top pool), else DexScreener's token page.
+ */
+export function tokenChartUrl(token: { address: string; chainId?: number; chartUrl?: unknown; marketSource?: unknown; geckoNetwork?: unknown; pairAddress?: unknown }): string {
+  if (typeof token.chartUrl === 'string' && /^https:\/\//.test(token.chartUrl)) return token.chartUrl;
+  const slug = token.chainId !== undefined ? DEXSCREENER_SLUGS[token.chainId] : undefined;
+  const dexscreener = slug ? `https://dexscreener.com/${slug}/${encodeURIComponent(token.address)}` : `https://dexscreener.com/search?q=${encodeURIComponent(token.address)}`;
+  if (typeof token.marketSource === 'string' && token.marketSource.includes('DexScreener')) return dexscreener;
+  const network = typeof token.geckoNetwork === 'string' ? token.geckoNetwork : token.chainId !== undefined ? GECKOTERMINAL_NETWORKS[token.chainId] : undefined;
+  if (network && typeof token.pairAddress === 'string' && token.pairAddress && typeof token.marketSource === 'string' && token.marketSource.includes('GeckoTerminal')) {
+    return `https://www.geckoterminal.com/${network}/pools/${encodeURIComponent(token.pairAddress)}`;
+  }
+  if (network && typeof token.marketSource === 'string' && token.marketSource.length) return `https://www.geckoterminal.com/${network}/tokens/${encodeURIComponent(token.address)}`;
+  return dexscreener;
 }
 
 const CHAIN_LOGO_KEYS: Record<number, string> = {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { DetectedToken, formatTokenPrice, formatUsd, chainKeyForId, formatAddress, formatAge, tokenExplorerUrl } from '../services/chainDetector';
+import { DetectedToken, formatTokenPrice, formatUsd, chainKeyForId, formatAddress, formatAge, tokenChartUrl, tokenExplorerUrl } from '../services/chainDetector';
+
+const chartSiteName = (url: string) => (url.includes('nearly.trade') ? 'nearly.trade' : url.includes('geckoterminal') ? 'GeckoTerminal' : 'DexScreener');
 import { TrendingUp, TrendingDown, Clock, BarChart3, Loader2, Copy, Check } from 'lucide-react';
 import ChainLogo from './ChainLogo';
 
@@ -191,9 +193,7 @@ export default function ChartPanel({ token }: ChartPanelProps) {
                 <button onClick={copyAddress} className="pressable flex items-center gap-1 rounded-md bg-gray-800/60 px-1.5 py-0.5 font-mono text-[11px] text-gray-400 hover:text-white" title="Copy contract address">
                   {formatAddress(token.address)} {copied ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
                 </button>
-                {(token.pairUrl || token.pairAddress) && (
-                  <a href={token.pairUrl ?? `https://dexscreener.com/search?q=${encodeURIComponent(token.address)}`} target="_blank" rel="noreferrer" className="pressable rounded-md bg-gray-800/60 px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-white">DexScreener ↗</a>
-                )}
+                <a href={tokenChartUrl(token)} target="_blank" rel="noreferrer" className="pressable rounded-md bg-gray-800/60 px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-white">{chartSiteName(tokenChartUrl(token))} ↗</a>
                 {explorerUrl && <a href={explorerUrl} target="_blank" rel="noreferrer" className="pressable rounded-md bg-gray-800/60 px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-white">Explorer ↗</a>}
               </div>
             </div>

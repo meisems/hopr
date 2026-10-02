@@ -217,7 +217,7 @@ npx wrangler secret put NEAR_RPC_URL
 
 ### Fees, NEAR routes and referrals
 
-Hopr charges 0.5% on trades and 1% on bridges. Migrations `0005_referrals.sql`, `0006_referral_fee_share.sql` and `0007_intents_fee_policy.sql` (applied by the command above) enable the referral program: referrers earn 25% of HOPR fee revenue after the routing provider share. Referrals run entirely in the Telegram bot (`/referral`); the website has no referral page.
+Hopr charges 0.75% on trades and bridges. Migrations `0005_referrals.sql`, `0006_referral_fee_share.sql` and `0007_intents_fee_policy.sql` (applied by the command above) enable the referral program: referrers earn 25% of HOPR fee revenue after the routing provider share. Referrals run entirely in the Telegram bot (`/referral`); the website has no referral page.
 
 ```bash
 # LI.FI API key (partner portal) — required: without it all users share the worker's small anonymous quota.
@@ -333,6 +333,10 @@ In a private chat with the bot:
 7. Open `/pools nearpaid`, `/pools pons`, `/pools pump`, `/pools tolly`, and `/pools argus`. Check venue attribution, pool links and timestamps.
 8. Follow a `t.me/<bot>?start=ref_<code>` link from a second Telegram account and confirm `/referral` on the first account counts the friend. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
 9. Open the website in a regular browser, scan a token, and tap **Open … in the bot**: the bot should open on that token's trading panel. The site shows no trade card, wallet connect, Bridge, Wallets or Rewards pages outside Telegram.
+
+### Bot profile picture
+
+The logo set lives in `public/brand/` (`logo-icon.svg`, `logo-mark.svg`, `logo-full.svg`). Telegram's Bot API cannot set a bot's photo, so upload `public/brand/bot-avatar.png` (640×640, circle-safe) once in @BotFather: `/setuserpic` → choose the bot → send the image.
 
 ## 10. Rollback
 

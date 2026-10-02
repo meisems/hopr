@@ -2,7 +2,7 @@
 // rewards, and payout requests. See migrations/0005 and 0006.
 //
 // Referrers earn REFERRAL_SHARE (25%) of Hopr's fee revenue AFTER the
-// routing provider's share (0.5% trades, 1% bridges before splitting). Rewards are never taken
+// routing provider's share (0.75% on trades and bridges before splitting). Rewards are never taken
 // from client-supplied numbers — every reported trade is checked against
 // the route provider first:
 //   LI.FI ......... status API: DONE, Hopr's integrator id, sent by the referred
@@ -23,7 +23,7 @@ import { verifyWalletProof, type WalletProof } from './walletProof';
 import type { IntentsFeeRecord } from './intentsFees';
 
 export const REFERRAL_SHARE = 0.25; // of Hopr's fee revenue after the provider's share
-export const PLATFORM_FEE = { swap: 0.005, bridge: 0.01 } as const;
+export const PLATFORM_FEE = { swap: 0.0075, bridge: 0.0075 } as const;
 const DEFAULT_MIN_PAYOUT_USD = 5;
 const MAX_VERIFY_ATTEMPTS = 40;
 const CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';

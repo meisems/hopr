@@ -83,7 +83,8 @@ test('help command lists working commands and shows navigation buttons', async (
   assert.equal(calls[0].body.chat_id, 321);
   assert.equal(calls[0].body.parse_mode, 'HTML');
   assert.doesNotMatch(plain(calls[0].body.text), /setwallet|link a public/i);
-  assert.match(plain(calls[0].body.text), /create, switch, import or delete up to 10 wallets/);
+  assert.match(plain(calls[0].body.text), /create, switch, rename, import or delete up to 10 wallets/);
+  assert.match(plain(calls[0].body.text), /Bundle buy \/ sell/);
   assert.match(plain(calls[0].body.text), /Pay from any chain/);
   assert.match(plain(calls[0].body.text), /\/swap <amount> <from> <to>/);
   assert.match(plain(calls[0].body.text), /Confirm and submit button signs and submits/);
@@ -647,4 +648,80 @@ test('/importkey evm becomes a new active wallet instead of overwriting a funded
   assert.ok(!runs.some((run) => /user_wallets/.test(run.sql) && /UPDATE|ON CONFLICT/.test(run.sql)), 'the legacy wallet row is never overwritten');
   assert.match(plain(calls.at(-1).body.text), /EVM key imported as W2/);
   assert.ok(!JSON.stringify(calls).includes(key.slice(2)), 'the raw key is never echoed back');
+});
+
+/** D1 stand-in with several wallets; records UPDATE/INSERT statements. */
+function walletsDb(accounts, runs = []) {
+  return {
+    prepare(sql) {
+      const statement = (params = []) => ({
+        async all() { return { results: /wallet_accounts/.test(sql) ? accounts : [] }; },
+        async first() { return /wallet_accounts|user_wallets/.test(sql) && /SELECT/.test(sql) ? { ...accounts[0] } : null; },
+        async run() { runs.push({ sql, params }); return { success: true, meta: { changes: 1 } }; },
+      });
+      return { ...statement(), bind: (...params) => statement(params) };
+    },
+  };
+}
+
+const TWO_WALLETS = [
+  { id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: null },
+  { id: 'w2', label: 'W2', source: 'generated', is_active: 0, evm_address: '0x2222222222222222222222222222222222222222', solana_address: 'DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy', near_address: null },
+];
+
+test('bundle buy quotes every funded wallet and asks for one confirmation; unfunded wallets are listed as skipped', async () => {
+  const token = '0x3333333333333333333333333333333333330003';
+  const kv = createKv();
+  await kv.put('telegram:4411', JSON.stringify({ lastTokenAddress: token, lastTokenChainId: 8453, lastTokenSymbol: 'BUN', fundingChainId: 8453 }));
+  const lifiFrom = [];
+  const { calls } = await sendUpdate({ callback_query: { id: 'b', data: 'bundle:buy:0.01', message: { message_id: 8, chat: { id: 4411, type: 'private' } } } }, {
+    extraEnv: { DB: walletsDb(TWO_WALLETS), TELEGRAM_STATE: kv, ENCRYPTION_KEY: 'k'.repeat(40) },
+    externalFetch: async (url, init) => {
+      const href = String(url);
+      if (href.includes('li.quest')) {
+        lifiFrom.push(new URL(href).searchParams.get('fromAddress'));
+        return Response.json({ id: 'q', estimate: { fromAmount: '1', toAmount: '5000000000000000000000', toAmountMin: '4900000000000000000000', executionDuration: 30 }, action: { toToken: { decimals: 18 } }, transactionRequest: { to: '0x9', data: '0x', value: '0x1' } });
+      }
+      const body = JSON.parse(init.body);
+      // W1 holds 1 ETH on Base, W2 holds nothing.
+      if (body.method === 'eth_getBalance') return Response.json({ jsonrpc: '2.0', id: 1, result: body.params[0] === TWO_WALLETS[0].evm_address ? '0xde0b6b3a7640000' : '0x0' });
+      return Response.json({ jsonrpc: '2.0', id: 1, result: '0x' });
+    },
+  });
+  const panel = calls.at(-1).body;
+  const text = plain(panel.text);
+  assert.match(text, /Bundle BUY · BUN/);
+  assert.match(text, /W1  0\.01 ETH → ≈ 5,000/);
+  assert.match(text, /W2 · not enough ETH/);
+  assert.deepEqual(lifiFrom, [TWO_WALLETS[0].evm_address], 'only the funded wallet is quoted, with its own address');
+  const confirm = panel.reply_markup.inline_keyboard[0][0];
+  assert.match(confirm.callback_data, /^bundle:confirm:[0-9a-f]{8}$/);
+  assert.equal(confirm.text, '✅ Confirm 1 trade');
+  const stored = [...kv.values.keys()].filter((key) => key.startsWith('pending-trade:') || key.includes(':4411:'));
+  assert.ok(stored.length >= 1);
+});
+
+test('an expired or already-used bundle can never be submitted', async () => {
+  const { response, calls } = await sendUpdate({ callback_query: { id: 'c', data: 'bundle:confirm:abcdef12', message: { message_id: 8, chat: { id: 4412, type: 'private' } } } }, {
+    extraEnv: { DB: walletsDb(TWO_WALLETS), TELEGRAM_STATE: createKv() },
+  });
+  assert.equal(response.status, 200);
+  assert.match(plain(calls.at(-1).body.text), /Bundle expired/);
+});
+
+test('wallets are named W1, W2 … and can be renamed from the bot', async () => {
+  const kv = createKv();
+  const runs = [];
+  const db = walletsDb(TWO_WALLETS, runs);
+  const prompt = await sendUpdate({ callback_query: { id: 'r', data: 'wallet:rename', message: { message_id: 9, chat: { id: 4413, type: 'private' } } } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
+  const ask = prompt.calls.at(-1).body;
+  assert.match(ask.text, /Rename wallet — reply with a new name for W1/);
+  assert.equal(ask.reply_markup.force_reply, true);
+  await sendUpdate({ message: { chat: { id: 4413, type: 'private' }, text: 'Sniper 1', reply_to_message: { text: ask.text, from: { is_bot: true } } } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
+  const update = runs.find((run) => /SET label = \?1/.test(run.sql));
+  assert.deepEqual(update.params, ['Sniper 1', 'w1', '4413']);
+  // Invalid names are refused.
+  await kv.put('rename:v1:4413', 'w1');
+  const bad = await sendUpdate({ message: { chat: { id: 4413, type: 'private' }, text: '<script>', reply_to_message: { text: ask.text, from: { is_bot: true } } } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
+  assert.match(plain(bad.calls.at(-1).body.text), /Name not saved/);
 });

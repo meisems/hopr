@@ -90,7 +90,7 @@ test('the Flap feed lists fresh launches from Portal events, priced by one DexSc
 });
 
 test('every radar source has a feed and fits Telegram callback limits', () => {
-  const custom = new Set(['nearpaid', 'tolly', 'flap']);
+  const custom = new Set(['nearly', 'nearpaid', 'tolly', 'flap']);
   for (const source of LAUNCHPADS) {
     assert.ok(custom.has(source.id) || sourceVenues(source).length > 0, source.id);
     assert.ok(Buffer.byteLength(`pools:${source.id}`) <= 64);

@@ -38,7 +38,7 @@ export interface LifiQuoteRequest {
   toAddress: string;
   slippage?: number; // e.g. 0.02 for 2%
   integrator?: string;
-  fee?: number; // fraction of fromAmount, e.g. 0.005 = 0.5%
+  fee?: number; // fraction of fromAmount, e.g. 0.0075 = 0.75%
 }
 
 export interface LifiQuote {
@@ -75,7 +75,7 @@ export async function getQuote(req: LifiQuoteRequest, apiKey: string): Promise<L
     toAddress: req.toAddress,
     slippage: String(req.slippage ?? 0.03),
     integrator: req.integrator ?? 'hopr',
-    fee: String(req.fee ?? 0.005),
+    fee: String(req.fee ?? 0.0075),
   });
 
   const res = await fetch(`${LIFI_QUOTE_URL}?${params.toString()}`, {

@@ -239,7 +239,8 @@ export function lensFactor(width: number, height: number): number {
 }
 
 /** Brand plane geometry (world units), shared with the DOM hand-off. */
-export const LOGO_PLANE = { halfHeight: 2.4, aspect: 464 / 306, distance: 16 };
+/** aspect must match public/brand/logo-mark.svg viewBox (width / height). */
+export const LOGO_PLANE = { halfHeight: 2.4, aspect: 320 / 372, distance: 16 };
 
 /**
  * Screen size (CSS px) of the brand mark once spacetime is flat, so the crisp

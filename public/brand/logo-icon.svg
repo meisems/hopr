@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Hopr">
+  <title>Hopr</title>
+  <!-- An "h" whose shoulder hops over and lands as an arrow: hop across chains. -->
+  <defs>
+    <linearGradient id="hopr-bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b1d1c"/><stop offset="1" stop-color="#04100f"/>
+    </linearGradient>
+    <radialGradient id="hopr-glow" cx="390" cy="120" r="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2fc4b2" stop-opacity="0.35"/><stop offset="1" stop-color="#2fc4b2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hopr-g" x1="150" y1="430" x2="420" y2="110" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17a39c"/><stop offset="0.5" stop-color="#3fd6c2"/><stop offset="1" stop-color="#a5ffe5"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#hopr-bg)"/>
+  <rect width="512" height="512" rx="116" fill="url(#hopr-glow)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="114.5" fill="none" stroke="#3fd6c2" stroke-opacity="0.16" stroke-width="3"/>
+  <g transform="translate(-24 8)">
+    <g fill="none" stroke="url(#hopr-g)" stroke-width="52" stroke-linecap="round">
+      <path d="M160 104 V408"/>
+      <path d="M160 316 C164 196 322 160 380 352"/>
+    </g>
+    <path d="M393.5 405.6 L427.3 333.5 L337.4 359.5 Z" fill="url(#hopr-g)" stroke="url(#hopr-g)" stroke-width="12" stroke-linejoin="round"/>
+  </g>
+</svg>

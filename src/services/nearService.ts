@@ -297,6 +297,211 @@ export interface RefSwapQuote {
   actions: RefSwapAction[];
   hops: number;
   slippage: number; // fraction, e.g. 0.01
+  /**
+   * Multi-venue route (Rhea DCL, or Ref then DCL): each leg is its own
+   * ft_transfer_call, the next leg spending the previous leg's minimum
+   * output. Absent on a plain Ref smart-router route (`actions`).
+   */
+  legs?: NearSwapLeg[];
+  /** Human route label: "Ref Finance", "Rhea DCL", "Ref Finance → Rhea DCL". */
+  venue?: string;
+}
+
+/** One hop group of a NEAR swap on a single venue. */
+export interface NearSwapLeg {
+  venue: 'ref' | 'dcl';
+  /** Contract ids; NATIVE_NEAR only as the final output of a Ref leg (Ref unwraps it). */
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: string;
+  expectedOut: string;
+  minOut: string;
+  /** Ref smart-router actions (venue 'ref'). */
+  actions?: RefSwapAction[];
+  /** DCL pool path (venue 'dcl'). */
+  poolIds?: string[];
+  /** DCL output recipient (the trading account). */
+  recipient?: string;
+}
+
+/** Rhea (Ref) concentrated-liquidity exchange: where launchpads like nearly.trade create their pools. */
+export const REF_DCL = 'dclv2.ref-labs.near';
+/** RHEA, a common quote token for launchpad DCL pools (besides wNEAR). */
+export const RHEA_TOKEN = 'token.rhealab.near';
+const DCL_FEE_TIERS = [100, 400, 2000, 10000];
+
+/** DCL pool ids are `token_a|token_b|fee` with the two token ids in sorted order. */
+export function dclPoolId(tokenA: string, tokenB: string, fee: number): string {
+  return `${[tokenA, tokenB].sort().join('|')}|${fee}`;
+}
+
+/** Existing DCL pools pairing `token` with `quote` (one per fee tier). */
+export async function findDclPools(token: string, quote: string, options?: NearRpcOptions): Promise<string[]> {
+  const ids = DCL_FEE_TIERS.map((fee) => dclPoolId(token, quote, fee));
+  const pools = await Promise.all(ids.map((poolId) => viewFunction<unknown>(REF_DCL, 'get_pool', { pool_id: poolId }, options).then((pool) => (pool ? poolId : null)).catch(() => null)));
+  return pools.filter((poolId): poolId is string => Boolean(poolId));
+}
+
+/** DCL output for `amountIn` through a pool path, or 0n when the path cannot fill it. */
+export async function dclQuote(poolIds: string[], tokenIn: string, tokenOut: string, amountIn: string, options?: NearRpcOptions): Promise<bigint> {
+  const result = await viewFunction<{ amount?: string } | null>(REF_DCL, 'quote', { pool_ids: poolIds, input_token: tokenIn, output_token: tokenOut, input_amount: amountIn, tag: null }, options).catch(() => null);
+  return result?.amount && /^\d+$/.test(result.amount) ? BigInt(result.amount) : 0n;
+}
+
+/**
+ * Direct quote on one Ref classic pool, found through GeckoTerminal's NEAR
+ * pool index and priced on-chain with the exchange's get_return — the
+ * fallback when the smart router is slow or down.
+ */
+export async function getRefDirectQuote(params: { tokenIn: string; tokenOut: string; amountIn: string; slippage: number; rpc?: NearRpcOptions; fetchImpl?: typeof fetch }): Promise<RefSwapQuote> {
+  const tokenIn = refToken(params.tokenIn);
+  const tokenOut = refToken(params.tokenOut);
+  const token = tokenIn === WRAP_NEAR ? tokenOut : tokenIn;
+  const doFetch = params.fetchImpl ?? fetch;
+  const getJson = (url: string) => doFetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5_000) })
+    .then((response) => (response.ok ? response.json() : null)).catch(() => null);
+  // Two independent pool indexes (either may be rate limited): DexScreener and GeckoTerminal.
+  const [screener, gecko] = await Promise.all([
+    getJson(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(token)}`) as Promise<{ pairs?: Array<{ chainId?: string; pairAddress?: string; baseToken?: { address?: string }; quoteToken?: { address?: string }; liquidity?: { usd?: number } }> } | null>,
+    getJson(`https://api.geckoterminal.com/api/v2/networks/near/tokens/${encodeURIComponent(token)}/pools?page=1`) as Promise<{ data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string }; relationships?: { base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }> } | null>,
+  ]);
+  const found = new Map<number, number>();
+  const consider = (address: string | undefined, sides: Array<string | undefined>, reserve: number) => {
+    const id = /^refv1-(\d+)$/.exec(address ?? '')?.[1];
+    if (id && sides.includes(tokenIn) && sides.includes(tokenOut)) found.set(Number(id), Math.max(found.get(Number(id)) ?? 0, reserve));
+  };
+  for (const pair of screener?.pairs ?? []) {
+    if (pair.chainId === 'near') consider(pair.pairAddress, [pair.baseToken?.address, pair.quoteToken?.address], pair.liquidity?.usd ?? 0);
+  }
+  for (const pool of gecko?.data ?? []) {
+    consider(pool.attributes?.address, [pool.relationships?.base_token?.data?.id, pool.relationships?.quote_token?.data?.id].map((ref) => ref?.replace(/^near_/, '')), Number(pool.attributes?.reserve_in_usd ?? 0));
+  }
+  const pools = [...found.entries()].map(([id, reserve]) => ({ id, reserve })).sort((x, y) => y.reserve - x.reserve).slice(0, 3);
+  if (!pools.length) throw new Error('No Ref Finance pool found for this pair');
+  const quotes = await Promise.all(pools.map(async (pool) => {
+    const out = await viewFunction<string>(REF_EXCHANGE, 'get_return', { pool_id: pool.id, token_in: tokenIn, amount_in: params.amountIn, token_out: tokenOut }, params.rpc).catch(() => '0');
+    return { pool, out: BigInt(out || '0') };
+  }));
+  const best = quotes.sort((a, b) => (b.out > a.out ? 1 : -1))[0];
+  if (!best || best.out <= 0n) throw new Error('No Ref Finance route found for this pair');
+  const slippage = Math.min(0.5, Math.max(0.0005, params.slippage));
+  const minOut = withSlippage(best.out, slippage);
+  return {
+    tokenIn: params.tokenIn, tokenOut: params.tokenOut, amountIn: params.amountIn, expectedOut: best.out.toString(), minOut: minOut.toString(),
+    actions: [{ pool_id: best.pool.id, token_in: tokenIn, token_out: tokenOut, amount_in: params.amountIn, min_amount_out: minOut.toString() }],
+    hops: 1, slippage, venue: 'Ref Finance',
+  };
+}
+
+/** Classic Ref route: the smart router, with a direct on-chain pool quote racing it after a short head start. */
+export async function getRefClassicQuote(params: { tokenIn: string; tokenOut: string; amountIn: string; slippage: number; rpc?: NearRpcOptions; fetchImpl?: typeof fetch }): Promise<RefSwapQuote> {
+  const router = getRefSwapQuote(params).then((quote) => ({ ...quote, venue: 'Ref Finance' }));
+  const direct = new Promise<void>((resolve) => setTimeout(resolve, 1_500)).then(() => getRefDirectQuote(params));
+  return firstFulfilled([router, direct]).catch((errors: Error[]) => { throw errors[0] ?? new Error('No Ref Finance route found for this pair'); });
+}
+
+const withSlippage = (amount: bigint, slippage: number) => (amount * BigInt(Math.round((1 - slippage) * 10_000))) / 10_000n;
+
+/**
+ * Best route for a NEAR swap across venues: Ref's smart router (classic
+ * pools) and Rhea DCL pools — direct against wNEAR, or through RHEA (Ref
+ * wNEAR⇄RHEA, then DCL). Launchpad tokens (nearly.trade…) often trade only on
+ * DCL, which the smart router does not route.
+ */
+export async function getNearSwapQuote(params: {
+  tokenIn: string; tokenOut: string; amountIn: string; slippage: number; accountId?: string; rpc?: NearRpcOptions; fetchImpl?: typeof fetch;
+}): Promise<RefSwapQuote> {
+  const slippage = Math.min(0.5, Math.max(0.0005, params.slippage));
+  const refRoute = getRefClassicQuote(params).catch((error: unknown) => error as Error);
+  const inNear = params.tokenIn === NATIVE_NEAR || params.tokenIn === WRAP_NEAR;
+  const outNear = params.tokenOut === NATIVE_NEAR || params.tokenOut === WRAP_NEAR;
+  const dclRoutes: Array<Promise<RefSwapQuote | null>> = [];
+  if (inNear !== outNear) {
+    const token = inNear ? params.tokenOut : params.tokenIn;
+    const legsOf = (legs: NearSwapLeg[], venue: string): RefSwapQuote => ({
+      tokenIn: params.tokenIn, tokenOut: params.tokenOut, amountIn: params.amountIn,
+      expectedOut: legs[legs.length - 1].expectedOut, minOut: legs[legs.length - 1].minOut,
+      actions: [], hops: legs.length, slippage, legs, venue,
+    });
+    const dclLeg = async (poolIds: string[], tokenIn: string, tokenOut: string, amountIn: string): Promise<NearSwapLeg | null> => {
+      const out = await dclQuote(poolIds, tokenIn, tokenOut, amountIn, params.rpc);
+      if (out <= 0n) return null;
+      return { venue: 'dcl', tokenIn, tokenOut, amountIn, expectedOut: out.toString(), minOut: withSlippage(out, slippage).toString(), poolIds, recipient: params.accountId };
+    };
+    // Direct: wNEAR ⇄ token on a DCL pool.
+    dclRoutes.push(findDclPools(token, WRAP_NEAR, params.rpc).then(async (pools) => {
+      const legs = await Promise.all(pools.map((pool) => dclLeg([pool], inNear ? WRAP_NEAR : token, inNear ? token : WRAP_NEAR, params.amountIn)));
+      const best = legs.filter((leg): leg is NearSwapLeg => leg !== null).sort((a, b) => (BigInt(b.expectedOut) > BigInt(a.expectedOut) ? 1 : -1))[0];
+      return best ? legsOf([best], 'Rhea DCL') : null;
+    }).catch(() => null));
+    // Through RHEA: Ref (wNEAR ⇄ RHEA) and DCL (RHEA ⇄ token), each leg spending the previous leg's minimum.
+    if (token !== RHEA_TOKEN) {
+      dclRoutes.push(findDclPools(token, RHEA_TOKEN, params.rpc).then(async (pools) => {
+        if (!pools.length) return null;
+        if (inNear) {
+          const ref = await getRefClassicQuote({ ...params, tokenOut: RHEA_TOKEN });
+          const refLeg: NearSwapLeg = { venue: 'ref', tokenIn: refToken(params.tokenIn), tokenOut: RHEA_TOKEN, amountIn: ref.amountIn, expectedOut: ref.expectedOut, minOut: ref.minOut, actions: ref.actions };
+          const legs = await Promise.all(pools.map((pool) => dclLeg([pool], RHEA_TOKEN, token, ref.minOut)));
+          const best = legs.filter((leg): leg is NearSwapLeg => leg !== null).sort((a, b) => (BigInt(b.expectedOut) > BigInt(a.expectedOut) ? 1 : -1))[0];
+          return best ? legsOf([refLeg, best], 'Ref Finance → Rhea DCL') : null;
+        }
+        const legs = await Promise.all(pools.map((pool) => dclLeg([pool], token, RHEA_TOKEN, params.amountIn)));
+        const best = legs.filter((leg): leg is NearSwapLeg => leg !== null).sort((a, b) => (BigInt(b.expectedOut) > BigInt(a.expectedOut) ? 1 : -1))[0];
+        if (!best) return null;
+        const ref = await getRefClassicQuote({ ...params, tokenIn: RHEA_TOKEN, amountIn: best.minOut });
+        const refLeg: NearSwapLeg = { venue: 'ref', tokenIn: RHEA_TOKEN, tokenOut: params.tokenOut, amountIn: ref.amountIn, expectedOut: ref.expectedOut, minOut: ref.minOut, actions: ref.actions };
+        return legsOf([best, refLeg], 'Rhea DCL → Ref Finance');
+      }).catch(() => null));
+    }
+  }
+  // Once one route has answered, give the others a short grace period instead of waiting on a slow router.
+  const settled = await settleWithGrace<RefSwapQuote | Error | null>([refRoute, ...dclRoutes], QUOTE_GRACE_MS);
+  const ref = settled[0] === undefined ? new Error('Ref Finance router is slow right now') : settled[0];
+  const dcl = settled.slice(1);
+  const candidates = [...(ref instanceof Error || ref === null ? [] : [ref]), ...dcl.filter((quote): quote is RefSwapQuote => quote !== null && quote !== undefined && !(quote instanceof Error))];
+  if (!candidates.length) throw ref instanceof Error ? new Error(`${ref.message}; no Rhea DCL pool either`) : new Error('No route found for this pair');
+  return candidates.sort((a, b) => (BigInt(b.expectedOut) > BigInt(a.expectedOut) ? 1 : -1))[0];
+}
+
+const QUOTE_GRACE_MS = 2_500;
+
+/** The first promise to fulfil; rejects with every reason (in input order) when all reject. */
+function firstFulfilled<T>(promises: Array<Promise<T>>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const reasons: Error[] = [];
+    let rejected = 0;
+    promises.forEach((promise, index) => {
+      promise.then(resolve, (reason: unknown) => {
+        reasons[index] = reason instanceof Error ? reason : new Error(String(reason));
+        rejected += 1;
+        if (rejected === promises.length) reject(reasons);
+      });
+    });
+  });
+}
+
+/**
+ * Resolve when every promise settled, or `graceMs` after the first one
+ * produced a usable value — whichever comes first. Unfinished entries are undefined.
+ */
+async function settleWithGrace<T>(promises: Array<Promise<T>>, graceMs: number): Promise<Array<T | undefined>> {
+  const results: Array<T | undefined> = promises.map(() => undefined);
+  let pending = promises.length;
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => { if (timer) clearTimeout(timer); resolve(results); };
+    promises.forEach((promise, index) => {
+      promise.then((value) => {
+        results[index] = value;
+        if (value && !(value instanceof Error) && !timer) timer = setTimeout(finish, graceMs);
+      }, () => undefined).finally(() => { pending -= 1; if (pending === 0) finish(); });
+    });
+  });
+}
+
+/** Tokens a multi-leg route passes through (each needs the account registered to receive it). */
+export function routeIntermediateTokens(quote: RefSwapQuote): string[] {
+  return (quote.legs ?? []).slice(0, -1).map((leg) => leg.tokenOut).filter((token) => token !== NATIVE_NEAR);
 }
 
 interface SmartRouterResponse {
@@ -312,7 +517,9 @@ interface SmartRouterResponse {
   };
 }
 
-const REF_SMART_ROUTER = 'https://smartrouter.ref.finance/findPath';
+/** Ref's smart router answers on two hosts (Ref and its Rhea rebrand); both are asked and the first valid route wins. */
+const REF_SMART_ROUTERS = ['https://smartrouter.ref.finance/findPath', 'https://smartrouter.rhea.finance/findPath'];
+const ROUTER_TIMEOUT_MS = 8_000;
 const refToken = (tokenId: string) => (tokenId === NATIVE_NEAR ? WRAP_NEAR : tokenId);
 
 /**
@@ -333,14 +540,17 @@ export async function getRefSwapQuote(params: { tokenIn: string; tokenOut: strin
     slippage: String(slippage),
   });
   const doFetch = params.fetchImpl ?? fetch;
-  const url = `${REF_SMART_ROUTER}?${query}`;
-  // One retry on a network error: the router occasionally drops connections under load.
-  const response = await doFetch(url, { headers: { Accept: 'application/json' } })
-    .catch(() => new Promise<Response>((resolve, reject) => setTimeout(() => doFetch(url, { headers: { Accept: 'application/json' } }).then(resolve, reject), 800)));
-  if (!response.ok) throw new Error(`Ref Finance router returned HTTP ${response.status}`);
-  const payload = await response.json() as SmartRouterResponse;
+  const ask = async (router: string): Promise<SmartRouterResponse> => {
+    const response = await doFetch(`${router}?${query}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`Ref Finance router returned HTTP ${response.status}`);
+    const payload = await response.json() as SmartRouterResponse;
+    if (payload.result_code !== 0 || !payload.result_data?.routes?.length) throw new Error('No Ref Finance route found for this pair');
+    return payload;
+  };
+  const payload = await firstFulfilled(REF_SMART_ROUTERS.map(ask)).catch((reasons: Error[]) => {
+    throw reasons.find((reason) => /No Ref Finance route/.test(reason?.message ?? '')) ?? reasons[0] ?? new Error('Ref Finance router unavailable');
+  });
   const routes = payload.result_data?.routes ?? [];
-  if (payload.result_code !== 0 || !routes.length) throw new Error('No Ref Finance route found for this pair');
 
   const actions: RefSwapAction[] = [];
   let minOut = 0n;
@@ -400,9 +610,10 @@ export async function storageDepositNeeded(tokenId: string, accountId: string, o
  */
 export function buildRefSwapPlan(
   quote: RefSwapQuote,
-  registration: { outputStorageDeposit: bigint; wrapStorageDeposit: bigint },
+  registration: { outputStorageDeposit: bigint; wrapStorageDeposit: bigint; intermediateStorageDeposits?: Record<string, bigint> },
   fee?: RefSwapFee | null,
 ): NearTransactionPlan[] {
+  if (quote.legs?.length) return buildLegPlan(quote, registration, fee);
   const plans: NearTransactionPlan[] = [];
   const outputIsNear = quote.tokenOut === NATIVE_NEAR;
   if (!outputIsNear && registration.outputStorageDeposit > 0n) {
@@ -450,6 +661,75 @@ export function buildRefSwapPlan(
   return plans;
 }
 
+/** ft_transfer_call that runs one leg on its venue. */
+function legTransferCall(leg: NearSwapLeg, final: boolean): NearAction {
+  const toNativeNear = final && leg.tokenOut === NATIVE_NEAR;
+  if (leg.venue === 'ref') {
+    return {
+      type: 'FunctionCall', methodName: 'ft_transfer_call', deposit: 1n, gas: 220n * NEAR_TGAS,
+      args: { receiver_id: REF_EXCHANGE, amount: leg.amountIn, msg: JSON.stringify({ force: 0, actions: leg.actions ?? [], ...(toNativeNear ? { skip_unwrap_near: false } : {}) }) },
+    };
+  }
+  return {
+    type: 'FunctionCall', methodName: 'ft_transfer_call', deposit: 1n, gas: 200n * NEAR_TGAS,
+    args: {
+      receiver_id: REF_DCL,
+      amount: leg.amountIn,
+      msg: JSON.stringify({ Swap: { pool_ids: leg.poolIds ?? [], output_token: leg.tokenOut, min_output_amount: leg.minOut, ...(leg.recipient ? { swap_out_recipient: leg.recipient } : {}) } }),
+    },
+  };
+}
+
+/**
+ * Transactions for a multi-leg route: register the output (and every token
+ * passed through), wrap NEAR + take Hopr's fee + run leg 1 in one
+ * transaction, then one ft_transfer_call per following leg, and unwrap wNEAR
+ * at the end when a DCL leg delivers it for a sell to NEAR.
+ */
+function buildLegPlan(
+  quote: RefSwapQuote,
+  registration: { outputStorageDeposit: bigint; wrapStorageDeposit: bigint; intermediateStorageDeposits?: Record<string, bigint> },
+  fee?: RefSwapFee | null,
+): NearTransactionPlan[] {
+  const legs = quote.legs!;
+  const plans: NearTransactionPlan[] = [];
+  const register = (token: string, deposit: bigint | undefined, label: string) => {
+    if (deposit && deposit > 0n) {
+      plans.push({ receiverId: token, label, actions: [{ type: 'FunctionCall', methodName: 'storage_deposit', args: { registration_only: true }, gas: 30n * NEAR_TGAS, deposit }] });
+    }
+  };
+  const outputIsNear = quote.tokenOut === NATIVE_NEAR;
+  if (!outputIsNear) register(quote.tokenOut, registration.outputStorageDeposit, 'Register output token');
+  for (const [token, deposit] of Object.entries(registration.intermediateStorageDeposits ?? {})) register(token, deposit, `Register ${token}`);
+  if (outputIsNear && quote.tokenIn !== NATIVE_NEAR && legs[legs.length - 1].venue === 'dcl') register(WRAP_NEAR, registration.wrapStorageDeposit, 'Register wNEAR');
+
+  const feeAmount = fee && fee.amount > 0n ? fee.amount : 0n;
+  const feeActions: NearAction[] = [];
+  if (fee && feeAmount > 0n) {
+    if (fee.storageDeposit > 0n) feeActions.push({ type: 'FunctionCall', methodName: 'storage_deposit', args: { account_id: fee.account, registration_only: true }, gas: 20n * NEAR_TGAS, deposit: fee.storageDeposit });
+    feeActions.push({ type: 'FunctionCall', methodName: 'ft_transfer', args: { receiver_id: fee.account, amount: fee.amount.toString(), memo: 'hopr fee' }, gas: 15n * NEAR_TGAS, deposit: 1n });
+  }
+
+  legs.forEach((leg, index) => {
+    const final = index === legs.length - 1;
+    const call = legTransferCall(leg, final);
+    const label = `${index === 0 && quote.tokenIn === NATIVE_NEAR ? 'Wrap NEAR and swap' : 'Swap'} on ${leg.venue === 'ref' ? 'Ref Finance' : 'Rhea DCL'}`;
+    if (index === 0 && quote.tokenIn === NATIVE_NEAR) {
+      const actions: NearAction[] = [];
+      if (registration.wrapStorageDeposit > 0n) actions.push({ type: 'FunctionCall', methodName: 'storage_deposit', args: { registration_only: true }, gas: 20n * NEAR_TGAS, deposit: registration.wrapStorageDeposit });
+      actions.push({ type: 'FunctionCall', methodName: 'near_deposit', args: {}, gas: 10n * NEAR_TGAS, deposit: BigInt(leg.amountIn) + feeAmount }, ...feeActions, call);
+      plans.push({ receiverId: WRAP_NEAR, label, actions });
+    } else {
+      plans.push({ receiverId: leg.tokenIn, label, actions: index === 0 ? [...feeActions, call] : [call] });
+    }
+  });
+  const last = legs[legs.length - 1];
+  if (outputIsNear && last.venue === 'dcl') {
+    plans.push({ receiverId: WRAP_NEAR, label: 'Unwrap NEAR', actions: [{ type: 'FunctionCall', methodName: 'near_withdraw', args: { amount: last.minOut }, gas: 10n * NEAR_TGAS, deposit: 1n }] });
+  }
+  return plans;
+}
+
 /** Hopr's fee on a Ref swap: paid in the input token (wNEAR for NEAR input). */
 export interface RefSwapFee {
   account: string;
@@ -458,8 +738,10 @@ export interface RefSwapFee {
   storageDeposit: bigint;
 }
 
-/** Hopr platform fees in basis points: 0.5% on trades, 1% on bridges. */
-export const HOPR_FEE_BPS = { swap: 50, bridge: 100 } as const;
+/** Hopr platform fee in basis points: 0.75% on trades and bridges alike. */
+export const HOPR_FEE_BPS = { swap: 75, bridge: 75 } as const;
+/** The same fee as a display percentage (0.75). */
+export const HOPR_FEE_PERCENT = HOPR_FEE_BPS.swap / 100;
 
 /** Split a gross input amount into the fee and the part that is actually swapped. */
 export function splitHoprFee(gross: bigint, bps: number): { net: bigint; fee: bigint } {

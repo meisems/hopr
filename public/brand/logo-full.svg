@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="110 60 900 380" width="900" height="380" role="img" aria-label="hopr">
+  <title>hopr</title>
+  <defs>
+    <linearGradient id="hopr-g" x1="150" y1="430" x2="420" y2="110" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f7f7a"/><stop offset="0.5" stop-color="#22b3a3"/><stop offset="1" stop-color="#5fe6c6"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#hopr-g)" stroke-width="52" stroke-linecap="round">
+      <path d="M160 104 V408"/>
+      <path d="M160 316 C164 196 322 160 380 352"/>
+    </g>
+    <path d="M393.5 405.6 L427.3 333.5 L337.4 359.5 Z" fill="url(#hopr-g)" stroke="url(#hopr-g)" stroke-width="12" stroke-linejoin="round"/>
+  <text x="436" y="432" fill="#0c1b1a" font-family="'Inter','Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="322" font-weight="700" letter-spacing="-6">opr</text>
+</svg>

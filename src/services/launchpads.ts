@@ -2,7 +2,7 @@ import { viewFunction, type NearRpcOptions } from './nearService';
 import { jsonRpc } from './rpcPool';
 
 export type LaunchpadId =
-  | 'nearpaid' | 'pons' | 'pump' | 'tolly' | 'argus' | 'pumpswap' | 'launchlab' | 'moonit' | 'letsbonk' | 'virtuals'
+  | 'nearly' | 'nearpaid' | 'pons' | 'pump' | 'tolly' | 'argus' | 'pumpswap' | 'launchlab' | 'moonit' | 'letsbonk' | 'virtuals'
   | 'flap' | 'fourmeme' | 'clanker' | 'bankr' | 'bags' | 'meteoradbc'
   | 'uniswap' | 'pancakeswap' | 'aerodrome';
 
@@ -28,6 +28,7 @@ const venuePage = (network: string, dex: string) => `https://www.geckoterminal.c
 
 /** Venue IDs verified against the providers' public registries. Never infer origin from a ticker. */
 export const LAUNCHPADS: readonly Launchpad[] = [
+  { id: 'nearly', name: 'Nearly', kind: 'launchpad', network: 'near', chainId: 397, website: 'https://nearly.trade', dexes: [] },
   { id: 'nearpaid', name: 'NEARPaid', kind: 'launchpad', network: 'near', chainId: 397, website: 'https://nearpaid.com', dexes: [] },
   { id: 'flap', name: 'Flap', kind: 'launchpad', network: 'bsc', chainId: 56, website: 'https://flap.sh', dexes: [] },
   { id: 'fourmeme', name: 'Four.meme', kind: 'launchpad', network: 'bsc', chainId: 56, website: 'https://four.meme', dexes: ['four-meme'] },
@@ -62,7 +63,7 @@ export function sourceVenues(source: Launchpad): GeckoVenue[] {
 
 /** How long a snapshot is served before refetching. Flap reads fresh launches, so it refreshes fastest. */
 export function feedRefreshMs(id: LaunchpadId): number {
-  return id === 'flap' ? 20_000 : id === 'nearpaid' || id === 'tolly' ? 90_000 : 60_000;
+  return id === 'flap' ? 20_000 : id === 'nearpaid' || id === 'tolly' ? 90_000 : 60_000; // nearly: 60s
 }
 export type PoolSort = 'volume' | 'liquidity' | 'newest';
 export interface LaunchpadPool {
@@ -282,6 +283,36 @@ async function flapChainPools(chain: typeof FLAP_PORTALS[number], now: number): 
   });
 }
 
+type NearlyLaunch = {
+  token?: string; name?: string; symbol?: string; pool_id?: string; quote?: string; price_usd?: number; near_usd?: number;
+  liquidity_near?: number; volume_24h_near?: number; change_24h?: number; created_at_ms?: number; step?: string;
+};
+
+/** nearly.trade launches (newest first): every token gets its own Rhea DCL pool against wNEAR or RHEA. */
+export function parseNearlyLaunches(payload: unknown, now = Date.now()): LaunchpadPool[] {
+  if (!Array.isArray(payload)) throw new Error('Invalid nearly.trade launches');
+  const finite = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+  return (payload as NearlyLaunch[]).flatMap((launch) => {
+    if (typeof launch.token !== 'string' || !launch.token.endsWith('.nearlytrade.near') || typeof launch.pool_id !== 'string') return [];
+    const nearUsd = finite(launch.near_usd);
+    const liquidityNear = finite(launch.liquidity_near);
+    const volumeNear = finite(launch.volume_24h_near);
+    return [{
+      id: `397:nearly:${launch.token}`, source: 'nearly' as const, venue: 'Rhea DCL', chainId: 397, network: 'near',
+      poolAddress: launch.pool_id, tokenAddress: launch.token,
+      symbol: String(launch.symbol ?? launch.token.split('.')[0]).slice(0, 32), name: String(launch.name ?? launch.symbol ?? launch.token).slice(0, 64),
+      quoteSymbol: launch.quote === 'wrap.near' ? 'wNEAR' : launch.quote === 'token.rhealab.near' ? 'RHEA' : String(launch.quote ?? ''),
+      priceUsd: finite(launch.price_usd),
+      liquidityUsd: nearUsd !== null && liquidityNear !== null ? liquidityNear * nearUsd : null,
+      volume24h: nearUsd !== null && volumeNear !== null ? volumeNear * nearUsd : null,
+      change24h: finite(launch.change_24h),
+      createdAt: finite(launch.created_at_ms),
+      observedAt: now,
+      url: `https://nearly.trade/t/${encodeURIComponent(launch.token)}`,
+    }];
+  });
+}
+
 async function flapPools(): Promise<{ pools: LaunchpadPool[]; partial: boolean }> {
   const now = Date.now();
   const results = await Promise.allSettled(FLAP_PORTALS.map((chain) => flapChainPools(chain, now)));
@@ -296,7 +327,8 @@ export async function fetchLaunchpadFeed(id: LaunchpadId, nearOptions?: NearRpcO
   const source = launchpadById(id);
   if (!source) throw new Error('Unknown launchpad');
   let pools: LaunchpadPool[]; let partial = false;
-  if (id === 'nearpaid') ({ pools, partial } = await nearpaidPools(nearOptions));
+  if (id === 'nearly') pools = parseNearlyLaunches(await json('https://nearly.trade/api/launches?sort=new&limit=40&offset=0'));
+  else if (id === 'nearpaid') ({ pools, partial } = await nearpaidPools(nearOptions));
   else if (id === 'flap') ({ pools, partial } = await flapPools());
   else if (id === 'tolly') pools = parseTollyPools(await json('https://api.tollylabs.com/tokens?scope=tolly&sort=volume&dir=desc&limit=40&offset=0'));
   else {
@@ -309,7 +341,8 @@ export async function fetchLaunchpadFeed(id: LaunchpadId, nearOptions?: NearRpcO
     pools = results.flatMap((r) => r.status === 'fulfilled' ? r.value : []);
   }
   return { source: id, pools: uniquePools(pools), partial, stale: false, observedAt: Date.now(),
-    coverage: id === 'nearpaid' ? 'Up to 10 live pools from the latest 20 launches · on-chain reads · 24h history not indexed'
+    coverage: id === 'nearly' ? 'Latest 40 launches · nearly.trade market API · each token has its own Rhea DCL pool'
+      : id === 'nearpaid' ? 'Up to 10 live pools from the latest 20 launches · on-chain reads · 24h history not indexed'
       : id === 'flap' ? `Latest ${FLAP_LAUNCHES_PER_CHAIN} launches per chain (BNB · Robinhood · Base) · read from Flap's on-chain Portal events · priced by DexScreener`
       : id === 'tolly' ? 'Top 40 Tolly listings by volume · Tolly market API'
       : source.kind === 'dex' ? 'Top indexed pools per venue and chain · GeckoTerminal · a DEX listing is not a launchpad attribution'

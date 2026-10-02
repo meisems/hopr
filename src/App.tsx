@@ -328,7 +328,7 @@ function AppContent() {
               {/* Logo */}
               <button onClick={goHome} className="pressable flex items-center gap-2.5 rounded-xl pr-2" aria-label="Hopr dashboard">
                 <div className="w-9 h-9 flex items-center justify-center">
-                  <img src="/brand/logo-icon.png" alt="" className="w-full h-full object-contain drop-shadow-[0_0_10px_rgba(63,176,170,0.45)]" />
+                  <img src="/brand/logo-icon.svg" alt="" className="w-full h-full rounded-[22%] object-contain shadow-[0_0_14px_rgba(63,214,194,0.35)]" />
                 </div>
                 <div className="text-left">
                   <span className="block text-lg font-bold leading-tight tracking-tight gradient-text">hopr</span>
@@ -453,7 +453,7 @@ function AppContent() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 safe-area-bottom">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-2">
-                <img src="/brand/logo-icon.png" alt="" className="w-4 h-4 object-contain" />
+                <img src="/brand/logo-icon.svg" alt="" className="w-4 h-4 rounded object-contain" />
                 <span className="text-sm text-gray-400">hopr – Powered by LI.FI</span>
               </div>
               <div className="flex items-center gap-4">

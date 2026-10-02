@@ -165,7 +165,7 @@ test('NEAR token address opens a NEAR market card with NEAR-denominated quick bu
   });
   const card = plain(calls[0].body.text);
   assert.match(card, /Ⓝ NEAR · 🏪 Rhea/);
-  assert.match(card, /Route  Ref Finance · paid in NEAR/);
+  assert.match(card, /Route  Ref Finance \/ Rhea DCL · paid in NEAR/);
   assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[1].map((button) => button.callback_data), ['trade:buy:0.5', 'trade:buy:1', 'trade:buy:5']);
   assert.equal(calls[0].body.reply_markup.inline_keyboard[1][1].text, '🟢 Buy 1 NEAR');
   assert.equal(calls[0].body.reply_markup.inline_keyboard[5][1].url, 'https://nearblocks.io/token/token.v2.ref-finance.near');
@@ -235,7 +235,7 @@ test('✏️ Buy X asks for an amount and quotes exactly what the user replies',
   assert.match(plain(invalid.at(-1).body.text), /Send just a number/);
 });
 
-test('with a Hopr NEAR fee account, Ref swaps take 0.5% in the same transaction as the swap', async () => {
+test('with a Hopr NEAR fee account, Ref swaps take 0.75% in the same transaction as the swap', async () => {
   const { kv, env } = await custodialSetup();
   const network = createNearNetwork();
   const feeEnv = { ...env, HOPR_INTENTS_FEE_ACCOUNT: 'hopr-fees.near' };
@@ -252,8 +252,8 @@ test('with a Hopr NEAR fee account, Ref swaps take 0.5% in the same transaction 
   assert.equal(calls[1].deposit.toString(), (10n ** 24n).toString(), 'the full 1 NEAR is wrapped');
   assert.deepEqual(args(calls[2]), { account_id: 'hopr-fees.near', registration_only: true });
   assert.equal(args(calls[3]).receiver_id, 'hopr-fees.near');
-  assert.equal(args(calls[3]).amount, (5n * 10n ** 21n).toString(), '0.5% of 1 NEAR');
-  assert.equal(args(calls[4]).amount, (995n * 10n ** 21n).toString(), 'the rest is swapped');
+  assert.equal(args(calls[3]).amount, (75n * 10n ** 20n).toString(), '0.75% of 1 NEAR');
+  assert.equal(args(calls[4]).amount, (9925n * 10n ** 20n).toString(), 'the rest is swapped');
 });
 
 test('/swap quotes any NEAR pair and shows usage for bad input', async () => {
@@ -371,7 +371,7 @@ test('Arc, which NEAR Intents does not reach, buys NEAR tokens via a LI.FI hop t
   const lifi = new URL(network.requests.find((request) => request.href.includes('li.quest/v1/quote')).href);
   assert.equal(lifi.searchParams.get('fromChain'), '5042');
   assert.equal(lifi.searchParams.get('toChain'), '8453');
-  assert.equal(lifi.searchParams.get('fee'), '0.005');
+  assert.equal(lifi.searchParams.get('fee'), '0.0075');
 });
 
 test('paying with NEAR for a Base token: step 1 bridges through NEAR Intents, Continue quotes step 2 with what arrived', async () => {
@@ -417,7 +417,7 @@ test('paying with NEAR for a Base token: step 1 bridges through NEAR Intents, Co
   assert.equal(intentsRequest.destinationAsset, 'nep141:base.omft.near');
   assert.equal(intentsRequest.recipient, wallet.evm);
   assert.equal(intentsRequest.refundTo, wallet.near.address);
-  assert.deepEqual(intentsRequest.appFees, [{ recipient: 'hopr-fees.near', fee: 50 }], 'Hopr’s fee is charged on step 1');
+  assert.deepEqual(intentsRequest.appFees, [{ recipient: 'hopr-fees.near', fee: 75 }], 'Hopr’s fee is charged on step 1');
   const confirm = quote.at(-1).body.reply_markup.inline_keyboard[0][0];
   assert.equal(confirm.text, '✅ Confirm step 1');
 
