@@ -11,12 +11,13 @@
 
 import { getNetwork, SOLANA_CHAIN_ID } from './chains';
 
+// Backups per chain, each verified to answer eth_chainId for its chain.
 const FALLBACKS: Record<number, string[]> = {
-  8453: ['https://mainnet.base.org', 'https://base.drpc.org', 'https://1rpc.io/base'],
-  42161: ['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com', 'https://arbitrum.drpc.org', 'https://1rpc.io/arb'],
-  56: ['https://bsc-dataseed.binance.org', 'https://bsc-rpc.publicnode.com', 'https://bsc-dataseed1.defibit.io'],
-  4663: ['https://rpc.mainnet.chain.robinhood.com'],
-  5042: ['https://rpc.mainnet.arc.io', 'https://rpc.drpc.mainnet.arc.io', 'https://rpc.quicknode.mainnet.arc.io'],
+  8453: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.meowrpc.com', 'https://base-mainnet.public.blastapi.io', 'https://base.gateway.tenderly.co', 'https://base-pokt.nodies.app', 'https://base.drpc.org', 'https://1rpc.io/base', 'https://developer-access-mainnet.base.org'],
+  42161: ['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com', 'https://arbitrum.meowrpc.com', 'https://arbitrum-one.public.blastapi.io', 'https://arbitrum.gateway.tenderly.co', 'https://arb-pokt.nodies.app', 'https://arbitrum.drpc.org', 'https://1rpc.io/arb'],
+  56: ['https://bsc-dataseed.binance.org', 'https://bsc-rpc.publicnode.com', 'https://bsc.meowrpc.com', 'https://bsc-mainnet.public.blastapi.io', 'https://bsc-dataseed1.defibit.io', 'https://bsc-dataseed2.binance.org', 'https://bsc-dataseed1.ninicoin.io', 'https://1rpc.io/bnb'],
+  4663: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood-rpc.publicnode.com', 'https://robinhood.drpc.org'],
+  5042: ['https://rpc.mainnet.arc.io', 'https://rpc.drpc.mainnet.arc.io', 'https://rpc.quicknode.mainnet.arc.io', 'https://arc-rpc.publicnode.com'],
   [SOLANA_CHAIN_ID]: [
     'https://public.rpc.solanavibestation.com',
     'https://solana-rpc.publicnode.com',
@@ -27,11 +28,20 @@ const FALLBACKS: Record<number, string[]> = {
 };
 
 const preferred = new Map<number, string>();
+/** Keyed endpoints registered at runtime (the worker's RPC_* / ALCHEMY / HELIUS secrets). */
+const keyed = new Map<number, string[]>();
 
-/** Endpoints for a chain: configured first, then public fallbacks (deduplicated). */
+/** Put keyed (paid / private) endpoints ahead of every public one for `chainId`. */
+export function configureRpcEndpoints(chainId: number, urls: string[]) {
+  const clean = urls.map((url) => url.trim()).filter(Boolean);
+  if (clean.length) keyed.set(chainId, clean);
+  else keyed.delete(chainId);
+}
+
+/** Endpoints for a chain: keyed first, then the configured default, then public fallbacks (deduplicated). */
 export function rpcEndpoints(chainId: number, extra: string[] = []): string[] {
   const configured = getNetwork(chainId)?.rpcUrl;
-  const all = [...extra, ...(configured ? [configured] : []), ...(FALLBACKS[chainId] ?? [])].filter(Boolean);
+  const all = [...extra, ...(keyed.get(chainId) ?? []), ...(configured ? [configured] : []), ...(FALLBACKS[chainId] ?? [])].filter(Boolean);
   const unique = [...new Set(all)];
   const best = preferred.get(chainId);
   return best && unique.includes(best) ? [best, ...unique.filter((url) => url !== best)] : unique;
@@ -48,7 +58,8 @@ function endpointProblem(error: { code?: number; message?: string }): boolean {
   const message = error.message ?? '';
   return [-32601, -32603, -32005, -32029, -32000, 429, 403, 401].includes(error.code ?? 0)
     && !/revert|execution|insufficient|nonce|invalid (argument|params)/i.test(message)
-    || /rate|limit|forbidden|not allowed|api key|token|unavailable|timeout|too many|not available|unauthor/i.test(message);
+    // Public nodes that refuse indexed methods (getTokenAccountsByOwner…) answer with "blocked" / "personal token".
+    || /rate|limit|forbidden|not allowed|api key|token|unavailable|timeout|too many|not available|unauthor|authenticat|blocked|paid plan|subscription/i.test(message);
 }
 
 export async function jsonRpc<T>(chainId: number, method: string, params: unknown, options: { timeoutMs?: number; extra?: string[]; fetchImpl?: typeof fetch; validate?: (value: T) => boolean } = {}): Promise<T> {
@@ -83,6 +94,72 @@ export async function jsonRpc<T>(chainId: number, method: string, params: unknow
     }
   }
   throw lastError;
+}
+
+/**
+ * Hedged read for scanning: ask the best endpoint, and if it has not answered
+ * within `hedgeMs` also ask the next one (and so on). The first valid answer
+ * wins and the others are cancelled, so one slow or dead RPC never stalls a scan.
+ * Read-only methods only — never use this for sending transactions.
+ */
+export async function jsonRpcRace<T>(chainId: number, method: string, params: unknown, options: { hedgeMs?: number; timeoutMs?: number; extra?: string[]; maxParallel?: number; validate?: (value: T) => boolean } = {}): Promise<T> {
+  const endpoints = rpcEndpoints(chainId, options.extra).slice(0, options.maxParallel ?? 4);
+  if (!endpoints.length) throw new Error(`No RPC endpoint for chain ${chainId}`);
+  const hedgeMs = options.hedgeMs ?? 500;
+  const controllers = endpoints.map(() => (typeof AbortController !== 'undefined' ? new AbortController() : null));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let failures = 0;
+    let lastError: unknown = new Error(`${method} failed on every endpoint`);
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const started = new Set<number>();
+    const finish = () => {
+      settled = true;
+      timers.forEach(clearTimeout);
+      controllers.forEach((controller) => controller?.abort());
+    };
+    const start = (index: number) => {
+      if (settled || index >= endpoints.length || started.has(index)) return;
+      started.add(index);
+      void attempt(index);
+    };
+    const attempt = async (index: number) => {
+      const url = endpoints[index];
+      const timer = setTimeout(() => controllers[index]?.abort(), options.timeoutMs ?? 4000);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+          signal: controllers[index]?.signal,
+        });
+        const payload = await response.json().catch(() => null) as { result?: T; error?: { code?: number; message?: string } } | null;
+        if (!response.ok || !payload) throw new Error(`HTTP ${response.status}`);
+        if (payload.error) {
+          if (!endpointProblem(payload.error)) throw new RpcCallError(payload.error.message ?? `${method} failed`, payload.error.code);
+          throw new Error(payload.error.message ?? `${method} failed`);
+        }
+        if (payload.result === undefined || (options.validate && !options.validate(payload.result))) throw new Error(`${method}: malformed result`);
+        if (settled) return;
+        preferred.set(chainId, url);
+        finish();
+        resolve(payload.result);
+      } catch (error) {
+        if (settled) return;
+        if (error instanceof RpcCallError) { finish(); reject(error); return; }
+        lastError = error;
+        if (++failures === endpoints.length) { finish(); reject(lastError); return; }
+        // A failure starts the next endpoint right away instead of waiting for the hedge delay.
+        start(index + 1);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    start(0);
+    for (let index = 1; index < endpoints.length; index += 1) {
+      timers.push(setTimeout(() => start(index), hedgeMs * index));
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

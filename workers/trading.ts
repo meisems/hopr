@@ -66,7 +66,16 @@ export interface CustodialWallet {
 }
 
 export function nearRpcOptions(env: TradingEnv): NearRpcOptions {
-  return { urls: env.NEAR_RPC_URL ? [env.NEAR_RPC_URL] : [] };
+  // NEAR_RPC_URL may list several keyed endpoints (comma-separated); public NEAR RPCs back them up.
+  return { urls: (env.NEAR_RPC_URL ?? '').split(',').map((url) => url.trim()).filter(Boolean) };
+}
+
+/** Where signed transactions go: health-checked endpoints, keyed first (see workers/rpcConfig.ts). */
+export interface TransactionRpcs {
+  evm: (chainId: number) => Promise<string>;
+  solana: () => Promise<string>;
+  /** Extra Solana endpoints the same signed transaction is also broadcast to. */
+  solanaBroadcast?: (primary: string) => string[];
 }
 
 const MISSING_NEAR_COLUMNS = /no such column: near_|has no column named near_/i;
@@ -562,7 +571,8 @@ let intentsTokenCache: { at: number; tokens: IntentsToken[] } | null = null;
 
 async function intentsTokens(): Promise<IntentsToken[]> {
   if (intentsTokenCache && Date.now() - intentsTokenCache.at < 10 * 60_000) return intentsTokenCache.tokens;
-  const response = await fetch(`${ONECLICK_API}/tokens`);
+  const response = await fetch(`${ONECLICK_API}/tokens`, { signal: AbortSignal.timeout(8_000) })
+    .catch(() => { throw new Error('NEAR Intents is unavailable right now.'); });
   if (!response.ok) throw new Error('NEAR Intents is unavailable right now.');
   intentsTokenCache = { at: Date.now(), tokens: await response.json() as IntentsToken[] };
   return intentsTokenCache.tokens;
@@ -591,6 +601,10 @@ export async function requestIntentsQuote(body: Record<string, unknown>, feeBps:
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(env.ONECLICK_JWT ? { Authorization: `Bearer ${env.ONECLICK_JWT}` } : {}) },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15_000),
+  }).catch((error: unknown) => {
+    if (error instanceof Error && error.name === 'TimeoutError') throw new Error('NEAR Intents is slow to quote right now. Please try again in a moment.');
+    throw error;
   });
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
   const quote = data.quote as { depositAddress?: string } | undefined;
@@ -1036,7 +1050,7 @@ async function saveContinuation(userId: string, intents: NonNullable<PendingTrad
  * exactly the quoted amount to the 1Click deposit address from the Hopr wallet
  * on the funding chain. A plain native transfer — no opaque calldata is signed.
  */
-async function confirmIncomingIntents(userId: string, trade: PendingTrade, rpcUrls: { evm: (chainId: number) => string; solana: string }, env: TradingEnv): Promise<ConfirmResult> {
+async function confirmIncomingIntents(userId: string, trade: PendingTrade, rpcUrls: TransactionRpcs, env: TradingEnv): Promise<ConfirmResult> {
   const intents = trade.intents;
   const chain = getChainById(trade.fundingChainId);
   if (!intents || !chain || !trade.fromAddress) throw new Error('This quote is incomplete. Request a new quote.');
@@ -1049,7 +1063,7 @@ async function confirmIncomingIntents(userId: string, trade: PendingTrade, rpcUr
   const result = await executeNativeDeposit({
     chainType: chain.type,
     chainId: chain.id,
-    rpcUrl: chain.type === 'SVM' ? rpcUrls.solana : rpcUrls.evm(chain.id),
+    rpcUrl: chain.type === 'SVM' ? await rpcUrls.solana() : await rpcUrls.evm(chain.id),
     encryptedKey: await getEncryptedKey(userId, chain.type, env),
     encryptionSecret: env.ENCRYPTION_KEY!,
     fromAddress: trade.fromAddress,
@@ -1109,7 +1123,7 @@ export interface ConfirmResult {
 export async function confirmTrade(
   userId: string,
   tradeId: string,
-  rpcUrls: { evm: (chainId: number) => string; solana: string },
+  rpcUrls: TransactionRpcs,
   env: TradingEnv
 ): Promise<ConfirmResult> {
   const trade = await loadPendingTrade(userId, tradeId, env);
@@ -1132,15 +1146,20 @@ export async function confirmTrade(
   }
   if (trade.fromChainType === 'NEAR') throw new Error('Unsupported NEAR quote. Request a new quote.');
 
-  const encryptedKey = await getEncryptedKey(userId, trade.fromChainType, env);
+  const [encryptedKey, evmRpcUrl, solanaRpcUrl] = await Promise.all([
+    getEncryptedKey(userId, trade.fromChainType, env),
+    trade.fromChainType === 'EVM' ? rpcUrls.evm(SUPPORTED_CHAINS.find((c) => c.key === trade.fromChainKey)!.id) : undefined,
+    trade.fromChainType === 'SVM' ? rpcUrls.solana() : undefined,
+  ]);
 
   const result = await execute({
     quote: trade.quote,
     fromChainType: trade.fromChainType,
     encryptedKey,
     encryptionSecret: env.ENCRYPTION_KEY,
-    evmRpcUrl: trade.fromChainType === 'EVM' ? rpcUrls.evm(SUPPORTED_CHAINS.find((c) => c.key === trade.fromChainKey)!.id) : undefined,
-    solanaRpcUrl: trade.fromChainType === 'SVM' ? rpcUrls.solana : undefined,
+    evmRpcUrl,
+    solanaRpcUrl,
+    solanaBroadcastUrls: solanaRpcUrl ? rpcUrls.solanaBroadcast?.(solanaRpcUrl) : undefined,
     fromTokenAddress: trade.fromTokenAddress,
   });
 

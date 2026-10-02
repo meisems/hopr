@@ -4,19 +4,13 @@ import { Settings, Shield, Menu, X, Github, MessageCircle, Search, BarChart3, Bo
 import SearchBar, { type ScanRequest } from './components/SearchBar';
 import TrendingRail from './components/TrendingRail';
 import LaunchpadPools from './components/LaunchpadPools';
-import TradeCard from './components/TradeCard';
-import PositionsTable from './components/PositionsTable';
-import WalletPanel from './components/WalletPanel';
-import ConnectWalletModal from './components/ConnectWalletModal';
-import WalletButton from './components/WalletButton';
-import { OPEN_TOKEN_KEY } from './components/PositionsTable';
 import ChainLogo from './components/ChainLogo';
 import ThemeToggle from './components/ThemeToggle';
 import { ThemeProvider } from './context/ThemeContext';
 import { BlackHoleSettingsProvider, useBlackHoleSettings } from './context/BlackHoleContext';
-import { OPEN_VAULT_EVENT, WalletProvider } from './context/WalletContext';
 import { DetectedToken } from './services/chainDetector';
-import { TELEGRAM_BOT_URL } from './services/api';
+import TelegramTradeCard from './components/TelegramTradeCard';
+import { useTelegramBotUrl } from './services/telegramLinks';
 
 // Page chunks are split for a fast first paint, then warmed in the background
 // (and on hover) so switching pages never shows a loading state in practice.
@@ -24,37 +18,21 @@ const loaders = {
   splash: () => import('./components/SplashScreen'),
   chart: () => import('./components/ChartPanel'),
   docs: () => import('./components/DocsPage'),
-  positions: () => import('./components/PositionsPage'),
-  history: () => import('./components/HistoryPage'),
-  bridge: () => import('./components/BridgePage'),
-  analytics: () => import('./components/AnalyticsPage'),
   settings: () => import('./components/SettingsPage'),
-  wallets: () => import('./components/WalletsPage'),
-  rewards: () => import('./components/RewardsPage'),
 };
 
 const SplashScreen = lazy(loaders.splash);
 const ChartPanel = lazy(loaders.chart);
 const DocsPage = lazy(loaders.docs);
-const PositionsPage = lazy(loaders.positions);
-const HistoryPage = lazy(loaders.history);
-const BridgePage = lazy(loaders.bridge);
-const AnalyticsPage = lazy(loaders.analytics);
 const SettingsPage = lazy(loaders.settings);
-const WalletsPage = lazy(loaders.wallets);
-const RewardsPage = lazy(loaders.rewards);
 
-type Page = 'dashboard' | 'analytics' | 'positions' | 'history' | 'bridge' | 'docs' | 'settings' | 'wallets' | 'rewards';
-const PAGE_PATHS: Record<Page, string> = { dashboard: '/', analytics: '/analytics', positions: '/positions', history: '/history', bridge: '/bridge', docs: '/docs', settings: '/settings', wallets: '/wallets', rewards: '/rewards' };
-const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', analytics: 'Analytics', positions: 'Active Positions', history: 'Trade History', bridge: 'Bridge', docs: 'Documentation', settings: 'Settings', wallets: 'Wallet Vault', rewards: 'Rewards' };
+// The website is a read-only viewer: scan, charts, trending and launch radar.
+// Trading, wallets and portfolio live in the Telegram bot.
+type Page = 'dashboard' | 'docs' | 'settings';
+const PAGE_PATHS: Record<Page, string> = { dashboard: '/', docs: '/docs', settings: '/settings' };
+const PAGE_TITLES: Record<Page, string> = { dashboard: 'Dashboard', docs: 'Documentation', settings: 'Settings' };
 const NAV_ITEMS: { page: Page; label: string }[] = [
   { page: 'dashboard', label: 'Dashboard' },
-  { page: 'analytics', label: 'Analytics' },
-  { page: 'positions', label: 'Positions' },
-  { page: 'history', label: 'History' },
-  { page: 'bridge', label: 'Bridge' },
-  { page: 'rewards', label: 'Rewards' },
-  { page: 'wallets', label: 'Wallets' },
   { page: 'settings', label: 'Settings' },
   { page: 'docs', label: 'Docs' },
 ];
@@ -62,6 +40,7 @@ const SPLASH_SEEN_KEY = 'hopr-splash-seen';
 
 function pageFromPath(pathname: string): Page {
   const match = (Object.entries(PAGE_PATHS) as [Page, string][]).find(([, path]) => path === pathname);
+  // Retired pages (/bridge, /wallets, /rewards…) land on the dashboard.
   return match?.[0] ?? 'dashboard';
 }
 
@@ -115,7 +94,7 @@ const sectionMotion = (delay: number) => ({
   transition: { delay, duration: 0.45, ease: [0.22, 1, 0.36, 1] },
 });
 
-function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
+function Dashboard() {
   const [selectedToken, setSelectedToken] = useState<DetectedToken | null>(null);
   const [scanRequest, setScanRequest] = useState<ScanRequest | null>(null);
   const searchRef = useRef<HTMLElement>(null);
@@ -124,18 +103,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const scanFromRail = useCallback((address: string, chainId?: number) => {
     setScanRequest({ address, chainId, nonce: Date.now() });
     searchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
-  // A token opened from the Positions page ("Trade") loads straight into the trade card.
-  useEffect(() => {
-    try {
-      const address = sessionStorage.getItem(OPEN_TOKEN_KEY);
-      if (!address) return;
-      sessionStorage.removeItem(OPEN_TOKEN_KEY);
-      setScanRequest({ address, nonce: Date.now() });
-    } catch {
-      // Storage unavailable: nothing to open.
-    }
   }, []);
 
   return (
@@ -170,18 +137,13 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
           </Suspense>
         </div>
 
-        {/* Trade card + Wallet */}
+        {/* Hand-off to the Telegram bot, where trading happens */}
         <div className="space-y-4">
-          <TradeCard token={selectedToken} />
-          <WalletPanel />
+          <TelegramTradeCard token={selectedToken} />
         </div>
       </motion.section>
 
-      {/* Positions table */}
       <LaunchpadPools onSelect={scanFromRail} />
-      <motion.section {...sectionMotion(0.18)}>
-        <PositionsTable onOpenToken={scanFromRail} />
-      </motion.section>
 
       {/* How it works */}
       <motion.section {...sectionMotion(0.24)} className="grid grid-cols-1 gap-6">
@@ -190,9 +152,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {[
               { step: '1', title: 'Scan a Token', desc: 'Paste any EVM, Solana or NEAR token address to resolve its chain and market data.', icon: Search },
-              { step: '2', title: 'Review Token Data', desc: 'Inspect the live chart, liquidity, FDV, volume, and price movement without connecting a wallet.', icon: BarChart3 },
-              { step: '3', title: 'Connect Your Wallets', desc: 'Connect EVM, Solana and NEAR wallets — pay from any chain and receive on the token’s chain in one tap.', icon: Wallet },
-              { step: '4', title: 'Sign in Your Wallet', desc: 'Hopr picks the route (LI.FI, Ref Finance or NEAR Intents); you approve it in your own wallet. Keys never leave it.', icon: Shield },
+              { step: '2', title: 'Review Token Data', desc: 'Inspect the live chart, liquidity, FDV, volume, and price movement — no wallet needed.', icon: BarChart3 },
+              { step: '3', title: 'Open the Telegram Bot', desc: 'One tap opens the token in the Hopr bot, where your encrypted Hopr wallet pays from any chain.', icon: Wallet },
+              { step: '4', title: 'Confirm the Quote', desc: 'Hopr picks the route (LI.FI, Ref Finance or NEAR Intents) and shows a live quote — nothing is signed until you confirm.', icon: Shield },
             ].map((item) => {
               const Icon = item.icon;
               return (
@@ -221,7 +183,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page) => void }) {
       <motion.section {...sectionMotion(0.3)} className="bg-gray-900/40 rounded-2xl border border-gray-800/50 p-6">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-gray-400">Supported Chains</h3>
-          <button onClick={() => onNavigate('bridge')} onMouseEnter={() => prefetch('bridge')} className="pressable text-xs font-medium text-brand-300 hover:text-brand-200">Bridge assets →</button>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {[
@@ -290,7 +251,7 @@ function AppContent() {
 
   // Warm every page chunk once the browser is idle.
   useEffect(() => {
-    const warm = () => (Object.keys(PAGE_PATHS) as Page[]).forEach(prefetch);
+    const warm = () => NAV_ITEMS.forEach(({ page }) => prefetch(page));
     const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
     const handle = idle ? idle(warm) : window.setTimeout(warm, 1500);
     return () => {
@@ -316,13 +277,7 @@ function AppContent() {
 
   const goHome = useCallback(() => navigate('dashboard'), [navigate]);
 
-  // Inside Telegram, any "connect a wallet" request opens the Wallet Vault (bot-synced wallets).
-  const inTelegram = Boolean(window.Telegram?.WebApp?.initData);
-  useEffect(() => {
-    const openVault = () => navigate('wallets');
-    window.addEventListener(OPEN_VAULT_EVENT, openVault);
-    return () => window.removeEventListener(OPEN_VAULT_EVENT, openVault);
-  }, [navigate]);
+  const botUrl = useTelegramBotUrl();
 
   const previewBlackHole = () => {
     setSplashRun((run) => run + 1);
@@ -352,14 +307,8 @@ function AppContent() {
   const renderPage = () => {
     switch (currentPage) {
       case 'docs': return <DocsPage onBack={goHome} />;
-      case 'positions': return <PositionsPage onBack={goHome} />;
-      case 'history': return <HistoryPage onBack={goHome} />;
-      case 'bridge': return <BridgePage onBack={goHome} />;
-      case 'analytics': return <AnalyticsPage onBack={goHome} />;
-      case 'settings': return <SettingsPage onBack={goHome} onOpenWallets={() => navigate('wallets')} onPreviewBlackHole={previewBlackHole} />;
-      case 'wallets': return <WalletsPage onBack={goHome} />;
-      case 'rewards': return <RewardsPage onBack={goHome} />;
-      default: return <Dashboard onNavigate={navigate} />;
+      case 'settings': return <SettingsPage onBack={goHome} onPreviewBlackHole={previewBlackHole} />;
+      default: return <Dashboard />;
     }
   };
 
@@ -368,7 +317,6 @@ function AppContent() {
   return (
     <>
       {preloader}
-      {!inTelegram && <ConnectWalletModal />}
 
       <div className={`${dashboardClassName} relative min-h-screen text-white`}>
         <div className="app-backdrop" aria-hidden />
@@ -418,7 +366,11 @@ function AppContent() {
               {/* Right actions */}
               <div className="flex items-center gap-2">
                 <ThemeToggle />
-                <WalletButton />
+                {botUrl && (
+                  <a href={botUrl} target="_blank" rel="noreferrer" className="pressable hidden sm:flex items-center gap-1.5 rounded-xl bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-500">
+                    <MessageCircle className="w-4 h-4" /> Trade on Telegram
+                  </a>
+                )}
                 <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
                   <span className="relative flex h-2 w-2">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-60" />
@@ -434,11 +386,6 @@ function AppContent() {
                 >
                   <Settings className="w-5 h-5 text-gray-400 transition-transform duration-300" />
                 </button>
-                {TELEGRAM_BOT_URL && (
-                  <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="pressable hidden sm:flex p-2 hover:bg-gray-800/70 rounded-xl" aria-label="Open the Telegram bot">
-                    <MessageCircle className="w-5 h-5 text-gray-400" />
-                  </a>
-                )}
                 <button
                   onClick={() => setMobileMenuOpen((open) => !open)}
                   className="pressable lg:hidden p-2 hover:bg-gray-800/70 rounded-xl"
@@ -514,8 +461,8 @@ function AppContent() {
                 <a href="https://github.com/meisems/hopr" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-gray-500 hover:text-white transition-colors">
                   <Github className="w-3 h-3" /> GitHub
                 </a>
-                {TELEGRAM_BOT_URL && (
-                  <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-gray-500 hover:text-white transition-colors">
+                {botUrl && (
+                  <a href={botUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-gray-500 hover:text-white transition-colors">
                     <MessageCircle className="w-3 h-3" /> Telegram Bot
                   </a>
                 )}
@@ -532,11 +479,9 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <ThemeProvider>
-        <WalletProvider>
-          <BlackHoleSettingsProvider>
-            <AppContent />
-          </BlackHoleSettingsProvider>
-        </WalletProvider>
+        <BlackHoleSettingsProvider>
+          <AppContent />
+        </BlackHoleSettingsProvider>
       </ThemeProvider>
     </MotionConfig>
   );

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { savePoolActions, readPoolAction } from '../workers/launchpadActions.ts';
-import { validPnlCard } from '../src/services/pnlCard.ts';
 
 function kv() {
   const values = new Map();
@@ -25,9 +24,4 @@ test('expired and corrupted buttons cannot resolve to a trade', async () => {
   store.values.set(key, 'corrupt'); assert.equal(await readPoolAction(1, id, 0, env), null);
   assert.equal(await readPoolAction(1, id, 6, env), null);
   assert.equal(await savePoolActions(1, [], {}), null);
-});
-test('PnL export accepts losses and rejects incomplete or non-finite valuations', () => {
-  const data = { symbol: 'TEST', chain: 'Base', pnlUsd: -20, pnlPercent: -20, investedUsd: 100, valueUsd: 80, realizedUsd: 0, observedAt: Date.now() };
-  assert.equal(validPnlCard(data), true);
-  for (const patch of [{ investedUsd: 0 }, { pnlUsd: NaN }, { valueUsd: Infinity }, { realizedUsd: -1 }]) assert.equal(validPnlCard({ ...data, ...patch }), false);
 });

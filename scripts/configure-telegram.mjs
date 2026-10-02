@@ -2,12 +2,11 @@ import { pathToFileURL } from 'node:url';
 
 export const TELEGRAM_COMMANDS = [
   { command: 'start', description: '⚡ Start Hopr' },
-  { command: 'menu', description: '◆ Open the main menu' },
-  { command: 'app', description: '🚀 Open the Hopr Mini App' },
+  { command: 'menu', description: '◆ Main menu with your portfolio' },
+  { command: 'portfolio', description: '💼 Every token you hold on 7 chains' },
   { command: 'help', description: '❓ Every command, explained' },
-  { command: 'wallet', description: '👛 Wallet balances' },
-  { command: 'balances', description: '🔄 Refresh native balances' },
-  { command: 'positions', description: '📊 Open positions with live prices' },
+  { command: 'wallet', description: '👛 Wallets: balances, switch, import' },
+  { command: 'balances', description: '🔄 Native balances on every chain' },
   { command: 'pools', description: '📡 Launchpad pools, liquidity & volume' },
   { command: 'swap', description: 'Ⓝ Swap on NEAR, e.g. /swap 1 near usdc' },
   { command: 'referral', description: '🎁 Refer & earn 25% of friends’ fees' },
@@ -21,13 +20,14 @@ export const TELEGRAM_DESCRIPTION = [
   '',
   '🔎 Paste any token address for a live market card',
   '💱 Buy & sell with live quotes — you confirm every trade',
-  '👛 Encrypted multi-chain wallet (EVM + Solana + NEAR)',
+  '💼 Portfolio of every token you hold, live USD values',
+  '👛 Up to 10 encrypted wallets (EVM + Solana + NEAR)',
   '⛓ Solana · Base · Arbitrum · BNB · Robinhood · Arc · NEAR',
   '',
   'Tap Start to begin.',
 ].join('\n');
 
-function validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl }) {
+function validateConfiguration({ token, webhookSecret, webhookUrl }) {
   const missing = [];
   if (!token) missing.push('TELEGRAM_BOT_TOKEN');
   if (!webhookSecret) missing.push('TELEGRAM_WEBHOOK_SECRET');
@@ -46,15 +46,6 @@ function validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl })
   }
   if (parsedUrl.protocol !== 'https:') {
     throw new Error('TELEGRAM_WEBHOOK_URL must use HTTPS.');
-  }
-  if (miniAppUrl) {
-    let parsedMiniAppUrl;
-    try {
-      parsedMiniAppUrl = new URL(miniAppUrl);
-    } catch {
-      throw new Error('TELEGRAM_MINI_APP_URL must be a valid HTTPS URL.');
-    }
-    if (parsedMiniAppUrl.protocol !== 'https:') throw new Error('TELEGRAM_MINI_APP_URL must use HTTPS.');
   }
 }
 
@@ -83,8 +74,8 @@ async function callTelegramApi(token, method, body, fetchImpl) {
   return result.result;
 }
 
-export async function configureTelegram({ token, webhookSecret, webhookUrl, miniAppUrl, fetchImpl = fetch }) {
-  validateConfiguration({ token, webhookSecret, webhookUrl, miniAppUrl });
+export async function configureTelegram({ token, webhookSecret, webhookUrl, fetchImpl = fetch }) {
+  validateConfiguration({ token, webhookSecret, webhookUrl });
 
   await callTelegramApi(token, 'setWebhook', {
     url: webhookUrl,
@@ -94,11 +85,10 @@ export async function configureTelegram({ token, webhookSecret, webhookUrl, mini
   await callTelegramApi(token, 'setMyCommands', { commands: TELEGRAM_COMMANDS }, fetchImpl);
   await callTelegramApi(token, 'setMyShortDescription', { short_description: TELEGRAM_SHORT_DESCRIPTION }, fetchImpl);
   await callTelegramApi(token, 'setMyDescription', { description: TELEGRAM_DESCRIPTION }, fetchImpl);
-  await callTelegramApi(token, 'setChatMenuButton', {
-    menu_button: miniAppUrl ? { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } : { type: 'commands' },
-  }, fetchImpl);
+  // The menu button lists the bot's commands (the Mini App was retired; it also replaces an old web_app button).
+  await callTelegramApi(token, 'setChatMenuButton', { menu_button: { type: 'commands' } }, fetchImpl);
 
-  return { webhook: true, commands: TELEGRAM_COMMANDS.map(({ command }) => command), menuButton: miniAppUrl ? 'web_app' : 'commands' };
+  return { webhook: true, commands: TELEGRAM_COMMANDS.map(({ command }) => command), menuButton: 'commands' };
 }
 
 async function main() {
@@ -107,7 +97,6 @@ async function main() {
       token: process.env.TELEGRAM_BOT_TOKEN,
       webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
       webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
-      miniAppUrl: process.env.TELEGRAM_MINI_APP_URL,
     });
     console.log(`Telegram configured: webhook, slash-command suggestions (${result.commands.map((command) => `/${command}`).join(', ')}), bot description, and menu button.`);
   } catch (error) {

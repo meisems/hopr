@@ -15,8 +15,8 @@ interface ThemeToggleProps {
 }
 
 /**
- * Three-way appearance switch. "System" tracks the OS setting (or Telegram's
- * theme inside the Mini App) live; the other two pin a theme. The new theme is
+ * Three-way appearance switch. "System" tracks the OS setting live; the
+ * other two pin a theme. The new theme is
  * revealed from the clicked segment via a View Transition where supported.
  */
 export default function ThemeToggle({ size = 'sm' }: ThemeToggleProps) {
@@ -30,7 +30,6 @@ export default function ThemeToggle({ size = 'sm' }: ThemeToggleProps) {
     if (value === preference) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const origin = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    window.Telegram?.WebApp?.HapticFeedback?.selectionChanged();
     // The black-hole flourish is decorative only: it never blocks further input.
     if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) setBlackHole({ ...origin, key: Date.now() });
     setPreference(value, origin);

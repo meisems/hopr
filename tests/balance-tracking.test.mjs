@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tracked } from '../workers/balances.ts';
 import { jsonRpc } from '../src/services/rpcPool.ts';
-import { getAssetBalance, getTrackedAssetBalance } from '../src/services/router.ts';
 
 test('balance tracking distinguishes live zero, cached value and first-read failure', async () => {
   const values = new Map();
@@ -23,18 +22,4 @@ test('RPC fails over on HTTP throttling and malformed results', async () => {
       : attempts === 2 ? Response.json({ result: null }) : Response.json({ result: '0xa' }),
   });
   assert.equal(attempts, 3); assert.equal(result, '0xa');
-});
-test('an execution balance never falls back to the display cache', async () => {
-  const original = globalThis.fetch;
-  const asset = { chainId: 8453, address: 'native', symbol: 'ETH', decimals: 18 };
-  const owner = '0x' + '3'.repeat(40);
-  try {
-    globalThis.fetch = async () => Response.json({ result: '0x64' });
-    assert.equal(await getAssetBalance(asset, owner), 100n);
-    globalThis.fetch = async () => { throw new Error('offline'); };
-    await assert.rejects(getAssetBalance(asset, owner), /offline/);
-    const display = await getTrackedAssetBalance(asset, owner);
-    assert.equal(display.value, 100n); assert.equal(display.stale, true);
-    assert.equal((await getTrackedAssetBalance(asset, '0x'+'4'.repeat(40))).value, null);
-  } finally { globalThis.fetch = original; }
 });

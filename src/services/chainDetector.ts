@@ -12,6 +12,8 @@
 // not a LI.FI chain, so it lives outside SUPPORTED_CHAINS (see NEAR_CHAIN).
 
 import { getTokenMetadata, isNearAccountId, NEAR_CHAIN, NEAR_CHAIN_ID } from './nearService';
+import { jsonRpcRace } from './rpcPool';
+import { firstHit, launchpadFromVenue, venueName } from './venues';
 
 export { NEAR_CHAIN, NEAR_CHAIN_ID };
 
@@ -157,19 +159,13 @@ const PONS_GET_LAUNCHED_TOKEN_SELECTOR = '0x3cf28b5a';
 async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: string; symbol: string; name: string } | null> {
   const data = `${PONS_GET_LAUNCHED_TOKEN_SELECTOR}${tokenAddress.slice(2).padStart(64, '0')}`;
   try {
-    const response = await scanFetch('https://rpc.mainnet.chain.robinhood.com', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: PONS_V2_FACTORY, data }, 'latest'] }),
-    });
-    const payload = await response.json() as { result?: string };
-    const encoded = payload.result ?? '';
+    const encoded = await jsonRpcRace<string>(4663, 'eth_call', [{ to: PONS_V2_FACTORY, data }, 'latest'], { validate: isHex });
     if (!encoded.startsWith('0x') || encoded.length < 2 + 32 * 12 * 2) return null;
     const word = (index: number) => encoded.slice(2 + index * 64, 2 + (index + 1) * 64);
     if (!word(11).endsWith('1')) return null;
     const pairedAddress = `0x${word(2).slice(24)}`;
     if (/^0x0+$/.test(pairedAddress)) return null;
-    const metadata = await readErc20Metadata(SUPPORTED_CHAINS.find((chain) => chain.id === 4663)!.rpcUrl, pairedAddress);
+    const metadata = await readErc20Metadata(4663, pairedAddress);
     return { address: pairedAddress, symbol: metadata?.symbol ?? 'QUOTE', name: metadata?.name ?? 'Quote asset' };
   } catch {
     return null;
@@ -177,7 +173,7 @@ async function fetchPonsPairToken(tokenAddress: string): Promise<{ address: stri
 }
 
 function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: ChainInfo, scannedAddress: string): DetectedToken {
-  const source = pair.dexId ? formatLiquiditySource(pair.dexId) : 'DexScreener';
+  const source = pair.dexId ? venueName(pair.dexId) : 'DexScreener';
   const scanned = scannedAddress.toLowerCase();
   const isQuote = pair.quoteToken?.address.toLowerCase() === scanned && pair.baseToken.address.toLowerCase() !== scanned;
   const token = isQuote && pair.quoteToken ? pair.quoteToken : pair.baseToken;
@@ -201,7 +197,7 @@ function pairToDetectedToken(pair: DexScreenerPair, chainId: number, chainInfo: 
     geckoNetwork: GECKO_NETWORKS[pair.chainId.toLowerCase()],
     freshDeployment: false,
     liquiditySource: source,
-    launchpad: detectLaunchpad(source),
+    launchpad: launchpadFromVenue(pair.dexId),
     pairedAsset: paired ? { address: paired.address, name: paired.name, symbol: paired.symbol } : robinhoodDefaultPair,
     ...pairExtras(pair, !isQuote),
   };
@@ -230,6 +226,7 @@ interface GeckoPoolMarket {
   priceChanges?: { m5?: number; h1?: number; h6?: number; h24?: number };
   txns24h?: { buys: number; sells: number };
   pairCreatedAt?: number;
+  launchpad?: string;
 }
 
 /**
@@ -237,45 +234,77 @@ interface GeckoPoolMarket {
  * present in DexScreener. Its public API reads indexed on-chain pool state,
  * including reserve_in_usd and volume_usd.h24.
  */
+type GeckoPool = { id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } };
+
+/** One GeckoTerminal pool as market data for the scanned token (either side of the pair). */
+function geckoPoolToMarket(pool: GeckoPool, address: string): GeckoPoolMarket | null {
+  if (!pool.attributes) return null;
+  const attrs = pool.attributes;
+  const reserve = Number(attrs.reserve_in_usd ?? 0);
+  if (!Number.isFinite(reserve) || reserve <= 0) return null;
+  const volume = attrs.volume_usd as { h24?: number } | undefined;
+  const poolName = String(attrs.name ?? 'Launchpad token');
+  const pairSymbols = poolName.split(' / ').map((part) => part.replace(/\s+\d+(?:\.\d+)?%$/, '').trim());
+  const fdv = Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0);
+  const poolId = pool.id?.split('_').pop() ?? '';
+  const source = venueName(pool.relationships?.dex?.data?.id ?? 'GeckoTerminal');
+  const baseId = pool.relationships?.base_token?.data?.id?.split('_').pop()?.toLowerCase();
+  const quoteId = pool.relationships?.quote_token?.data?.id?.split('_').pop()?.toLowerCase();
+  const scannedIsQuote = quoteId === address.toLowerCase() && baseId !== address.toLowerCase();
+  const tokenName = scannedIsQuote ? pairSymbols[1] : pairSymbols[0];
+  const tokenSymbol = scannedIsQuote ? pairSymbols[1] : String(attrs.base_token_symbol ?? pairSymbols[0] ?? 'UNKNOWN');
+  const pairedSymbol = scannedIsQuote ? pairSymbols[0] : pairSymbols[1];
+  return {
+    address,
+    name: String(tokenName || attrs.base_token_name || 'Token'),
+    symbol: String(tokenSymbol || 'UNKNOWN'),
+    source,
+    priceUsd: Number((scannedIsQuote ? attrs.quote_token_price_usd : attrs.base_token_price_usd) ?? attrs.token_price_usd ?? 0),
+    liquidity: reserve,
+    volume24h: Number(volume?.h24 ?? 0),
+    fdv: Number.isFinite(fdv) ? fdv : 0,
+    pairAddress: poolId,
+    pairedAsset: pairedSymbol ? { symbol: pairedSymbol } : undefined,
+    launchpad: launchpadFromVenue(pool.relationships?.dex?.data?.id),
+    ...geckoActivity(attrs, !scannedIsQuote),
+  };
+}
+
 async function fetchGeckoTerminalMarket(address: string, chain: ChainInfo): Promise<GeckoPoolMarket | null> {
   const network = GECKO_NETWORK_SLUGS[chain.key];
   if (!network) return null;
   try {
     const response = await scanFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`);
     if (!response.ok) return null;
-    const payload = await response.json() as {
-      data?: Array<{ id?: string; attributes?: Record<string, unknown>; relationships?: { dex?: { data?: { id?: string } }; base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } } } }>;
-    };
+    const payload = await response.json() as { data?: GeckoPool[] };
     const pool = payload.data?.find((item) => Number(item.attributes?.reserve_in_usd ?? 0) > 0) ?? payload.data?.[0];
-    if (!pool?.attributes) return null;
-    const attrs = pool.attributes;
-    const reserve = Number(attrs.reserve_in_usd ?? 0);
-    if (!Number.isFinite(reserve) || reserve <= 0) return null;
-    const volume = attrs.volume_usd as { h24?: number } | undefined;
-    const poolName = String(attrs.name ?? 'Launchpad token');
-    const pairSymbols = poolName.split(' / ').map((part) => part.replace(/\s+\d+(?:\.\d+)?%$/, '').trim());
-    const fdv = Number(attrs.fdv_usd ?? attrs.market_cap_usd ?? 0);
-    const poolId = pool.id?.split('_').pop() ?? '';
-    const source = formatLiquiditySource(pool.relationships?.dex?.data?.id?.split('_').pop() ?? 'GeckoTerminal');
-    const baseId = pool.relationships?.base_token?.data?.id?.split('_').pop()?.toLowerCase();
-    const quoteId = pool.relationships?.quote_token?.data?.id?.split('_').pop()?.toLowerCase();
-    const scannedIsQuote = quoteId === address.toLowerCase() && baseId !== address.toLowerCase();
-    const tokenName = scannedIsQuote ? pairSymbols[1] : pairSymbols[0];
-    const tokenSymbol = scannedIsQuote ? pairSymbols[1] : String(attrs.base_token_symbol ?? pairSymbols[0] ?? 'UNKNOWN');
-    const pairedSymbol = scannedIsQuote ? pairSymbols[0] : pairSymbols[1];
-    return {
-      address,
-      name: String(tokenName || attrs.base_token_name || 'Token'),
-      symbol: String(tokenSymbol || 'UNKNOWN'),
-      source,
-      priceUsd: Number((scannedIsQuote ? attrs.quote_token_price_usd : attrs.base_token_price_usd) ?? attrs.token_price_usd ?? 0),
-      liquidity: reserve,
-      volume24h: Number(volume?.h24 ?? 0),
-      fdv: Number.isFinite(fdv) ? fdv : 0,
-      pairAddress: poolId,
-      pairedAsset: pairedSymbol ? { symbol: pairedSymbol } : undefined,
-      ...geckoActivity(attrs, !scannedIsQuote),
-    };
+    return pool ? geckoPoolToMarket(pool, address) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One GeckoTerminal request across every network (instead of one per chain):
+ * the deepest pool on a Hopr chain that holds the scanned token on either side.
+ */
+async function fetchGeckoSearchMarket(address: string): Promise<{ market: GeckoPoolMarket; chain: ChainInfo } | null> {
+  try {
+    const response = await scanFetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(address)}`);
+    if (!response.ok) return null;
+    const payload = await response.json() as { data?: GeckoPool[] };
+    const evm = address.startsWith('0x');
+    const matches = (tokenRef: string | undefined, network: string) => !!tokenRef
+      && (evm ? tokenRef.toLowerCase() === `${network}_${address.toLowerCase()}` : tokenRef === `${network}_${address}`);
+    const hits = (payload.data ?? []).flatMap((pool) => {
+      const network = pool.relationships?.base_token?.data?.id?.split('_')[0] ?? '';
+      const chainId = DEXSCREENER_CHAIN_SLUGS[network];
+      const chain = SUPPORTED_CHAINS.find((item) => item.id === chainId);
+      if (!chain || !(matches(pool.relationships?.base_token?.data?.id, network) || matches(pool.relationships?.quote_token?.data?.id, network))) return [];
+      const market = geckoPoolToMarket(pool, address);
+      return market ? [{ market, chain }] : [];
+    });
+    return hits.sort((left, right) => right.market.liquidity - left.market.liquidity)[0] ?? null;
   } catch {
     return null;
   }
@@ -294,24 +323,9 @@ function geckoActivity(attrs: Record<string, unknown>, scannedIsBase: boolean): 
   };
 }
 
-function formatLiquiditySource(value: string): string {
-  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
+/** Launchpad behind a venue id or name (Flap, Four.meme, Pump.fun, Clanker…); undefined for plain DEXes. */
 export function detectLaunchpad(source: string): string | undefined {
-  const normalized = source.toLowerCase().replace(/[^a-z]/g, '');
-  if (normalized === 'pumpswap') return 'PumpSwap';
-  if (normalized === 'pumpfun') return 'Pump.fun';
-  if (normalized === 'nearpaid') return 'NEARPaid';
-  if (normalized === 'raydiumlaunchlab') return 'LaunchLab';
-  if (normalized === 'moonit') return 'Moonit';
-  if (normalized === 'letsbonkfun') return 'LetsBonk';
-  if (normalized === 'virtualsbase' || normalized === 'virtualsunicornbase') return 'Virtuals';
-  if (normalized.includes('stonk')) return 'StonkFun';
-  if (normalized.includes('argus')) return 'ArgusWorld';
-  if (normalized.includes('tolly')) return 'TollyLabs';
-  if (normalized.includes('pons')) return 'PonsFamily';
-  return undefined;
+  return launchpadFromVenue(source);
 }
 
 function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackAddress: string): DetectedToken {
@@ -336,34 +350,26 @@ function geckoMarketToToken(market: GeckoPoolMarket, chain: ChainInfo, fallbackA
     geckoNetwork: GECKO_NETWORK_SLUGS[chain.key],
     freshDeployment: true,
     liquiditySource: market.source,
-    launchpad: detectLaunchpad(market.source),
+    launchpad: market.launchpad ?? detectLaunchpad(market.source),
     pairedAsset: market.pairedAsset,
   };
 }
 
-/** eth_getCode probe: returns true if `address` has deployed bytecode on `rpcUrl`. */
-async function hasBytecode(rpcUrl: string, address: string): Promise<boolean> {
+/** Hex result of a read-only call, raced across the chain's backup RPCs. */
+const isHex = (value: unknown): value is string => typeof value === 'string' && /^0x[0-9a-f]*$/i.test(value);
+
+/** eth_getCode probe on `chainId`: true if `address` has deployed bytecode (backup RPCs raced). */
+async function hasBytecode(chainId: number, address: string): Promise<boolean> {
   try {
-    const res = await scanFetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_getCode',
-        params: [address, 'latest'],
-      }),
-    });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { result?: string };
-    return !!data.result && data.result !== '0x';
+    const code = await jsonRpcRace<string>(chainId, 'eth_getCode', [address, 'latest'], { validate: isHex });
+    return code !== '0x';
   } catch {
     return false;
   }
 }
 
 async function readErc20Metadata(
-  rpcUrl: string,
+  chainId: number,
   address: string
 ): Promise<{ name: string; symbol: string; decimals: number } | null> {
   // Function selectors for name(), symbol(), decimals() with no args.
@@ -375,20 +381,8 @@ async function readErc20Metadata(
 
   try {
     const results = await Promise.all(
-      calls.map(async ({ sig }) => {
-        const res = await scanFetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'eth_call',
-            params: [{ to: address, data: sig }, 'latest'],
-          }),
-        });
-        const data = (await res.json()) as { result?: string };
-        return data.result ?? '0x';
-      })
+      // A revert (no such method) reads as empty, like a missing field.
+      calls.map(({ sig }) => jsonRpcRace<string>(chainId, 'eth_call', [{ to: address, data: sig }, 'latest'], { validate: isHex }).catch(() => '0x')),
     );
 
     const decodeString = (hex: string): string => {
@@ -423,14 +417,14 @@ async function probeEvmChains(address: string): Promise<DetectedToken | null> {
   const probes = await Promise.all(
     evmChains.map(async (chain) => ({
       chain,
-      found: await hasBytecode(chain.rpcUrl, address),
+      found: await hasBytecode(chain.id, address),
     }))
   );
 
   const hit = probes.find((p) => p.found);
   if (!hit) return null;
 
-  const metadata = await readErc20Metadata(hit.chain.rpcUrl, address);
+  const metadata = await readErc20Metadata(hit.chain.id, address);
 
   return {
     address,
@@ -503,7 +497,7 @@ async function detectNearToken(tokenId: string): Promise<DetectedToken | null> {
   const isBase = pair ? pair.baseToken.address === tokenId : true;
   const token = pair ? (isBase ? pair.baseToken : pair.quoteToken!) : undefined;
   const paired = pair ? (isBase ? pair.quoteToken : pair.baseToken) : undefined;
-  const source = pair?.dexId ? formatLiquiditySource(pair.dexId) : geckoPool ? formatLiquiditySource(geckoPool.dex) : 'Ref Finance';
+  const source = pair?.dexId ? venueName(pair.dexId) : geckoPool ? venueName(geckoPool.dex) : 'Ref Finance';
   return {
     address: tokenId,
     name: token?.name ?? metadata?.name ?? tokenId,
@@ -528,21 +522,42 @@ async function detectNearToken(tokenId: string): Promise<DetectedToken | null> {
   };
 }
 
+/** The deepest DexScreener pair holding the scanned token (either side) on a Hopr chain. */
+function bestPair(pairs: DexScreenerPair[], address: string, allow: (chainId: number) => boolean = () => true): DexScreenerPair | undefined {
+  const evm = isEvmAddress(address);
+  const same = (candidate?: string) => !!candidate && (evm ? candidate.toLowerCase() === address.toLowerCase() : candidate === address);
+  return pairs
+    .filter((pair) => {
+      const chainId = DEXSCREENER_CHAIN_SLUGS[pair.chainId.toLowerCase()];
+      return chainId !== undefined && allow(chainId) && (same(pair.baseToken.address) || same(pair.quoteToken?.address));
+    })
+    .sort((left, right) => (right.liquidity?.usd ?? 0) - (left.liquidity?.usd ?? 0))[0];
+}
+
+/** GeckoTerminal is asked this long after DexScreener if DexScreener has not answered yet. */
+const GECKO_HEDGE_MS = 600;
+const SOLANA_ID = 1151111081099710;
+
 export async function detectChain(address: string, chainHint?: number): Promise<DetectedToken | null> {
   // Pool discovery knows the chain. Do not let the same EVM address on another chain win.
   if (chainHint !== undefined) {
     if (chainHint === NEAR_CHAIN_ID) return isNearAccountId(address) ? detectNearToken(address) : null;
     const chain = SUPPORTED_CHAINS.find((c) => c.id === chainHint);
     if (!chain || (chain.type === 'EVM' ? !isEvmAddress(address) : !isBase58(address))) return null;
-    const market = await fetchGeckoTerminalMarket(address, chain);
-    if (market) return geckoMarketToToken(market, chain, address);
-    const pairs = await fetchDexScreener(address);
-    const pair = pairs.find((p) => DEXSCREENER_CHAIN_SLUGS[p.chainId] === chainHint
-      && (chain.type === 'SVM' ? p.baseToken.address === address || p.quoteToken?.address === address
-        : p.baseToken.address.toLowerCase() === address.toLowerCase() || p.quoteToken?.address.toLowerCase() === address.toLowerCase()));
-    if (pair) return pairToDetectedToken(pair, chain.id, chain, address);
+    // Both market sources at once; whichever finds the token first answers.
+    const indexed = await firstHit<DetectedToken>([
+      { delayMs: 0, run: async () => {
+        const market = await fetchGeckoTerminalMarket(address, chain);
+        return market ? geckoMarketToToken(market, chain, address) : null;
+      } },
+      { delayMs: 0, run: async () => {
+        const pair = bestPair(await fetchDexScreener(address), address, (id) => id === chainHint);
+        return pair ? pairToDetectedToken(pair, chain.id, chain, address) : null;
+      } },
+    ]);
+    if (indexed) return indexed;
     if (chain.type === 'EVM') {
-      const metadata = await readErc20Metadata(chain.rpcUrl, address);
+      const metadata = await readErc20Metadata(chain.id, address);
       if (!metadata) return null;
       return { address, ...metadata, chainId: chain.id, chainName: chain.name, chainType: 'EVM', chainColor: chain.color,
         priceUsd: 0, liquidity: 0, volume24h: 0, fdv: 0, change24h: 0, freshDeployment: true };
@@ -555,13 +570,18 @@ export async function detectChain(address: string, chainHint?: number): Promise<
   }
 
   if (isBase58(address)) {
-    const pairs = await fetchDexScreener(address);
-    const solPair = pairs.find((p) => p.chainId === 'solana' && (p.baseToken.address === address || p.quoteToken?.address === address));
     const solChain = SUPPORTED_CHAINS.find((c) => c.key === 'sol')!;
-    if (solPair) return pairToDetectedToken(solPair, solChain.id, solChain, address);
-
-    const launchpadMarket = await fetchGeckoTerminalMarket(address, solChain);
-    if (launchpadMarket) return geckoMarketToToken(launchpadMarket, solChain, address);
+    const indexed = await firstHit<DetectedToken>([
+      { delayMs: 0, run: async () => {
+        const pair = bestPair(await fetchDexScreener(address), address, (id) => id === SOLANA_ID);
+        return pair ? pairToDetectedToken(pair, solChain.id, solChain, address) : null;
+      } },
+      { delayMs: GECKO_HEDGE_MS, run: async () => {
+        const market = await fetchGeckoTerminalMarket(address, solChain);
+        return market ? geckoMarketToToken(market, solChain, address) : null;
+      } },
+    ]);
+    if (indexed) return indexed;
 
     // Not indexed yet — we can't probe Solana bytecode the same way as EVM,
     // so report it as a fresh/unverified Solana mint pending indexing.
@@ -584,41 +604,40 @@ export async function detectChain(address: string, chainHint?: number): Promise<
   }
 
   if (isEvmAddress(address)) {
-    const pairs = await fetchDexScreener(address);
-    const indexedPair = pairs.find((p) => {
-      const sameChain = p.chainId.toLowerCase() in DEXSCREENER_CHAIN_SLUGS && p.chainId.toLowerCase() !== 'solana';
-      const scanned = address.toLowerCase();
-      return sameChain && (p.baseToken.address.toLowerCase() === scanned || p.quoteToken?.address.toLowerCase() === scanned);
-    });
-    if (indexedPair) {
-      const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId.toLowerCase()];
-      const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
-      if (chainInfo) {
-        // PonsFamily can launch against a tokenized stock quote. Prefer the
-        // canonical GeckoTerminal pool name on Robinhood so AAPL/GOOGL is
-        // retained instead of being flattened to USD by another indexer.
-        const [canonicalPool, ponsPair] = await Promise.all([
-          chainId === 4663 ? fetchGeckoTerminalMarket(address, chainInfo) : null,
-          fetchPonsPairToken(address),
-        ]);
-        if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
-        const detected = pairToDetectedToken(indexedPair, chainId, chainInfo, address);
-        if (ponsPair) detected.pairedAsset = ponsPair;
-        return detected;
-      }
-    }
-
-    // Not on DexScreener: ask GeckoTerminal (launchpad pools) and probe bytecode on
-    // every EVM chain at the same time, so a fresh deployment costs one round trip.
-    const [launchpadMarkets, freshToken] = await Promise.all([
-      Promise.all(SUPPORTED_CHAINS.filter((chain) => chain.type === 'EVM').map(async (chain) => ({
-        chain,
-        market: await fetchGeckoTerminalMarket(address, chain),
-      }))),
-      probeEvmChains(address).catch(() => null),
+    // A token with no market yet is found on-chain; start that probe if the markets are slow.
+    let probe: Promise<DetectedToken | null> | null = null;
+    const probeTimer = setTimeout(() => { probe = probeEvmChains(address).catch(() => null); }, GECKO_HEDGE_MS + 400);
+    const indexed = await firstHit<DetectedToken>([
+      // DexScreener first: it covers Uniswap, PancakeSwap, Aerodrome and launchpads like Flap and Four.meme.
+      { delayMs: 0, run: async () => {
+        const indexedPair = bestPair(await fetchDexScreener(address), address, (id) => id !== SOLANA_ID);
+        if (!indexedPair) return null;
+        const chainId = DEXSCREENER_CHAIN_SLUGS[indexedPair.chainId.toLowerCase()];
+        const chainInfo = SUPPORTED_CHAINS.find((c) => c.id === chainId);
+        if (!chainInfo) return null;
+        if (chainId === 4663) {
+          // PonsFamily can launch against a tokenized stock quote. Prefer the
+          // canonical GeckoTerminal pool name on Robinhood so AAPL/GOOGL is
+          // retained instead of being flattened to USD by another indexer.
+          const [canonicalPool, ponsPair] = await Promise.all([fetchGeckoTerminalMarket(address, chainInfo), fetchPonsPairToken(address)]);
+          if (canonicalPool) return geckoMarketToToken(canonicalPool, chainInfo, address);
+          const detected = pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+          if (ponsPair) detected.pairedAsset = ponsPair;
+          return detected;
+        }
+        return pairToDetectedToken(indexedPair, chainId, chainInfo, address);
+      } },
+      // One GeckoTerminal search across every chain (launchpad pools DexScreener hasn't indexed).
+      { delayMs: GECKO_HEDGE_MS, run: async () => {
+        const hit = await fetchGeckoSearchMarket(address);
+        return hit && hit.chain.type === 'EVM' ? geckoMarketToToken(hit.market, hit.chain, address) : null;
+      } },
     ]);
-    const launchpadHit = launchpadMarkets.find((item) => item.market);
-    if (launchpadHit?.market) return geckoMarketToToken(launchpadHit.market, launchpadHit.chain, address);
+    clearTimeout(probeTimer);
+    if (indexed) return indexed;
+
+    // Not indexed anywhere (fresh deployment): find the chain by its bytecode, racing backup RPCs.
+    const freshToken = await (probe ?? probeEvmChains(address).catch(() => null));
     if (freshToken && freshToken.chainId === 4663) {
       const ponsPair = await fetchPonsPairToken(address);
       if (ponsPair) freshToken.pairedAsset = ponsPair;

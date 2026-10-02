@@ -1,7 +1,6 @@
-import { fetchLaunchpadFeed, launchpadById, type LaunchpadFeed, type LaunchpadId } from '../src/services/launchpads';
+import { feedRefreshMs, fetchLaunchpadFeed, launchpadById, type LaunchpadFeed, type LaunchpadId } from '../src/services/launchpads';
 
 interface Env { CACHE?: KVNamespace; NEAR_RPC_URL?: string }
-const TTL = 120_000;
 const MAX_AGE = 24 * 60 * 60 * 1000;
 const memory = new Map<string, LaunchpadFeed>();
 const inflight = new Map<string, Promise<LaunchpadFeed>>();
@@ -18,7 +17,7 @@ export async function getLaunchpadFeed(id: LaunchpadId, env: Env): Promise<Launc
       if (value?.source === id && Array.isArray(value.pools) && Number.isFinite(value.observedAt)) cached = value;
     } catch { /* Storage failure must not prevent live reads. */ }
   }
-  if (cached && Date.now() - cached.observedAt < TTL) return cached;
+  if (cached && Date.now() - cached.observedAt < feedRefreshMs(id)) return cached;
   if (inflight.has(key)) return inflight.get(key)!;
   const pending = (async () => {
     try {

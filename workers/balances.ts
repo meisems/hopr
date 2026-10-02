@@ -1,4 +1,4 @@
-// Balance tracking for the Telegram bot and the Mini App API.
+// Balance tracking for the Telegram bot.
 //
 // Reads go through the shared RPC failover pool (src/services/rpcPool.ts).
 // Every successful read is stored in KV; if all endpoints for a chain are

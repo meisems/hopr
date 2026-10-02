@@ -137,7 +137,14 @@ Set the secrets with Wrangler:
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 npx wrangler secret put LIFI_API_KEY
+# Keyed RPCs, used first for balances, portfolio and sending transactions (public backups stay behind them):
+npx wrangler secret put ALCHEMY_API_KEY   # Base, Arbitrum, BNB Chain, Solana + EVM token discovery
+npx wrangler secret put HELIUS_API_KEY    # Solana reads, token discovery and transaction sending
+npx wrangler secret put RPC_ROBINHOOD     # full URL; no Alchemy default for Robinhood Chain
+npx wrangler secret put RPC_ARC           # full URL; no Alchemy default for Arc
 ```
+
+[`.dev.vars.example`](.dev.vars.example) lists every key. After deploying, `curl https://<worker>/health` shows which are configured (true/false only).
 
 Wrangler will prompt for each value. Do not put either value in `.env`, source control, screenshots, or shell history.
 
@@ -151,7 +158,10 @@ Wrangler will prompt for each value. Do not put either value in `.env`, source c
 | `ENVIRONMENT` | Environment label | Already set to `production` in `wrangler.toml` |
 | `LIFI_API_KEY` | Server-side LI.FI quote requests | Never expose this key to Pages/browser code; enables authenticated routing requests |
 | `ENCRYPTION_KEY` | Encrypts every custodial private key (EVM, Solana, NEAR) with AES-256-GCM | Secret; 32+ random bytes. Rotating it makes existing keys undecryptable |
-| `NEAR_RPC_URL` | Keyed NEAR mainnet JSON-RPC used for NEAR balances, quotes and broadcasts | Secret (URLs often embed an API key). Free public RPCs are rate limited and used only as fallbacks |
+| `NEAR_RPC_URL` | Keyed NEAR mainnet JSON-RPC used for NEAR balances, quotes and broadcasts | Secret (URLs often embed an API key). Comma-separate several. Free public RPCs are rate limited and used only as fallbacks |
+| `ALCHEMY_API_KEY` | Keyed RPC for Base, Arbitrum, BNB Chain and Solana; EVM token discovery for 💼 Portfolio | Secret. Used before public backups for reads and transactions |
+| `HELIUS_API_KEY` | Keyed Solana RPC (reads, token discovery, sending) | Secret. Recommended: only two public Solana RPCs allow token discovery |
+| `RPC_BASE` … `RPC_SOLANA` | Full keyed RPC URL(s) per chain (`RPC_BASE`, `RPC_ARBITRUM`, `RPC_BSC`, `RPC_ROBINHOOD`, `RPC_ARC`, `RPC_SOLANA`) | Secret. Win over the provider keys; comma-separate several |
 
 ## 6. Create and bind KV namespaces
 
@@ -207,7 +217,7 @@ npx wrangler secret put NEAR_RPC_URL
 
 ### Fees, NEAR routes and referrals
 
-Hopr charges 0.5% on trades and 1% on bridges. Migrations `0005_referrals.sql`, `0006_referral_fee_share.sql` and `0007_intents_fee_policy.sql` (applied by the command above) enable the referral program: referrers earn 25% of HOPR fee revenue after the routing provider share, synced across the bot, the Mini App and the web.
+Hopr charges 0.5% on trades and 1% on bridges. Migrations `0005_referrals.sql`, `0006_referral_fee_share.sql` and `0007_intents_fee_policy.sql` (applied by the command above) enable the referral program: referrers earn 25% of HOPR fee revenue after the routing provider share. Referrals run entirely in the Telegram bot (`/referral`); the website has no referral page.
 
 ```bash
 # LI.FI API key (partner portal) — required: without it all users share the worker's small anonymous quota.
@@ -221,7 +231,7 @@ npx wrangler secret put ONECLICK_JWT
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-Optional plain variables: `TELEGRAM_BOT_USERNAME` (invite links; otherwise read from getMe), `PUBLIC_APP_URL` (web invite links; defaults to `TELEGRAM_MINI_APP_URL`), `REFERRAL_MIN_PAYOUT_USD` (default 5). Build the dashboard with `VITE_API_URL` pointing at the worker so it uses the LI.FI / NEAR Intents proxies, `/api/config` and the referral API.
+Optional plain variables: `TELEGRAM_BOT_USERNAME` (invite links; otherwise read from getMe), `REFERRAL_MIN_PAYOUT_USD` (default 5). Build the website with `VITE_API_URL` pointing at the worker so it can read the bot link from `/api/config`.
 
 Payouts are manual: claims create `requested` rows. List them and mark them paid after sending USDC:
 
@@ -296,8 +306,7 @@ For a custom Worker API domain:
 - [ ] Dashboard loads without a blank screen.
 - [ ] The Telegram preview shows `/start`, `/menu`, `/help`, `/wallet`, and `/settings` indicators.
 - [ ] The token action rows render: buy, custom, change chain, sell, settings, DexScreener, and dismiss.
-- [ ] Web: connected browser wallets sign in the wallet app. Mini App: the header shows the Hopr wallet synced from the bot and opens the Wallet Vault (no browser-wallet connect dialog).
-- [ ] Test the Mini App inside Telegram Web and mobile. Pages headers allow framing by https://web.telegram.org; remove any conflicting DENY header set by a proxy.
+- [ ] The website is view-only: no wallet connect, trade card, Bridge, Wallets or Rewards pages; **Open … in the bot** opens the token in the bot.
 
 ### Worker
 
@@ -306,10 +315,9 @@ curl -i https://hopr.<your-subdomain>.workers.dev/health
 ```
 
 - [ ] `POST /api/detect` returns token data for a known indexed token.
-- [ ] `GET /api/wallet/<public-address>/balances` returns balance data.
+- [ ] `GET /health` lists the configured keys (`keys.rpc`, `alchemy`, `helius`, `lifi`…) as true/false, never values.
 - [ ] `POST /telegram/webhook` rejects requests with an incorrect webhook secret.
-- [ ] `POST /api/trade/quote` returns a read-only LI.FI quote for a connected EVM wallet.
-- [ ] Legacy buy/sell/status endpoints return 501; custodial quote/confirm rejects missing or invalid Telegram authentication.
+- [ ] Retired Mini App / web-trading endpoints (`/api/trade/*`, `/api/telegram/*`, `/api/lifi/quote`, `/api/intents/quote`) return 404.
 - [ ] `/api/launchpads/pools?source=pump` returns real pools or a clear retry response.
 - [ ] Balance outages retain timestamped last-known readings; a never-loaded balance stays pending, never a fabricated zero.
 
@@ -317,14 +325,15 @@ curl -i https://hopr.<your-subdomain>.workers.dev/health
 
 In a private chat with the bot:
 
-1. Send `/start` and confirm the Wallets, Settings and Help buttons, and that the welcome shows a freshly created wallet (EVM, SOL, NEAR). Open the Mini App and confirm the same wallet appears without any extra step.
+1. Send `/start` and confirm the Wallets, Settings and Help buttons, and that the welcome shows a freshly created wallet (EVM, SOL, NEAR) and a 💼 Portfolio total.
 2. Send `/menu` and confirm the action menu appears.
 3. Send `/help` and confirm `/menu` is listed.
 4. Send a token contract address and confirm the token card plus premium inline action rows.
 5. With a configured custodial wallet, tap Buy or Sell and review a live quote. Cancel first; fund and confirm a small trade only as a deliberate production acceptance test.
-6. If `TELEGRAM_STATE` is bound, test `/wallet`, 💳 Wallets → Create wallet (up to 10; the 11th is refused), and `/settings`. Paste a NEAR token and check the Pay-with NEAR / SOL / Robinhood ETH buttons each quote.
+6. If `TELEGRAM_STATE` is bound, test `/wallet`, 💳 Wallets → New wallet (up to 10; the 11th is refused), 🔁 Switch wallet, and `/settings`. Open `/portfolio` and confirm funded tokens appear with USD values. Paste a NEAR token and check the Pay-with NEAR / SOL / Robinhood ETH buttons each quote.
 7. Open `/pools nearpaid`, `/pools pons`, `/pools pump`, `/pools tolly`, and `/pools argus`. Check venue attribution, pool links and timestamps.
-8. Follow a referral link, open the Mini App from the same Telegram account, and confirm the referral identity matches the bot. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
+8. Follow a `t.me/<bot>?start=ref_<code>` link from a second Telegram account and confirm `/referral` on the first account counts the friend. Rewards are 25% of verified HOPR revenue after the provider share; payouts use the operator queue. With default authenticated 1Click terms, a $1,000 trade earns $0.625 for a referrer and leaves $1.875 for HOPR after the $2.50 provider share. Reconcile older credited balances before paying them; migration 0007 does not rewrite history. If your partner agreement differs from the default 50/50 split, update the accounting policy before routing trades with it.
+9. Open the website in a regular browser, scan a token, and tap **Open … in the bot**: the bot should open on that token's trading panel. The site shows no trade card, wallet connect, Bridge, Wallets or Rewards pages outside Telegram.
 
 ## 10. Rollback
 
@@ -373,6 +382,6 @@ Then run the Telegram verification checklist. Never describe a buy or sell as su
 
 ## Launchpad discovery deployment
 
-Use the existing CACHE KV binding and set VITE_API_URL to the Worker HTTPS origin (or proxy same-origin /api/*). Set a reliable NEAR_RPC_URL and rerun telegram:configure to register /pools. See [launchpad sources and limitations](docs/launchpad-liquidity-sources.md). No new migration or dependency is needed for this feed.
+Use the existing CACHE KV binding and set VITE_API_URL to the Worker HTTPS origin (or proxy same-origin /api/*). Set a reliable NEAR_RPC_URL and rerun telegram:configure to register the bot commands. See [launchpad sources and limitations](docs/launchpad-liquidity-sources.md). No new migration or dependency is needed for this feed.
 
 Public routing endpoints are quota-limited. Configure LIFI_API_KEY and ONECLICK_JWT for production, plus the platform fee accounts and integrator configuration described above. The read-only route matrix is not a funded execution test. Tokens available only on Rhea DCL, bonding curves or custom hooks need router support or a dedicated execution adapter.

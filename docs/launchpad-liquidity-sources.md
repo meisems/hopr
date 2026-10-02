@@ -35,17 +35,49 @@ are inserted when a provider fails.
   [Argus repository](https://github.com/arguspad/argus-world),
   [Arc venue registry](https://api.geckoterminal.com/api/v2/networks/arc/dexes).
 - Additional Solana venues: **LaunchLab** (`raydium-launchlab`), **Moonit**
-  (`moonit`), **LetsBonk** (`letsbonk-fun`), from the public Solana venue registry.
+  (`moonit`), **LetsBonk** (`letsbonk-fun`), **Bags** (`bags-fm`), **Meteora DBC**
+  (`meteora-dbc`), from the public Solana venue registry.
+- **Flap** (`flap`): GeckoTerminal does not index Flap, so launches are read from
+  the Portal contracts' `TokenCreated` events (topic
+  `0x504e7f36…7699603`, verified against live logs) on BNB
+  (`0xe2cE6ab8…C9De0`), Robinhood (`0x26605f32…aEb09`) and Base
+  (`0x0000BC1c…90000`), then priced with one DexScreener
+  `tokens/v1/<chain>/<addresses>` batch per chain. The latest 24 launches per chain
+  appear seconds after launch; ones DexScreener has not indexed yet show "Price
+  pending". Log reads use RPCs that allow `eth_getLogs` ranges (PublicNode, the
+  Robinhood RPC) with the pool's other backups behind them. Reference:
+  [Flap deployed contracts](https://docs.flap.sh/flap/developers/deployed-contract-addresses).
+- **Four.meme** (`four-meme` on `bsc`), **Clanker** (`clanker-robinhood`),
+  **Bankr** (`bankr-robinhood`), **Virtuals** (`virtuals-base`,
+  `virtuals-unicorn-base`, `virtuals-robinhood`).
+- DEX venues, listed for tracking only (a pool there is not a launchpad
+  attribution): **Uniswap** (v3/v4 on Robinhood and Base, v3 on Arbitrum),
+  **PancakeSwap** (v3 and v2 on BNB), **Aerodrome** (Slipstream and classic on Base).
+
+## Token scanning
+
+Every scan (dashboard, Mini App and bot share `detectChain`) asks DexScreener first
+and, if it has not answered within 0.6 s, also runs one GeckoTerminal
+`search/pools` request across all networks; the first market found wins. The
+deepest pool on a supported chain is used and its venue is named (Flap, Four.meme,
+Uniswap v3, PancakeSwap…). Tokens with no market yet are found by `eth_getCode`
+on every EVM chain. On-chain reads race each chain's backup RPCs
+(`src/services/rpcPool.ts`: up to six verified public endpoints per chain): a
+second endpoint is asked if the first has not answered within 0.5 s, and a
+failing one hands over immediately.
 
 ## Refresh and limitations
 
-The selected source polls every two minutes while visible. Sorts apply to the
+Flap refreshes every 20 seconds; NEARPaid and Tolly every 90 seconds; other
+sources every 60 seconds, while visible. Sorts apply to the
 fetched snapshot, including “newest in feed.” Missing metrics remain unknown,
 not zero. Cards link to their actual pool. Token scans preserve the known chain
 to avoid identical EVM addresses resolving to a different network.
 
 Worker memory and `CACHE` KV share successful snapshots between web and bot.
-Fresh data is reused for two minutes. During outages, snapshots up to one day
+Fresh data is reused for the source's refresh interval. Public GeckoTerminal
+quotas (about 30 requests a minute per IP) still apply: multi-venue sources such
+as Uniswap make one request per venue, and a rate-limited venue yields a partial feed. During outages, snapshots up to one day
 old are explicitly marked stale with the original timestamp. Partial venue
 failures are marked partial. The fetch time does not imply latest-block data.
 

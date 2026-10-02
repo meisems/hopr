@@ -37,6 +37,7 @@ async function send(update, workerEnv) {
   const calls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/sendChatAction')) return Response.json({ ok: true, result: true }); // "typing…" indicator
     if (String(url).includes('api.telegram.org')) {
       calls.push({ url: String(url), body: init.body ? JSON.parse(init.body) : undefined });
       return Response.json({ ok: true, result: { message_id: 1 } });
@@ -58,13 +59,13 @@ async function send(update, workerEnv) {
 
 const message = (chatId, text, type = 'private') => ({ message: { chat: { id: chatId, type }, from: { first_name: 'Sam' }, text } });
 
-test('/referral shows the Telegram invite link, web link and earnings; /start ref_<code> links the friend', async () => {
+test('/referral shows the Telegram invite link and earnings (no web link); /start ref_<code> links the friend', async () => {
   const workerEnv = env();
   const panel = await send(message(100, '/referral'), workerEnv);
   const text = plain(panel.at(-1).body.text);
   const code = text.match(/Code  ([a-z0-9]{8})/)[1];
   assert.match(text, new RegExp(`Telegram  https://t\\.me/HoprBot\\?start=ref_${code}`));
-  assert.match(text, new RegExp(`Web  https://hopr\\.app/\\?ref=${code}`));
+  assert.doesNotMatch(text, /Web  |\?ref=/, 'referrals are Telegram-only; the website no longer captures ?ref=');
   assert.match(text, /Earn 25% of HOPR fee revenue after the routing provider's share/);
   assert.match(text, /Friends  0/);
   const buttons = panel.at(-1).body.reply_markup.inline_keyboard.flat();

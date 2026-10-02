@@ -1,20 +1,69 @@
 import { viewFunction, type NearRpcOptions } from './nearService';
+import { jsonRpc } from './rpcPool';
+
+export type LaunchpadId =
+  | 'nearpaid' | 'pons' | 'pump' | 'tolly' | 'argus' | 'pumpswap' | 'launchlab' | 'moonit' | 'letsbonk' | 'virtuals'
+  | 'flap' | 'fourmeme' | 'clanker' | 'bankr' | 'bags' | 'meteoradbc'
+  | 'uniswap' | 'pancakeswap' | 'aerodrome';
+
+/** One GeckoTerminal venue: a DEX id on a network. */
+export interface GeckoVenue { network: string; chainId: number; dex: string }
+
+export interface Launchpad {
+  id: LaunchpadId;
+  name: string;
+  /** 'launchpad': tokens here launched here. 'dex': a trading venue, listed for tracking only. */
+  kind: 'launchpad' | 'dex';
+  /** Primary network (for the source's logo and link). */
+  network: string;
+  chainId: number;
+  website: string;
+  /** GeckoTerminal venue ids on the primary network. */
+  dexes: readonly string[];
+  /** Venues on other networks too (multi-chain sources). */
+  markets?: readonly GeckoVenue[];
+}
+
+const venuePage = (network: string, dex: string) => `https://www.geckoterminal.com/${network}/${dex}/pools`;
 
 /** Venue IDs verified against the providers' public registries. Never infer origin from a ticker. */
-export const LAUNCHPADS = [
-  { id: 'nearpaid', name: 'NEARPaid', network: 'near', chainId: 397, website: 'https://nearpaid.com', dexes: [] },
-  { id: 'pons', name: 'pons', network: 'robinhood', chainId: 4663, website: 'https://www.ponsfamily.com/launchpad', dexes: ['pons-dot-family', 'pons-v2', 'pons-v2-dex'] },
-  { id: 'pump', name: 'Pump.fun', network: 'solana', chainId: 1151111081099710, website: 'https://pump.fun', dexes: ['pump-fun'] },
-  { id: 'tolly', name: 'Tolly', network: 'arc', chainId: 5042, website: 'https://tollylabs.com', dexes: [] },
-  { id: 'argus', name: 'Argus', network: 'arc', chainId: 5042, website: 'https://argus.world', dexes: ['argus'] },
-  { id: 'pumpswap', name: 'PumpSwap', network: 'solana', chainId: 1151111081099710, website: 'https://swap.pump.fun', dexes: ['pumpswap'] },
-  { id: 'launchlab', name: 'LaunchLab', network: 'solana', chainId: 1151111081099710, website: 'https://raydium.io', dexes: ['raydium-launchlab'] },
-  { id: 'moonit', name: 'Moonit', network: 'solana', chainId: 1151111081099710, website: 'https://moon.it', dexes: ['moonit'] },
-  { id: 'letsbonk', name: 'LetsBonk', network: 'solana', chainId: 1151111081099710, website: 'https://letsbonk.fun', dexes: ['letsbonk-fun'] },
-  { id: 'virtuals', name: 'Virtuals', network: 'base', chainId: 8453, website: 'https://app.virtuals.io', dexes: ['virtuals-base', 'virtuals-unicorn-base'] },
-] as const;
-export type LaunchpadId = typeof LAUNCHPADS[number]['id'];
-export type Launchpad = typeof LAUNCHPADS[number];
+export const LAUNCHPADS: readonly Launchpad[] = [
+  { id: 'nearpaid', name: 'NEARPaid', kind: 'launchpad', network: 'near', chainId: 397, website: 'https://nearpaid.com', dexes: [] },
+  { id: 'flap', name: 'Flap', kind: 'launchpad', network: 'bsc', chainId: 56, website: 'https://flap.sh', dexes: [] },
+  { id: 'fourmeme', name: 'Four.meme', kind: 'launchpad', network: 'bsc', chainId: 56, website: 'https://four.meme', dexes: ['four-meme'] },
+  { id: 'pons', name: 'pons', kind: 'launchpad', network: 'robinhood', chainId: 4663, website: 'https://www.ponsfamily.com/launchpad', dexes: ['pons-dot-family', 'pons-v2', 'pons-v2-dex'] },
+  { id: 'pump', name: 'Pump.fun', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://pump.fun', dexes: ['pump-fun'] },
+  { id: 'clanker', name: 'Clanker', kind: 'launchpad', network: 'robinhood', chainId: 4663, website: 'https://www.clanker.world', dexes: ['clanker-robinhood'] },
+  { id: 'bankr', name: 'Bankr', kind: 'launchpad', network: 'robinhood', chainId: 4663, website: 'https://bankr.bot', dexes: ['bankr-robinhood'] },
+  { id: 'tolly', name: 'Tolly', kind: 'launchpad', network: 'arc', chainId: 5042, website: 'https://tollylabs.com', dexes: [] },
+  { id: 'argus', name: 'Argus', kind: 'launchpad', network: 'arc', chainId: 5042, website: 'https://argus.world', dexes: ['argus'] },
+  { id: 'pumpswap', name: 'PumpSwap', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://swap.pump.fun', dexes: ['pumpswap'] },
+  { id: 'launchlab', name: 'LaunchLab', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://raydium.io', dexes: ['raydium-launchlab'] },
+  { id: 'letsbonk', name: 'LetsBonk', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://letsbonk.fun', dexes: ['letsbonk-fun'] },
+  { id: 'bags', name: 'Bags', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://bags.fm', dexes: ['bags-fm'] },
+  { id: 'meteoradbc', name: 'Meteora DBC', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: venuePage('solana', 'meteora-dbc'), dexes: ['meteora-dbc'] },
+  { id: 'moonit', name: 'Moonit', kind: 'launchpad', network: 'solana', chainId: 1151111081099710, website: 'https://moon.it', dexes: ['moonit'] },
+  { id: 'virtuals', name: 'Virtuals', kind: 'launchpad', network: 'base', chainId: 8453, website: 'https://app.virtuals.io', dexes: ['virtuals-base', 'virtuals-unicorn-base'],
+    markets: [{ network: 'robinhood', chainId: 4663, dex: 'virtuals-robinhood' }] },
+  { id: 'uniswap', name: 'Uniswap', kind: 'dex', network: 'robinhood', chainId: 4663, website: 'https://app.uniswap.org', dexes: ['uniswap-v3-robinhood', 'uniswap-v4-robinhood'],
+    markets: [
+      { network: 'base', chainId: 8453, dex: 'uniswap-v3-base' },
+      { network: 'base', chainId: 8453, dex: 'uniswap-v4-base' },
+      { network: 'arbitrum', chainId: 42161, dex: 'uniswap_v3_arbitrum' },
+    ] },
+  { id: 'pancakeswap', name: 'PancakeSwap', kind: 'dex', network: 'bsc', chainId: 56, website: 'https://pancakeswap.finance', dexes: ['pancakeswap-v3-bsc', 'pancakeswap_v2'] },
+  { id: 'aerodrome', name: 'Aerodrome', kind: 'dex', network: 'base', chainId: 8453, website: 'https://aerodrome.finance', dexes: ['aerodrome-slipstream', 'aerodrome-base'] },
+];
+
+/** Every GeckoTerminal venue a source reads: its primary-network dexes plus any other markets. */
+export function sourceVenues(source: Launchpad): GeckoVenue[] {
+  return [...source.dexes.map((dex) => ({ network: source.network, chainId: source.chainId, dex })), ...(source.markets ?? [])];
+}
+
+/** How long a snapshot is served before refetching. Flap reads fresh launches, so it refreshes fastest. */
+export function feedRefreshMs(id: LaunchpadId): number {
+  return id === 'flap' ? 20_000 : id === 'nearpaid' || id === 'tolly' ? 90_000 : 60_000;
+}
 export type PoolSort = 'volume' | 'liquidity' | 'newest';
 export interface LaunchpadPool {
   id: string;
@@ -67,7 +116,7 @@ export function sortPools(pools: LaunchpadPool[], sort: PoolSort): LaunchpadPool
   const field = sort === 'newest' ? 'createdAt' : sort === 'liquidity' ? 'liquidityUsd' : 'volume24h';
   return [...pools].sort((a, b) => (b[field] ?? -1) - (a[field] ?? -1) || a.id.localeCompare(b.id));
 }
-export function parseGeckoPools(payload: Json, source: Launchpad, dex: string, now = Date.now()): LaunchpadPool[] {
+export function parseGeckoPools(payload: Json, source: Pick<Launchpad, 'id' | 'network' | 'chainId'>, dex: string, now = Date.now()): LaunchpadPool[] {
   if (!Array.isArray(payload.data)) throw new Error('Invalid pool response');
   const tokens = new Map((payload.included ?? []).map((t: Json) => [t.id, t.attributes])) as Map<string, Json>;
   return payload.data.flatMap((row: Json) => {
@@ -108,7 +157,7 @@ export function parseTollyPools(payload: Json, now = Date.now()): LaunchpadPool[
 }
 
 async function json(url: string): Promise<Json> {
-  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12_000) });
+  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(7_000) });
   if (!response.ok) throw new Error(`Market provider HTTP ${response.status}`);
   return response.json();
 }
@@ -154,21 +203,115 @@ async function nearpaidPools(options?: NearRpcOptions): Promise<{ pools: Launchp
   return { pools, partial: results.some((r) => r.status === 'rejected') };
 }
 
+// ---------------------------------------------------------------------------
+// Flap (flap.sh): GeckoTerminal does not index it, so launches are read straight
+// from the Portal's TokenCreated events and priced with one DexScreener batch
+// per chain. A launch shows up seconds after it happens, before any indexer.
+// Addresses: https://docs.flap.sh/flap/developers/deployed-contract-addresses
+// ---------------------------------------------------------------------------
+
+/** keccak256("TokenCreated(uint256,address,uint256,address,string,string,string)") — verified against live Portal logs. */
+export const FLAP_TOKEN_CREATED = '0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603';
+
+export const FLAP_PORTALS = [
+  // Log-capable RPCs first (the default BSC/Base endpoints refuse or cap eth_getLogs); the pool's other backups follow.
+  { chainId: 56, network: 'bsc', portal: '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0', blocks: 1500, logRpcs: ['https://bsc-rpc.publicnode.com'] },
+  { chainId: 4663, network: 'robinhood', portal: '0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09', blocks: 8000, logRpcs: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood-rpc.publicnode.com'] },
+  { chainId: 8453, network: 'base', portal: '0x0000BC1c4fD15Dd79029AF8F5d77D68ae4490000', blocks: 5000, logRpcs: ['https://base-rpc.publicnode.com'] },
+] as const;
+
+const FLAP_LAUNCHES_PER_CHAIN = 24;
+
+/** Decode TokenCreated data: (uint256 ts, address creator, uint256 nonce, address token, string name, string symbol, string meta). */
+export function decodeFlapTokenCreated(data: string): { ts: number; token: string; name: string; symbol: string } | null {
+  const hex = data.startsWith('0x') ? data.slice(2) : data;
+  if (hex.length < 64 * 7 || !/^[0-9a-f]*$/i.test(hex)) return null;
+  const word = (index: number) => hex.slice(index * 64, (index + 1) * 64);
+  const text = (offsetWord: number) => {
+    const offset = Number.parseInt(word(offsetWord), 16) * 2;
+    const length = Number.parseInt(hex.slice(offset, offset + 64), 16);
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || length > 256 || offset + 64 + length * 2 > hex.length) return '';
+    const bytes = hex.slice(offset + 64, offset + 64 + length * 2).match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? [];
+    return new TextDecoder().decode(new Uint8Array(bytes)).replace(/[\u0000-\u001f]/g, '').trim();
+  };
+  const ts = Number.parseInt(word(0), 16);
+  const token = `0x${word(3).slice(24)}`;
+  if (!Number.isSafeInteger(ts) || !validToken(token, 1)) return null;
+  return { ts, token, name: text(4), symbol: text(5) };
+}
+
+async function flapChainPools(chain: typeof FLAP_PORTALS[number], now: number): Promise<LaunchpadPool[]> {
+  const head = Number.parseInt(await jsonRpc<string>(chain.chainId, 'eth_blockNumber', [], { extra: [...chain.logRpcs], timeoutMs: 5000 }), 16);
+  if (!Number.isSafeInteger(head)) throw new Error('Invalid block number');
+  const logs = await jsonRpc<Array<{ data: string; topics: string[] }>>(chain.chainId, 'eth_getLogs', [{
+    address: chain.portal,
+    topics: [FLAP_TOKEN_CREATED],
+    fromBlock: `0x${Math.max(0, head - chain.blocks).toString(16)}`,
+    toBlock: `0x${head.toString(16)}`,
+  }], { extra: [...chain.logRpcs], timeoutMs: 6000, validate: (value) => Array.isArray(value) });
+  const seen = new Set<string>();
+  const launches = logs.slice().reverse().flatMap((log) => {
+    const launch = decodeFlapTokenCreated(log.data);
+    if (!launch || seen.has(launch.token.toLowerCase())) return [];
+    seen.add(launch.token.toLowerCase());
+    return [launch];
+  }).slice(0, FLAP_LAUNCHES_PER_CHAIN);
+  if (!launches.length) return [];
+
+  // One DexScreener request prices up to 30 tokens (bonding-curve `flapsh` pools and migrated DEX pools alike).
+  const pairs = await json(`https://api.dexscreener.com/tokens/v1/${chain.network}/${launches.map((launch) => launch.token).join(',')}`)
+    .then((payload) => (Array.isArray(payload) ? payload : []) as Json[])
+    .catch(() => [] as Json[]);
+  const best = new Map<string, Json>();
+  for (const pair of pairs) {
+    const key = String(pair.baseToken?.address ?? '').toLowerCase();
+    if (key && (pair.liquidity?.usd ?? 0) >= (best.get(key)?.liquidity?.usd ?? -1)) best.set(key, pair);
+  }
+  return launches.map((launch) => {
+    const pair = best.get(launch.token.toLowerCase());
+    const poolAddress = pair && validPool(String(pair.pairAddress ?? ''), chain.chainId) ? String(pair.pairAddress) : launch.token;
+    return {
+      id: `${chain.chainId}:${poolAddress.toLowerCase()}`, source: 'flap' as const, venue: pair?.dexId ? String(pair.dexId) : 'flapsh',
+      chainId: chain.chainId, network: chain.network, poolAddress, tokenAddress: launch.token,
+      symbol: String(pair?.baseToken?.symbol || launch.symbol || 'Token').slice(0, 40), name: String(pair?.baseToken?.name || launch.name || launch.symbol || 'Token').slice(0, 80),
+      quoteSymbol: String(pair?.quoteToken?.symbol ?? ''),
+      priceUsd: metric(pair?.priceUsd), liquidityUsd: metric(pair?.liquidity?.usd), volume24h: metric(pair?.volume?.h24),
+      change24h: metric(pair?.priceChange?.h24, true), createdAt: launch.ts * 1000, observedAt: now,
+      url: String(pair?.url ?? `https://dexscreener.com/${chain.network}/${launch.token}`),
+    };
+  });
+}
+
+async function flapPools(): Promise<{ pools: LaunchpadPool[]; partial: boolean }> {
+  const now = Date.now();
+  const results = await Promise.allSettled(FLAP_PORTALS.map((chain) => flapChainPools(chain, now)));
+  if (results.every((result) => result.status === 'rejected')) throw new Error('Flap launches could not be read');
+  return {
+    pools: results.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])),
+    partial: results.some((result) => result.status === 'rejected'),
+  };
+}
+
 export async function fetchLaunchpadFeed(id: LaunchpadId, nearOptions?: NearRpcOptions): Promise<LaunchpadFeed> {
   const source = launchpadById(id);
   if (!source) throw new Error('Unknown launchpad');
   let pools: LaunchpadPool[]; let partial = false;
   if (id === 'nearpaid') ({ pools, partial } = await nearpaidPools(nearOptions));
+  else if (id === 'flap') ({ pools, partial } = await flapPools());
   else if (id === 'tolly') pools = parseTollyPools(await json('https://api.tollylabs.com/tokens?scope=tolly&sort=volume&dir=desc&limit=40&offset=0'));
   else {
-    const results = await Promise.allSettled(source.dexes.map(async (dex) => parseGeckoPools(
-      await json(`https://api.geckoterminal.com/api/v2/networks/${source.network}/dexes/${dex}/pools?include=base_token,quote_token`), source, dex)));
+    // Every venue (and network) of the source at once; one failing venue leaves a partial feed.
+    const results = await Promise.allSettled(sourceVenues(source).map(async (venue) => parseGeckoPools(
+      await json(`https://api.geckoterminal.com/api/v2/networks/${venue.network}/dexes/${venue.dex}/pools?include=base_token,quote_token`),
+      { id: source.id, network: venue.network, chainId: venue.chainId }, venue.dex)));
     if (results.every((r) => r.status === 'rejected')) throw new Error('Pool provider could not refresh');
     partial = results.some((r) => r.status === 'rejected');
     pools = results.flatMap((r) => r.status === 'fulfilled' ? r.value : []);
   }
   return { source: id, pools: uniquePools(pools), partial, stale: false, observedAt: Date.now(),
     coverage: id === 'nearpaid' ? 'Up to 10 live pools from the latest 20 launches · on-chain reads · 24h history not indexed'
+      : id === 'flap' ? `Latest ${FLAP_LAUNCHES_PER_CHAIN} launches per chain (BNB · Robinhood · Base) · read from Flap's on-chain Portal events · priced by DexScreener`
       : id === 'tolly' ? 'Top 40 Tolly listings by volume · Tolly market API'
+      : source.kind === 'dex' ? 'Top indexed pools per venue and chain · GeckoTerminal · a DEX listing is not a launchpad attribution'
       : 'Top indexed pools per venue · GeckoTerminal · includes pools with depleted liquidity' };
 }

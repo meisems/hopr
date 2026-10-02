@@ -62,6 +62,8 @@ export interface LifiQuote {
   raw: unknown;
 }
 
+const QUOTE_TIMEOUT_MS = 15_000;
+
 export async function getQuote(req: LifiQuoteRequest, apiKey: string): Promise<LifiQuote> {
   const params = new URLSearchParams({
     fromChain: req.fromChain,
@@ -78,6 +80,11 @@ export async function getQuote(req: LifiQuoteRequest, apiKey: string): Promise<L
 
   const res = await fetch(`${LIFI_QUOTE_URL}?${params.toString()}`, {
     headers: apiKey ? { 'x-lifi-api-key': apiKey } : {},
+    // A stuck quote should fail fast with a retryable message, not hang the bot.
+    signal: AbortSignal.timeout(QUOTE_TIMEOUT_MS),
+  }).catch((error: unknown) => {
+    if (error instanceof Error && error.name === 'TimeoutError') throw new Error('LI.FI is slow to quote right now. Please try again in a moment.');
+    throw error;
   });
 
   if (!res.ok) {
@@ -110,6 +117,8 @@ interface ExecuteParams {
   encryptionSecret: string;
   evmRpcUrl?: string; // required for EVM execution
   solanaRpcUrl?: string; // required for SVM execution
+  /** Extra Solana RPCs the signed transaction is also broadcast to, so it lands even if one node drops it. */
+  solanaBroadcastUrls?: string[];
   fromTokenAddress: string; // for approval check; 'native' for gas token
 }
 
@@ -219,6 +228,14 @@ async function executeSolana(params: ExecuteParams, privateKeyBase58: string): P
   versionedTx.sign([keypair]);
 
   const signature = await connection.sendTransaction(versionedTx, { skipPreflight: false });
+  // Same signed bytes, same signature: rebroadcasting is idempotent and only helps it land.
+  if (params.solanaBroadcastUrls?.length) {
+    const raw = versionedTx.serialize();
+    await Promise.allSettled(params.solanaBroadcastUrls.map((url) => Promise.race([
+      new Connection(url, 'confirmed').sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ])));
+  }
   return { txHash: signature, status: 'SUBMITTED' };
 }
 

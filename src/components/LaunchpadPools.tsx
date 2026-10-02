@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowUpRight, RefreshCw, Radar } from 'lucide-react';
 import { apiUrl } from '../services/api';
-import { LAUNCHPADS, sortPools, type LaunchpadFeed, type LaunchpadId, type PoolSort, type LaunchpadPool } from '../services/launchpads';
+import { feedRefreshMs, LAUNCHPADS, sortPools, type LaunchpadFeed, type LaunchpadId, type PoolSort, type LaunchpadPool } from '../services/launchpads';
 import { chainKeyForId, formatTokenPrice, formatUsd, formatAge } from '../services/chainDetector';
 import ChainLogo from './ChainLogo';
 import LaunchpadTradePanel from './LaunchpadTradePanel';
@@ -36,7 +36,7 @@ export default function LaunchpadPools({ onSelect }: { onSelect: (address: strin
       } finally { busy = false; if (!controller.signal.aborted) setLoading(false); }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 120_000);
+    const timer = window.setInterval(() => void load(), feedRefreshMs(source));
     const onVisible = () => { if (!document.hidden) void load(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => { controller.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
@@ -56,7 +56,7 @@ export default function LaunchpadPools({ onSelect }: { onSelect: (address: strin
       </div>
     </div>
     <div className="flex gap-1.5 overflow-x-auto px-4 py-4 sm:px-5" aria-label="Launchpad sources">
-      {LAUNCHPADS.map((pad) => <button key={pad.id} aria-pressed={source === pad.id} onClick={() => setSource(pad.id)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors ${source === pad.id ? 'border-brand-400/40 bg-brand-500/15 text-brand-200' : 'border-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'}`}>{pad.name}</button>)}
+      {LAUNCHPADS.map((pad) => <button key={pad.id} aria-pressed={source === pad.id} onClick={() => { setSource(pad.id); if (pad.id === 'flap') setSort('newest'); }} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors ${source === pad.id ? 'border-brand-400/40 bg-brand-500/15 text-brand-200' : 'border-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'}`}>{pad.name}</button>)}
     </div>
     <div className="flex flex-wrap items-center justify-between gap-2 border-y border-gray-800/50 bg-gray-950/30 px-4 py-2 text-[11px] text-gray-500 sm:px-5">
       <a href={selected.website} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 hover:text-white"><ChainLogo chainKey={chainKeyForId(selected.chainId)} size={13} />{selected.name}<ArrowUpRight className="h-3 w-3" /></a>
@@ -70,7 +70,7 @@ export default function LaunchpadPools({ onSelect }: { onSelect: (address: strin
         {pools.slice(0, visible).map((pool) => <article key={pool.id} className="rounded-xl border border-gray-800/70 bg-gray-950/25 p-3.5 transition-colors hover:border-brand-500/30">
           <div className="flex items-start justify-between gap-2"><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-white" title={pool.name}>{pool.symbol}<span className="ml-1 text-xs font-normal text-gray-500">{pool.quoteSymbol && `/ ${pool.quoteSymbol}`}</span></h3>
             <a href={pool.url} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 font-mono text-[10px] text-gray-500 hover:text-brand-300" title={pool.poolAddress}>{pool.poolAddress.slice(0, 8)}…{pool.poolAddress.slice(-5)}<ArrowUpRight className="h-3 w-3" /></a></div>
-            <span className="text-[10px] text-gray-500">{pool.createdAt ? formatAge(pool.createdAt) : '—'}</span></div>
+            <span className="flex shrink-0 items-center gap-1 text-[10px] text-gray-500"><ChainLogo chainKey={chainKeyForId(pool.chainId)} size={12} />{pool.createdAt ? formatAge(pool.createdAt) : '—'}</span></div>
           <div className="my-3 flex items-center justify-between gap-1"><span className="font-mono text-sm text-gray-200">{pool.priceUsd === null ? 'Price pending' : formatTokenPrice(pool.priceUsd)}</span>
             <span className={`font-mono text-xs ${(pool.change24h ?? 0) < 0 ? 'text-red-400' : 'text-green-400'}`}>{pool.change24h === null ? '—' : `${pool.change24h >= 0 ? '+' : ''}${pool.change24h.toFixed(1)}%`}</span></div>
           <dl className="grid grid-cols-2 gap-2 text-[11px]"><div><dt className="text-gray-500">Pool liquidity</dt><dd className="mt-0.5 font-mono text-gray-300">{pool.liquidityUsd === null ? 'Not reported' : formatUsd(pool.liquidityUsd)}</dd></div><div><dt className="text-gray-500">Volume · 24h</dt><dd className="mt-0.5 font-mono text-gray-300">{pool.volume24h === null ? 'Not indexed' : formatUsd(pool.volume24h)}</dd></div></dl>

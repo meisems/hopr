@@ -120,6 +120,7 @@ async function sendUpdate(update, env, network) {
   const calls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/sendChatAction')) return Response.json({ ok: true, result: true }); // "typing…" indicator
     if (String(url).includes('api.telegram.org')) {
       calls.push({ url: String(url), body: init.body ? JSON.parse(init.body) : undefined });
       return Response.json({ ok: true, result: { message_id: 999 } });
@@ -371,26 +372,6 @@ test('Arc, which NEAR Intents does not reach, buys NEAR tokens via a LI.FI hop t
   assert.equal(lifi.searchParams.get('fromChain'), '5042');
   assert.equal(lifi.searchParams.get('toChain'), '8453');
   assert.equal(lifi.searchParams.get('fee'), '0.005');
-});
-
-test('read-only NEAR quote API needs no wallet', async () => {
-  const network = createNearNetwork();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = network.fetchImpl;
-  try {
-    const response = await worker.fetch(new Request('https://worker.example/api/trade/quote', {
-      method: 'POST',
-      body: JSON.stringify({ chain: 'near', tokenIn: 'near', tokenOut: 'usdc', amount: '1', slippage: 0.5 }),
-    }), baseEnv, {});
-    assert.equal(response.status, 200);
-    const quote = await response.json();
-    assert.equal(quote.execution, 'read_only');
-    assert.equal(quote.minOutFormatted, '5.236549');
-    assert.equal(quote.tokenOut.symbol, 'USDC');
-    assert.equal(quote.tradeId, undefined);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
 });
 
 test('paying with NEAR for a Base token: step 1 bridges through NEAR Intents, Continue quotes step 2 with what arrived', async () => {

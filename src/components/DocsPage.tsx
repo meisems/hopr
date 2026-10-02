@@ -116,7 +116,7 @@ function OverviewSection() {
       <div>
         <h2 className="text-3xl font-bold text-white mb-4">Welcome to Hopr</h2>
         <p className="text-lg text-gray-400 leading-relaxed">
-          Hopr provides a cross-chain dashboard and Telegram bot. Both surfaces scan token markets and prepare fresh LI.FI routes. The website submits through the connected browser wallet only after explicit confirmation; Telegram uses its confirmed trading-wallet flow.
+          Hopr is a cross-chain trading bot on Telegram. Paste any token on Solana, Base, Arbitrum, BNB, Robinhood, Arc or NEAR to get a live trading panel, pay from any chain, and confirm every quote before it is signed. This website is a read-only viewer: scan tokens, check charts and launch radar, then open them in the bot.
         </p>
       </div>
 
@@ -128,18 +128,18 @@ function OverviewSection() {
         />
         <InfoCard
           icon={<Rocket className="w-5 h-5" />}
-          title="Read-Only Balances"
-          description="Query native balances for a public EVM or Solana address. Read-only balance commands never ask for keys; trading-wallet setup is restricted to private chats."
+          title="Portfolio Tracking"
+          description="💼 Portfolio lists every token your Hopr wallet holds on all 7 chains with live USD values and 24h change. Tokens you buy or open are tracked automatically."
         />
         <InfoCard
           icon={<RefreshCw className="w-5 h-5" />}
-          title="Saved Preferences"
-          description="Save public addresses and select a preferred funding chain or slippage when the Telegram KV binding is configured."
+          title="Multiple Wallets"
+          description="Create, import, switch and delete up to 10 encrypted wallets (EVM + Solana + NEAR) right in the bot, and set your pay-from chain and slippage in /settings."
         />
         <InfoCard
           icon={<Globe className="w-5 h-5" />}
           title="Confirmed Telegram Trading"
-          description="Telegram trading requires an encrypted custodial wallet and an explicit Confirm and submit action. Dashboard trade animations remain prototypes, not completed trades."
+          description="Every trade shows a live quote first and is signed only after Confirm. Transactions go through keyed, health-checked RPCs with public backups."
         />
       </div>
 
@@ -148,9 +148,9 @@ function OverviewSection() {
         <div className="space-y-3">
           <Step number={1} text="Send /help to the Telegram bot to see commands" />
           <Step number={2} text="Send a token contract address to get indexed market data" />
-          <Step number={3} text="Use /wallet <public-address> to read native balances" />
-          <Step number={4} text="Configure TELEGRAM_STATE to save addresses and preferences" />
-          <Step number={5} text="Create a trading wallet, then confirm a fresh quote before any signing or transfer" />
+          <Step number={3} text="Fund the wallet /start created for you (EVM, Solana or NEAR)" />
+          <Step number={4} text="Tap a Buy amount, review the live quote, then Confirm" />
+          <Step number={5} text="Open 💼 Portfolio to track every token you hold on all 7 chains" />
         </div>
       </div>
     </div>

@@ -11,15 +11,19 @@ main = "workers/index.ts"
 #                            RPCs rate-limit quickly; they are only used as fallbacks.
 #   ADMIN_TOKEN              Bearer token for the referral payout admin endpoints
 #   ONECLICK_JWT             NEAR Intents API key (default 50/50 app-fee split)
+#   ALCHEMY_API_KEY          Keyed RPC for Base, Arbitrum, BNB Chain and Solana + EVM token discovery
+#   HELIUS_API_KEY           Keyed Solana RPC: reads, token discovery and sending transactions
+#   RPC_BASE / RPC_ARBITRUM / RPC_BSC / RPC_ROBINHOOD / RPC_ARC / RPC_SOLANA
+#                            Full keyed RPC URLs per chain (comma-separate several); used first
+#                            for reads and transactions, ahead of verified public backups.
+#   See .dev.vars.example for the full list; GET /health shows which are set.
 # Variables (plain vars are fine):
 #   HOPR_INTENTS_FEE_ACCOUNT Hopr's NEAR fee account (NEAR Intents + Ref swap fee)
 #   TELEGRAM_BOT_USERNAME    Bot username for invite links (optional; getMe is used otherwise)
-#   PUBLIC_APP_URL           Dashboard URL for web invite links (optional)
 #   REFERRAL_MIN_PAYOUT_USD  Minimum referral claim (default 5)
 [env.production]
 [env.production.vars]
 ENVIRONMENT = "production"
-TELEGRAM_MINI_APP_URL = "https://hopr-432.pages.dev/"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "hopr-db"
@@ -40,7 +44,6 @@ route = "staging.hopr.pages.dev/*"
 # Variables
 [vars]
 ENVIRONMENT = "production"
-TELEGRAM_MINI_APP_URL = "https://hopr-432.pages.dev/"
 
 [[d1_databases]]
 binding = "DB"

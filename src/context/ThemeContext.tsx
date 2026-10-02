@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { flushSync } from 'react-dom';
 
 export type ResolvedTheme = 'dark' | 'light';
-/** `system` follows the OS (or Telegram, inside the Mini App) and reacts live to changes. */
+/** `system` follows the OS and reacts live to changes. */
 export type ThemePreference = ResolvedTheme | 'system';
 
 interface ThemeContextType {
@@ -31,10 +31,7 @@ function readPreference(): ThemePreference {
   return 'system';
 }
 
-/** Telegram's own light/dark scheme wins over the OS inside the Mini App. */
 function systemTheme(): ResolvedTheme {
-  const telegramScheme = window.Telegram?.WebApp?.colorScheme;
-  if (window.Telegram?.WebApp?.initData && (telegramScheme === 'light' || telegramScheme === 'dark')) return telegramScheme;
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
@@ -52,15 +49,6 @@ function paint(theme: ResolvedTheme, preference: ThemePreference) {
   document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta) => {
     meta.content = THEME_COLORS[theme];
   });
-  const webApp = window.Telegram?.WebApp;
-  if (webApp?.initData) {
-    try {
-      webApp.setHeaderColor?.(THEME_COLORS[theme]);
-      webApp.setBackgroundColor?.(THEME_COLORS[theme]);
-    } catch {
-      // Older Telegram clients do not support custom chrome colours.
-    }
-  }
 }
 
 /** Browsers without View Transitions get a short, global colour cross-fade instead. */
@@ -110,11 +98,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
     media.addEventListener('change', onSystemChange);
     window.addEventListener('storage', onStorage);
-    window.Telegram?.WebApp?.onEvent?.('themeChanged', onSystemChange);
     return () => {
       media.removeEventListener('change', onSystemChange);
       window.removeEventListener('storage', onStorage);
-      window.Telegram?.WebApp?.offEvent?.('themeChanged', onSystemChange);
     };
   }, []);
 

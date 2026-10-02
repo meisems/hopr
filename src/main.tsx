@@ -2,10 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
-import { captureReferralFromUrl } from "./services/referrals";
-
-// Remember ?ref=<code> before the router rewrites the URL.
-captureReferralFromUrl();
 
 // Disable transitions on initial load to prevent flash
 document.documentElement.classList.add('no-transitions');

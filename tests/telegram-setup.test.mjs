@@ -36,17 +36,16 @@ test('registers webhook, command suggestions, then the native command menu', asy
   assert.ok(TELEGRAM_DESCRIPTION.length <= 512, 'Telegram caps descriptions at 512 characters');
   assert.ok(TELEGRAM_COMMANDS.every(({ description }) => description.length <= 256));
   assert.deepEqual(calls[4].body, { menu_button: { type: 'commands' } });
-  assert.deepEqual(result.commands, ['start', 'menu', 'app', 'help', 'wallet', 'balances', 'positions', 'pools', 'swap', 'referral', 'settings']);
+  assert.deepEqual(result.commands, ['start', 'menu', 'portfolio', 'help', 'wallet', 'balances', 'pools', 'swap', 'referral', 'settings']);
   assert.equal(calls[0].url.includes(config.token), true);
 });
 
-test('registers the Mini App as the native menu button when configured', async () => {
+test('never registers a Mini App menu button, even if an old TELEGRAM_MINI_APP_URL is passed', async () => {
   const { calls, fetchImpl } = successfulFetchRecorder();
-  const miniAppUrl = 'https://hopr.example/';
-  const result = await configureTelegram({ ...config, miniAppUrl, fetchImpl });
+  const result = await configureTelegram({ ...config, miniAppUrl: 'https://hopr.example/', fetchImpl });
 
-  assert.deepEqual(calls.at(-1).body, { menu_button: { type: 'web_app', text: 'Open Hopr', web_app: { url: miniAppUrl } } });
-  assert.equal(result.menuButton, 'web_app');
+  assert.deepEqual(calls.at(-1).body, { menu_button: { type: 'commands' } });
+  assert.equal(result.menuButton, 'commands');
 });
 
 test('validates required variables before making a request', async () => {
