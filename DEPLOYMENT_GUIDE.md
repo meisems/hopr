@@ -338,6 +338,10 @@ In a private chat with the bot:
 
 `migrations/0008_limit_orders.sql` (applied by `npx wrangler d1 migrations apply hopr-db --remote`) creates the order book. `wrangler.toml` registers a cron trigger (`* * * * *`, for both the default and `production` environments) that runs the worker's `scheduled` handler every minute to check prices and execute triggered orders. After deploying, confirm it under Workers → hopr → Settings → Triggers, and watch the `Order sweep` log lines when an order fires. Orders sign with the stored wallet keys, so `ENCRYPTION_KEY`, `TELEGRAM_STATE` and a keyed RPC per chain (see above) must be configured.
 
+### Wallet tracking and copy trading
+
+`migrations/0009_wallet_tracking.sql` creates `tracked_wallets` and `copy_trades`. The same every-minute cron trigger reads tracked wallets' activity (log lines `Wallet watch`). Scan cursors live in the `TELEGRAM_STATE` KV (`watch:evm:<chain>`, `watch:sol:<address>`, `watch:near:<account>`). BNB wallet scans use the one public RPC that allows them (1rpc.io, ≤50 blocks per call); set `ALCHEMY_API_KEY` or `RPC_BSC` for reliable BNB tracking at volume.
+
 ### Bot profile picture
 
 The logo set lives in `public/brand/` (`logo-icon.svg`, `logo-mark.svg`, `logo-full.svg`). Telegram's Bot API cannot set a bot's photo, so upload `public/brand/bot-avatar.png` (640×640, circle-safe) once in @BotFather: `/setuserpic` → choose the bot → send the image.

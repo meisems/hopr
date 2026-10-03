@@ -1349,3 +1349,85 @@ async function confirmNearSwap(userId: string, trade: PendingTrade, env: Trading
     feeBps: swap.fee ? HOPR_FEE_BPS.swap : 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Multi-send: one wallet's native coin to many recipients
+// ---------------------------------------------------------------------------
+
+/** Solana transfers packed into one transaction (well under the size limit). */
+const SOLANA_TRANSFERS_PER_TX = 18;
+
+/**
+ * Send `amountUnits` of a chain's native coin from one of the user's wallets
+ * to every recipient (already validated by the caller). EVM: one transfer
+ * each with consecutive nonces; Solana: batched into a few transactions;
+ * NEAR: one Transfer per recipient. Returns the hashes of what was sent;
+ * a failure part-way throws with how many went out.
+ */
+export async function sendNativeMulti(params: {
+  userId: string;
+  walletId?: string;
+  chainId: number;
+  recipients: string[];
+  amountUnits: string;
+}, rpcUrls: TransactionRpcs, env: TradingEnv): Promise<{ hashes: string[] }> {
+  if (!env.ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY secret is required to sign');
+  const amount = BigInt(params.amountUnits);
+  if (amount <= 0n || !params.recipients.length) throw new Error('Nothing to send');
+  const hashes: string[] = [];
+  const failedAfter = (error: unknown) => new Error(`${hashes.length} of ${params.recipients.length} sent, then: ${error instanceof Error ? error.message : 'send failed'}`);
+
+  if (params.chainId === NEAR_CHAIN_ID) {
+    const signer = await getNearSigner(params.userId, env, params.walletId);
+    const privateKey = await decryptPrivateKey(signer.encryptedKey, env.ENCRYPTION_KEY);
+    const plans = params.recipients.map((receiverId) => ({ receiverId, label: `Send to ${receiverId}`, actions: [{ type: 'Transfer' as const, deposit: amount }] }));
+    const result = await executeNearTransactions(signer.accountId, privateKey, plans, nearRpcOptions(env));
+    return { hashes: result.hashes };
+  }
+
+  const chain = getChainById(params.chainId);
+  if (!chain) throw new Error('Unsupported chain');
+  const secret = await decryptPrivateKey(await getEncryptedKey(params.userId, chain.type, env, params.walletId), env.ENCRYPTION_KEY);
+  if (chain.type === 'EVM') {
+    const { ethers } = await import('ethers');
+    const provider = new ethers.JsonRpcProvider(await rpcUrls.evm(chain.id), chain.id, { staticNetwork: true });
+    const wallet = new ethers.Wallet(secret, provider);
+    let nonce = await provider.getTransactionCount(wallet.address, 'pending');
+    for (const to of params.recipients) {
+      try {
+        const tx = await wallet.sendTransaction({ to, value: amount, nonce });
+        hashes.push(tx.hash);
+        nonce += 1;
+      } catch (error) {
+        throw failedAfter(error);
+      }
+    }
+    return { hashes };
+  }
+
+  const { Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } = await import('@solana/web3.js');
+  const bs58 = await import('bs58');
+  const keypair = Keypair.fromSecretKey(bs58.default.decode(secret));
+  const primary = await rpcUrls.solana();
+  const connection = new Connection(primary, 'confirmed');
+  for (let index = 0; index < params.recipients.length; index += SOLANA_TRANSFERS_PER_TX) {
+    const batch = params.recipients.slice(index, index + SOLANA_TRANSFERS_PER_TX);
+    try {
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      const message = new TransactionMessage({
+        payerKey: keypair.publicKey,
+        recentBlockhash: blockhash,
+        instructions: batch.map((to) => SystemProgram.transfer({ fromPubkey: keypair.publicKey, toPubkey: new PublicKey(to), lamports: amount })),
+      }).compileToV0Message();
+      const transaction = new VersionedTransaction(message);
+      transaction.sign([keypair]);
+      const signature = await connection.sendTransaction(transaction, { skipPreflight: false });
+      const raw = transaction.serialize();
+      await Promise.allSettled((rpcUrls.solanaBroadcast?.(primary) ?? []).map((url) => new Connection(url, 'confirmed').sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 })));
+      hashes.push(signature);
+    } catch (error) {
+      throw failedAfter(error);
+    }
+  }
+  return { hashes };
+}

@@ -59,7 +59,7 @@ function endpointProblem(error: { code?: number; message?: string }): boolean {
   return [-32601, -32603, -32005, -32029, -32000, 429, 403, 401].includes(error.code ?? 0)
     && !/revert|execution|insufficient|nonce|invalid (argument|params)/i.test(message)
     // Public nodes that refuse indexed methods (getTokenAccountsByOwner…) answer with "blocked" / "personal token".
-    || /rate|limit|forbidden|not allowed|api key|token|unavailable|timeout|too many|not available|unauthor|authenticat|blocked|paid plan|subscription/i.test(message);
+    || /rate|limit|forbidden|not allowed|api key|token|unavailable|timeout|too many|not available|unauthor|authenticat|blocked|paid plan|subscription|specify an address|dedicated|not supported|block range|blocks range|range params|range too/i.test(message);
 }
 
 export async function jsonRpc<T>(chainId: number, method: string, params: unknown, options: { timeoutMs?: number; extra?: string[]; fetchImpl?: typeof fetch; validate?: (value: T) => boolean } = {}): Promise<T> {

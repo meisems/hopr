@@ -169,6 +169,15 @@ For persistent per-chat addresses and preferences, create a Cloudflare KV namesp
 - **Placing an order authorizes that automatic sell** — it executes without another confirmation. Failed sells retry while the price stays past the trigger (up to 3 attempts); an order interrupted mid-sell is closed and reported, never re-sold blindly. Up to 20 open orders per user
 - Needs `migrations/0008_limit_orders.sql` and the `[triggers] crons` entry in `wrangler.toml`
 
+### 👀 Wallet tracking & 🤖 copy trading
+- `/track <address> [name]` (EVM, Solana or NEAR) or 👀 Tracking → ➕ Track wallet. Within a minute of a tracked wallet's buy or sell you get an alert: token, amount, USD value, price, liquidity, the transaction and a button to trade the token. Up to 15 wallets per user
+- Reading the chains once per minute for all trackers: ERC-20 Transfer logs for every tracked EVM address in one `eth_getLogs` pair per chain (BNB's public RPCs allow ≤50-block scans, so ranges are chunked there; an Alchemy key removes the limit), new Solana signatures with each transaction's token balance changes, and NEP-141 balance changes from FastNEAR. Moves of base coins (WETH, USDC, WSOL, wNEAR…) are the money side of a trade; only tokens with a real market (≥ $1K liquidity) are reported, which filters airdropped spam
+- **Copy trading** per tracked wallet: *copy buys* (a fixed $10–250 per buy, paid in the token chain's coin from your active wallet) or *buys + sells* (also sells the same share of your position). Each leader trade is copied at most once (unique row in `copy_trades`), at most 25 copies a day, tokens under $10K liquidity are skipped, slippage is at least 3%. **Turning copy trading on authorizes those trades** — they execute without another confirmation
+- Needs `migrations/0009_wallet_tracking.sql` and the cron trigger
+
+### 📤 Multi-send
+- 💳 Wallets → 📤 Multi-send (or `/multisend`): send ETH (Base, Arbitrum, Robinhood), BNB, Arc USDC, SOL or NEAR from the active wallet to all your other Hopr wallets — handy to fund W2, W3 … for bundle buys — or to up to 20 pasted addresses. You see the total and the wallet's balance before confirming. EVM transfers go out with consecutive nonces, Solana transfers are batched into a few transactions, NEAR sends one transfer per recipient
+
 ### 🧺 Bundle buy / sell
 - Every token card has **🧺 Bundle buy** and **🧺 Bundle sell**. Bundle buy quotes the same amount from every wallet with enough funds on the pay-from chain; bundle sell sells 25 / 50 / 100% of what each wallet actually holds. One combined quote, one confirmation; each wallet signs its own transaction, and wallets that can't trade are listed with the reason
 - Bundles use one-step routes: EVM / Solana tokens through LI.FI (pay from any EVM or Solana chain, sells settle in the chain's coin), NEAR tokens through Ref / Rhea DCL with NEAR

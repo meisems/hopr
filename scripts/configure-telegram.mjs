@@ -5,6 +5,8 @@ export const TELEGRAM_COMMANDS = [
   { command: 'menu', description: '◆ Main menu with your portfolio' },
   { command: 'portfolio', description: '💼 Every token you hold on 7 chains' },
   { command: 'orders', description: '🎯 Limit sell, take profit & stop loss' },
+  { command: 'track', description: '👀 Wallet alerts & copy trading' },
+  { command: 'multisend', description: '📤 Send a coin to many wallets' },
   { command: 'help', description: '❓ Every command, explained' },
   { command: 'wallet', description: '👛 Wallets: balances, switch, import' },
   { command: 'balances', description: '🔄 Native balances on every chain' },

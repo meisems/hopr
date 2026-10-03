@@ -25,6 +25,7 @@ import {
   prepareNearSwap,
   prepareSell,
   prepareTokenSell,
+  sendNativeMulti,
   confirmTrade,
   continueNearFundedBuy,
   prepareNearIntentsBuy,
@@ -42,6 +43,10 @@ import { forgetPortfolio, loadPortfolio, NATIVE, pendingPortfolioLoad, quickNati
 import { apiKeyStatus, applyRpcConfig, solanaBroadcastRpcs, transactionRpc, type RpcEnv } from './rpcConfig';
 import { chainMarkets } from './portfolio';
 import { cancelOrder, createOrder, listOrders, ORDER_LABEL, OrderError, runOrderSweep, type LimitOrder, type OrderKind } from './orders';
+import {
+  fetchEvmTrades, fetchNearTrades, fetchSolanaTrades, latestEvmBlock, MAX_COPY_TRADES_PER_DAY, MAX_TRACKED_PER_USER, MIN_COPY_LIQUIDITY_USD,
+  normalizeWalletAddress, runWalletWatch, walletKind, type CopyMode, type TrackedWallet, type WalletTrade,
+} from './walletWatch';
 import {
   generateDualWallet,
   decryptPrivateKey,
@@ -308,7 +313,7 @@ function telegramActionKeyboard(): TelegramKeyboard {
         { text: '🎁 Refer & Earn', callback_data: 'referral' },
         { text: '❓ Help', callback_data: 'help' },
       ],
-      [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '🔄 Refresh', callback_data: 'menu' }],
+      [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '👀 Tracking', callback_data: 'track' }, { text: '🔄 Refresh', callback_data: 'menu' }],
     ],
   };
 }
@@ -486,9 +491,14 @@ export default {
   /** Cron trigger (wrangler.toml [triggers]): every minute, check and execute limit / TP / SL orders. */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     applyRpcConfig(env);
-    ctx.waitUntil(sweepOrders(env).then((result) => {
-      if (result.triggered || result.interrupted) console.log('Order sweep', JSON.stringify(result));
-    }).catch((error) => console.error('Order sweep failed', error)));
+    ctx.waitUntil(Promise.all([
+      sweepOrders(env).then((result) => {
+        if (result.triggered || result.interrupted) console.log('Order sweep', JSON.stringify(result));
+      }).catch((error) => console.error('Order sweep failed', error)),
+      watchWallets(env).then((result) => {
+        if (result.trades) console.log('Wallet watch', JSON.stringify(result));
+      }).catch((error) => console.error('Wallet watch failed', error)),
+    ]));
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -620,7 +630,7 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx?: Execution
       });
     }
   });
-  const mustFinish = /^(trade|bundle):confirm:/.test(update.callback_query?.data ?? '');
+  const mustFinish = /^(trade|bundle):confirm:|^ms:send$/.test(update.callback_query?.data ?? '');
   if (mustFinish || typeof ctx?.waitUntil !== 'function') await work;
   else ctx.waitUntil(work);
   return Response.json({ ok: true });
@@ -649,6 +659,9 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       || /^trade:cont:[0-9a-f]{8}$/.test(data)
       || ['wallet:generate', 'wallet:import', 'wallet:export', 'wallet:preferred', 'wallet:list', 'wallet:rename', 'wallet:delete', 'wallet:delete:confirm'].includes(data)
       || data === 'orders' || data === 'order:place' || data === 'order:discard' || data === 'order:price'
+      || ['ms:start', 'ms:to:mine', 'ms:to:paste', 'ms:custom', 'ms:amounts', 'ms:send', 'ms:cancel'].includes(data) || /^ms:chain:\d+$/.test(data) || /^ms:amt:\d{1,9}(\.\d{1,9})?$/.test(data)
+      || data === 'track' || data === 'track:add' || /^track:(v|alerts|copy|del):[0-9a-f]{10}$/.test(data)
+      || /^track:cm:[0-9a-f]{10}:(off|buy|buysell)$/.test(data) || /^track:(ca|ok):[0-9a-f]{10}:(buy|buysell):(10|25|50|100|250)$/.test(data)
       || /^order:new:(limit|tp|sl)$/.test(data) || /^order:at:(limit|tp|sl):\d{1,4}$/.test(data) || /^order:size:(25|50|100)$/.test(data) || /^order:cancel:[0-9a-f]{10}$/.test(data)
       || /^bundle:(buy|sell)(:\d{1,6}(\.\d{1,6})?)?$/.test(data) || /^bundle:confirm:[0-9a-f]{8}$/.test(data) || data === 'bundle:cancel'
       || /^wallet:use:[\w:-]{1,52}$/.test(data)
@@ -671,7 +684,7 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       callback_query_id: callback.id,
       ...(telegramCallbackToast(data) ? { text: telegramCallbackToast(data) } : {}),
     });
-    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle') || data.startsWith('order')) && chatType !== 'private') {
+    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle') || data.startsWith('order') || data.startsWith('track') || data.startsWith('ms:')) && chatType !== 'private') {
       await acknowledged;
       await sendTelegramMessage(chatId, '🔒 For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return;
@@ -699,6 +712,7 @@ function telegramCallbackToast(data: string): string | undefined {
   if (data.startsWith('trade:confirm:')) return 'Submitting…';
   if (data.startsWith('bundle:confirm:')) return 'Submitting every wallet…';
   if (data === 'order:place') return 'Placing order…';
+  if (data === 'ms:send') return 'Sending…';
   if (data.startsWith('order:cancel:')) return 'Cancelling…';
   if (/^bundle:(buy|sell):/.test(data)) return 'Quoting every wallet…';
   if (data.startsWith('trade:cont:')) return 'Checking the bridge…';
@@ -724,6 +738,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     '/pools — launchpad pools, liquidity and volume',
     '🧺 Bundle buy / sell — trade a token from every wallet at once, one confirmation',
     '🎯 Limit sell · 📈 Take profit · 🛑 Stop loss — automatic sells, checked every minute (/orders)',
+    '👀 /track &lt;address&gt; [name] — alerts when a wallet buys or sells · 🤖 optional copy trading',
     'Only the <b>Confirm and submit</b> button signs and submits a trade',
   ]),
   tgSection('💳', 'Wallet', [
@@ -732,6 +747,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     `💳 Wallets — create, switch, rename, import or delete up to ${MAX_WALLETS_PER_USER} wallets (W1, W2 …)`,
     '/importkey &lt;evm|solana|near&gt; &lt;key&gt; — use your own key (DM only)',
     '/exportkeys — reveal your private keys (DM only)',
+    '📤 /multisend — send a coin from one wallet to many (your W2, W3 … or pasted addresses)',
   ]),
   tgSection('🎁', 'Refer &amp; Earn', [
     '/referral — your invite links and earnings',
@@ -753,6 +769,18 @@ async function handleTelegramMessage(
   replyToMessage?: TelegramMessage['reply_to_message'],
   firstName?: string,
 ): Promise<void> {
+  if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_MS_ADDRESS_PROMPT)) {
+    await setMultiSendRecipients(chatId, text, env);
+    return;
+  }
+  if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_MS_AMOUNT_PROMPT)) {
+    await setMultiSendAmount(chatId, text.trim().replace(',', '.'), env);
+    return;
+  }
+  if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_TRACK_PROMPT)) {
+    await addTelegramTrackedWallet(chatId, text, env);
+    return;
+  }
   if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_ORDER_PRICE_PROMPT)) {
     await setTelegramOrderPrice(chatId, text, env);
     return;
@@ -814,6 +842,30 @@ async function handleTelegramMessage(
       return;
     }
     await showTelegramPools(chatId, id as LaunchpadId, env);
+    return;
+  }
+  if (command === '/track' || command === '/tracking' || command === '/watch' || command === '/copy' || command === '/untrack') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, '🔒 Track wallets in a private chat with this bot.', env);
+      return;
+    }
+    if (command === '/untrack' && args[0]) {
+      await removeTelegramTrackedWallet(chatId, args[0], env);
+      return;
+    }
+    if ((command === '/track' || command === '/watch') && args[0]) {
+      await addTelegramTrackedWallet(chatId, args.join(' '), env);
+      return;
+    }
+    await showTelegramTracking(chatId, env);
+    return;
+  }
+  if (command === '/multisend' || command === '/send' || command === '/disperse') {
+    if (chatType !== 'private') {
+      await sendTelegramMessage(chatId, '🔒 Send funds only in a private chat with this bot.', env);
+      return;
+    }
+    await startMultiSend(chatId, env);
     return;
   }
   if (command === '/orders' || command === '/limit' || command === '/tp' || command === '/sl') {
@@ -1553,8 +1605,8 @@ function telegramWalletActionKeyboard(): TelegramKeyboard {
     inline_keyboard: [
       [{ text: '🔄 Refresh', callback_data: 'wallet' }, { text: '🔁 Switch wallet', callback_data: 'wallet:list' }],
       [{ text: '📦 New wallet', callback_data: 'wallet:generate' }, { text: '📥 Import wallet', callback_data: 'wallet:import' }],
-      [{ text: '🔑 Export keys', callback_data: 'wallet:export' }, { text: '🗑 Delete wallet', callback_data: 'wallet:delete' }],
-      [{ text: '💼 Portfolio', callback_data: 'positions' }, { text: '◀️ Menu', callback_data: 'menu' }],
+      [{ text: '📤 Multi-send', callback_data: 'ms:start' }, { text: '🔑 Export keys', callback_data: 'wallet:export' }],
+      [{ text: '🗑 Delete wallet', callback_data: 'wallet:delete' }, { text: '💼 Portfolio', callback_data: 'positions' }, { text: '◀️ Menu', callback_data: 'menu' }],
     ],
   };
 }
@@ -2344,6 +2396,10 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
   if (data === 'wallet:list' || data === 'wallet:preferred') return showTelegramWalletList(chatId, env, panelId);
   if (data === 'wallet:rename') return promptTelegramWalletRename(chatId, env);
   if (data === 'orders') return showTelegramOrders(chatId, env, panelId);
+  if (data.startsWith('ms:')) return handleMultiSendCallback(chatId, data, env, panelId);
+  if (data === 'track') return showTelegramTracking(chatId, env, panelId);
+  if (data === 'track:add') return promptTelegramTrack(chatId, env);
+  if (data.startsWith('track:')) return handleTrackCallback(chatId, data, env, panelId);
   if (data.startsWith('order:new:')) return startTelegramOrder(chatId, data.slice('order:new:'.length) as OrderKind, env, panelId);
   if (data.startsWith('order:at:')) {
     const [, , kind, percent] = data.split(':');
@@ -2708,6 +2764,489 @@ async function handleChainDetection(
 const TELEGRAM_BUY_X_PROMPT = '✏️ Buy X — reply with how much';
 const TELEGRAM_RENAME_PROMPT = '✏️ Rename wallet — reply with a new name for';
 const TELEGRAM_ORDER_PRICE_PROMPT = '🎯 Limit sell — reply with the USD price to sell';
+const TELEGRAM_TRACK_PROMPT = '👀 Track a wallet — reply with its address';
+const TELEGRAM_MS_ADDRESS_PROMPT = '📤 Multi-send — reply with the addresses';
+const TELEGRAM_MS_AMOUNT_PROMPT = '📤 Multi-send — reply with the amount each address gets';
+
+// ---------------------------------------------------------------------------
+// Multi-send: one wallet's coin to many wallets
+// ---------------------------------------------------------------------------
+
+const MULTISEND_MAX_RECIPIENTS = 20;
+const MULTISEND_DRAFT_TTL_SECONDS = 15 * 60;
+const multiSendKey = (chatId: number) => `msdraft:v1:${chatId}`;
+/** Coins kept back for network fees on top of the amounts sent. */
+const MULTISEND_GAS_RESERVE: Record<number, bigint> = { 1151111081099710: 10_000_000n, [NEAR_CHAIN_ID]: 50_000_000_000_000_000_000_000n, 56: 1_000_000_000_000_000n, 5042: 50_000_000_000_000_000n };
+const DEFAULT_EVM_GAS_RESERVE = 300_000_000_000_000n;
+
+interface MultiSendDraft {
+  chainId: number;
+  walletId: string | null;
+  walletLabel: string;
+  from: string;
+  recipients: Array<{ address: string; label?: string }>;
+  amount?: string;
+}
+
+function multiSendCoin(chainId: number): { symbol: string; decimals: number; name: string } {
+  if (chainId === NEAR_CHAIN_ID) return { symbol: 'NEAR', decimals: NEAR_DECIMALS, name: 'NEAR' };
+  const chain = getChainById(chainId);
+  return { symbol: chain?.nativeSymbol ?? 'native', decimals: chain?.type === 'SVM' ? 9 : 18, name: chain?.name ?? 'chain' };
+}
+
+/** A recipient address valid for the chain (and not the sender). */
+function validRecipient(chainId: number, address: string): string | null {
+  const value = address.trim();
+  if (chainId === NEAR_CHAIN_ID) return isNearAccountId(value.toLowerCase()) ? value.toLowerCase() : null;
+  if (chainId === 1151111081099710) return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) ? value : null;
+  return /^0x[a-fA-F0-9]{40}$/.test(value) ? value : null;
+}
+
+async function readMultiSend(chatId: number, env: Env): Promise<MultiSendDraft | null> {
+  const raw = await (env.TELEGRAM_STATE ?? env.CACHE)?.get(multiSendKey(chatId)).catch(() => null);
+  try {
+    return raw ? JSON.parse(raw) as MultiSendDraft : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveMultiSend(chatId: number, draft: MultiSendDraft, env: Env): Promise<void> {
+  await (env.TELEGRAM_STATE ?? env.CACHE)?.put(multiSendKey(chatId), JSON.stringify(draft), { expirationTtl: MULTISEND_DRAFT_TTL_SECONDS });
+}
+
+const MULTISEND_EXPIRED = tgMessage(tgTitle('⌛', 'Multi-send expired'), 'Start again from 💳 Wallets → 📤 Multi-send.');
+
+async function startMultiSend(chatId: number, env: Env, panelId?: number): Promise<void> {
+  const accounts = await listWalletAccounts(String(chatId), env);
+  if (!accounts.some(canTrade) && !await getCustodialWallet(String(chatId), env).catch(() => null)) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('📤', 'Multi-send needs a wallet'), 'Create one in 💳 Wallets first.'), env, telegramWalletSetupKeyboard());
+    return;
+  }
+  const chains = [NEAR_CHAIN_ID, 1151111081099710, 8453, 42161, 56, 4663, 5042];
+  const buttons = chains.map((id) => ({ text: `${chainEmoji(id)} ${id === NEAR_CHAIN_ID ? 'NEAR' : `${(TELEGRAM_CHAIN_NAMES[id] ?? '').replace(' Chain', '')} ${multiSendCoin(id).symbol}`}`, callback_data: `ms:chain:${id}` }));
+  const rows: TelegramButton[][] = [];
+  for (let index = 0; index < buttons.length; index += 3) rows.push(buttons.slice(index, index + 3));
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('📤', 'Multi-send', 'Send one coin from your active wallet to many wallets at once.'),
+    tgFootnote('Pick the coin to send. Next: your other Hopr wallets or pasted addresses, then the amount each.'),
+  ), env, { inline_keyboard: [...rows, [{ text: '✖️ Cancel', callback_data: 'ms:cancel' }]] });
+}
+
+async function handleMultiSendCallback(chatId: number, data: string, env: Env, panelId?: number): Promise<void> {
+  if (data === 'ms:start') return startMultiSend(chatId, env, panelId);
+  if (data === 'ms:cancel') {
+    await (env.TELEGRAM_STATE ?? env.CACHE)?.delete(multiSendKey(chatId)).catch(() => undefined);
+    return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('✖️', 'Multi-send cancelled'), 'Nothing was sent.'), env, telegramWalletActionKeyboard());
+  }
+  if (data.startsWith('ms:chain:')) {
+    const chainId = Number(data.slice('ms:chain:'.length));
+    const userId = String(chatId);
+    const accounts = await listWalletAccounts(userId, env);
+    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+    const legacy = active ? null : await getCustodialWallet(userId, env).catch(() => null);
+    const addressOf = (wallet: { evm_address?: string | null; solana_address?: string | null; near_address?: string | null }) =>
+      chainId === NEAR_CHAIN_ID ? wallet.near_address ?? null : chainId === 1151111081099710 ? wallet.solana_address ?? null : wallet.evm_address ?? null;
+    const from = active ? addressOf(active) : legacy ? addressOf({ evm_address: legacy.evmAddress, solana_address: legacy.solanaAddress, near_address: legacy.nearAddress }) : null;
+    if (!from) return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📤', 'No account on that chain'), 'Your active wallet has no account there yet. Open 💳 Wallets once (NEAR accounts are created on first use).'), env, telegramWalletActionKeyboard());
+    const coin = multiSendCoin(chainId);
+    const others = accounts.filter((account) => account.id !== active?.id && canTrade(account) && addressOf(account));
+    await saveMultiSend(chatId, { chainId, walletId: active?.id ?? null, walletLabel: active?.label ?? 'W1', from, recipients: [] }, env);
+    return sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('📤', `Multi-send ${coin.symbol} · ${escapeTelegramHtml(coin.name)}`, `From ${escapeTelegramHtml(active?.label ?? 'your wallet')} <code>${escapeTelegramHtml(shortenTelegramAddress(from))}</code>`),
+      tgFootnote('Who gets it?'),
+    ), env, { inline_keyboard: [
+      ...(others.length ? [[{ text: `👛 My other wallets (${others.length})`, callback_data: 'ms:to:mine' }]] : []),
+      [{ text: '✏️ Paste addresses', callback_data: 'ms:to:paste' }],
+      [{ text: '✖️ Cancel', callback_data: 'ms:cancel' }],
+    ] });
+  }
+  const draft = await readMultiSend(chatId, env);
+  if (!draft) return sendTelegramPanel(chatId, panelId, MULTISEND_EXPIRED, env, telegramWalletActionKeyboard());
+  if (data === 'ms:to:mine') {
+    const accounts = await listWalletAccounts(String(chatId), env);
+    draft.recipients = accounts.filter((account) => account.id !== draft.walletId && canTrade(account)).flatMap((account) => {
+      const address = draft.chainId === NEAR_CHAIN_ID ? account.near_address : draft.chainId === 1151111081099710 ? account.solana_address : account.evm_address;
+      return address && address !== draft.from ? [{ address, label: account.label }] : [];
+    }).slice(0, MULTISEND_MAX_RECIPIENTS);
+    await saveMultiSend(chatId, draft, env);
+    return showMultiSendAmounts(chatId, draft, env, panelId);
+  }
+  if (data === 'ms:to:paste') {
+    return sendTelegramMessage(chatId, `${TELEGRAM_MS_ADDRESS_PROMPT} (one per line, up to ${MULTISEND_MAX_RECIPIENTS}) for ${multiSendCoin(draft.chainId).symbol} on ${multiSendCoin(draft.chainId).name}`, env, {
+      force_reply: true,
+      input_field_placeholder: 'One address per line',
+    }, null);
+  }
+  if (data === 'ms:custom') {
+    const coin = multiSendCoin(draft.chainId);
+    return sendTelegramMessage(chatId, `${TELEGRAM_MS_AMOUNT_PROMPT} (in ${coin.symbol})`, env, { force_reply: true, input_field_placeholder: `Amount in ${coin.symbol}, e.g. 0.01` }, null);
+  }
+  if (data === 'ms:amounts') return showMultiSendAmounts(chatId, draft, env, panelId);
+  if (data.startsWith('ms:amt:')) return setMultiSendAmount(chatId, data.slice('ms:amt:'.length), env, panelId);
+  if (data === 'ms:send') return executeMultiSend(chatId, draft, env, panelId);
+}
+
+async function setMultiSendRecipients(chatId: number, text: string, env: Env): Promise<void> {
+  const draft = await readMultiSend(chatId, env);
+  if (!draft) {
+    await sendTelegramMessage(chatId, MULTISEND_EXPIRED, env);
+    return;
+  }
+  const entries = text.split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean);
+  const valid = [...new Set(entries.map((entry) => validRecipient(draft.chainId, entry)).filter((address): address is string => address !== null && address !== draft.from))];
+  const invalid = entries.filter((entry) => validRecipient(draft.chainId, entry) === null);
+  if (!valid.length) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('📤', 'No valid addresses'), `None of those are ${escapeTelegramHtml(multiSendCoin(draft.chainId).name)} addresses. Tap ✏️ Paste addresses to try again.`), env);
+    return;
+  }
+  draft.recipients = valid.slice(0, MULTISEND_MAX_RECIPIENTS).map((address) => ({ address }));
+  await saveMultiSend(chatId, draft, env);
+  await showMultiSendAmounts(chatId, draft, env, undefined, invalid.length || valid.length > MULTISEND_MAX_RECIPIENTS
+    ? `${invalid.length ? `${invalid.length} invalid address${invalid.length === 1 ? '' : 'es'} skipped. ` : ''}${valid.length > MULTISEND_MAX_RECIPIENTS ? `Only the first ${MULTISEND_MAX_RECIPIENTS} are used.` : ''}` : undefined);
+}
+
+async function showMultiSendAmounts(chatId: number, draft: MultiSendDraft, env: Env, panelId?: number, notice?: string): Promise<void> {
+  const coin = multiSendCoin(draft.chainId);
+  if (!draft.recipients.length) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📤', 'No recipients'), 'Create more wallets in 💳 Wallets, or paste addresses.'), env, { inline_keyboard: [[{ text: '✏️ Paste addresses', callback_data: 'ms:to:paste' }, { text: '✖️ Cancel', callback_data: 'ms:cancel' }]] });
+    return;
+  }
+  const presets = draft.chainId === NEAR_CHAIN_ID ? ['0.1', '0.5', '1', '5'] : getNetwork(draft.chainId)?.quickBuy.slice(0, 4) ?? ['0.01', '0.05', '0.1'];
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('📤', `Multi-send ${coin.symbol} · ${draft.recipients.length} recipient${draft.recipients.length === 1 ? '' : 's'}`),
+    notice ? `<i>${escapeTelegramHtml(notice)}</i>` : null,
+    tgCard(draft.recipients.slice(0, 12).map((recipient) => `${recipient.label ? `<b>${escapeTelegramHtml(recipient.label)}</b> ` : ''}<code>${escapeTelegramHtml(shortenTelegramAddress(recipient.address))}</code>`)
+      .concat(draft.recipients.length > 12 ? [`+${draft.recipients.length - 12} more`] : [])),
+    tgFootnote(`How much ${coin.symbol} should each address get?`),
+  ), env, { inline_keyboard: [
+    presets.map((amount) => ({ text: `${amount} ${coin.symbol}`, callback_data: `ms:amt:${amount}` })),
+    [{ text: '✏️ Custom amount', callback_data: 'ms:custom' }, { text: '✖️ Cancel', callback_data: 'ms:cancel' }],
+  ] });
+}
+
+async function setMultiSendAmount(chatId: number, amount: string, env: Env, panelId?: number): Promise<void> {
+  const draft = await readMultiSend(chatId, env);
+  if (!draft) {
+    await sendTelegramPanel(chatId, panelId, MULTISEND_EXPIRED, env);
+    return;
+  }
+  const coin = multiSendCoin(draft.chainId);
+  if (!/^\d{1,9}(\.\d{1,18})?$/.test(amount) || !(Number(amount) > 0)) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('📤', 'Amount not understood'), `Reply with just a number in ${coin.symbol}, e.g. <code>0.01</code>.`), env);
+    return;
+  }
+  draft.amount = amount;
+  await saveMultiSend(chatId, draft, env);
+  const each = parseUnits(amount, coin.decimals);
+  const total = each * BigInt(draft.recipients.length);
+  const balance = await quickNativeBalance(draft.chainId, draft.from, nearRpcOptions(env), 4_000);
+  const reserve = MULTISEND_GAS_RESERVE[draft.chainId] ?? DEFAULT_EVM_GAS_RESERVE;
+  const short = balance !== null && balance < total + reserve;
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('📤', 'Send now?'),
+    tgCard([
+      `From  <b>${escapeTelegramHtml(draft.walletLabel)}</b> <code>${escapeTelegramHtml(shortenTelegramAddress(draft.from))}</code>`,
+      `Each  <b>${escapeTelegramHtml(amount)} ${coin.symbol}</b> → ${draft.recipients.length} address${draft.recipients.length === 1 ? '' : 'es'} on ${escapeTelegramHtml(coin.name)}`,
+      `Total  <b>${formatTokenAmount(total, coin.decimals)} ${coin.symbol}</b> + network fees`,
+      balance !== null ? `Balance  ${formatTokenAmount(balance, coin.decimals)} ${coin.symbol}` : 'Balance  could not be read — the send fails safely if it is too low',
+    ]),
+    short ? `⚠️ <b>Not enough ${coin.symbol}</b> for the total plus fees. Fund the wallet or pick a smaller amount.` : '⚠️ Transfers can’t be reversed. Check the addresses.',
+  ), env, { inline_keyboard: [
+    ...(short ? [] : [[{ text: `✅ Send ${formatTokenAmount(total, coin.decimals)} ${coin.symbol}`, callback_data: 'ms:send' }]]),
+    [{ text: '◀️ Change amount', callback_data: 'ms:amounts' }, { text: '✖️ Cancel', callback_data: 'ms:cancel' }],
+  ] });
+}
+
+async function executeMultiSend(chatId: number, draft: MultiSendDraft, env: Env, panelId?: number): Promise<void> {
+  if (!draft.amount || !draft.recipients.length) {
+    await sendTelegramPanel(chatId, panelId, MULTISEND_EXPIRED, env, telegramWalletActionKeyboard());
+    return;
+  }
+  // Consume first: a double tap can never send twice.
+  await (env.TELEGRAM_STATE ?? env.CACHE)?.delete(multiSendKey(chatId)).catch(() => undefined);
+  const coin = multiSendCoin(draft.chainId);
+  if (panelId) await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⏳', `Sending to ${draft.recipients.length} addresses…`)), env);
+  const rpcUrls = { evm: (id: number) => transactionRpc(id), solana: () => transactionRpc(1151111081099710), solanaBroadcast: solanaBroadcastRpcs };
+  try {
+    const { hashes } = await sendNativeMulti({
+      userId: String(chatId), walletId: draft.walletId ?? undefined, chainId: draft.chainId,
+      recipients: draft.recipients.map((recipient) => recipient.address), amountUnits: parseUnits(draft.amount, coin.decimals).toString(),
+    }, rpcUrls, env);
+    const explorer = TELEGRAM_EXPLORERS[draft.chainId];
+    const links = hashes.slice(0, 10).map((hash, index) => explorer ? `<a href="${explorer}${encodeURIComponent(hash)}">${draft.chainId === 1151111081099710 ? `batch ${index + 1}` : `tx ${index + 1}`}</a>` : `<code>${escapeTelegramHtml(hash.slice(0, 12))}…</code>`);
+    const accounts = await listWalletAccounts(String(chatId), env).catch(() => []);
+    for (const account of accounts) forgetPortfolio({ evmAddress: account.evm_address, solanaAddress: account.solana_address, nearAddress: account.near_address });
+    await sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('✅', `Sent ${draft.amount} ${coin.symbol} to ${draft.recipients.length} address${draft.recipients.length === 1 ? '' : 'es'}`),
+      links.length ? links.join(' · ') : null,
+      tgFootnote('Transfers are on-chain; balances update within a minute.'),
+    ), env, telegramWalletActionKeyboard());
+  } catch (error) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⚠️', 'Multi-send stopped'), escapeTelegramHtml(error instanceof Error ? error.message : 'send failed')), env, telegramWalletActionKeyboard());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wallet tracking alerts and copy trading (workers/walletWatch.ts reads the chains)
+// ---------------------------------------------------------------------------
+
+const KIND_ICON: Record<string, string> = { evm: '🔷', svm: '◎', near: 'Ⓝ' };
+const COPY_LABEL: Record<CopyMode, string> = { off: 'off', buy: 'copies buys', buysell: 'copies buys + sells' };
+const COPY_AMOUNTS = [10, 25, 50, 100, 250];
+/** Copied trades chase moving prices; they never use less than this slippage. */
+const COPY_MIN_SLIPPAGE_PERCENT = 3;
+const TRACKING_MIGRATION_HINT = 'Wallet tracking needs migrations/0009_wallet_tracking.sql applied to the database.';
+const isMissingTrackingTable = (error: unknown) => /no such table: (tracked_wallets|copy_trades)/.test(String(error));
+
+async function listTrackedWallets(userId: string, env: Env): Promise<TrackedWallet[]> {
+  if (!env.DB) return [];
+  return (await env.DB.prepare(`SELECT * FROM tracked_wallets WHERE user_id = ?1 ORDER BY created_at ASC`).bind(userId).all<TrackedWallet>()).results ?? [];
+}
+
+async function promptTelegramTrack(chatId: number, env: Env): Promise<void> {
+  await sendTelegramMessage(chatId, `${TELEGRAM_TRACK_PROMPT} (EVM, Solana or NEAR) and an optional name`, env, {
+    force_reply: true,
+    input_field_placeholder: '0x… / base58 / name.near  then a name',
+  }, null);
+}
+
+async function addTelegramTrackedWallet(chatId: number, input: string, env: Env): Promise<void> {
+  const [rawAddress = '', ...nameParts] = input.trim().split(/\s+/);
+  const kind = walletKind(rawAddress);
+  if (!kind) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('👀', 'Not a wallet address'), 'Send an EVM <code>0x…</code>, Solana or NEAR (<code>name.near</code>) address, then an optional name. Example: <code>/track 0xabc… Whale</code>'), env);
+    return;
+  }
+  if (!env.DB) {
+    await sendTelegramMessage(chatId, '🧩 Wallet tracking needs the DB binding.', env);
+    return;
+  }
+  const userId = String(chatId);
+  const address = normalizeWalletAddress(rawAddress, kind);
+  const name = nameParts.join(' ').replace(/[^\p{L}\p{N} _.\-]/gu, '').trim().slice(0, 20);
+  try {
+    const existing = await listTrackedWallets(userId, env);
+    if (existing.some((wallet) => wallet.address === address)) {
+      await showTelegramTracking(chatId, env, undefined, 'You already track that wallet.');
+      return;
+    }
+    if (existing.length >= MAX_TRACKED_PER_USER) {
+      await showTelegramTracking(chatId, env, undefined, `You can track up to ${MAX_TRACKED_PER_USER} wallets. Remove one first.`);
+      return;
+    }
+    const now = Date.now();
+    await env.DB.prepare(`INSERT INTO tracked_wallets (id, user_id, address, kind, label, alerts, copy_mode, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, 'off', ?6, ?6)`)
+      .bind(crypto.randomUUID().replace(/-/g, '').slice(0, 10), userId, address, kind, name || `Wallet ${existing.length + 1}`, now).run();
+  } catch (error) {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', 'Not tracked'), escapeTelegramHtml(isMissingTrackingTable(error) ? TRACKING_MIGRATION_HINT : 'The wallet could not be saved.')), env);
+    return;
+  }
+  await showTelegramTracking(chatId, env, undefined, `👀 Tracking ${escapeTelegramHtml(name || shortenTelegramAddress(address))}. You'll get an alert within a minute of its next buy or sell.`);
+}
+
+async function removeTelegramTrackedWallet(chatId: number, needle: string, env: Env, panelId?: number): Promise<void> {
+  const wallets = await listTrackedWallets(String(chatId), env).catch(() => []);
+  const target = wallets.find((wallet) => wallet.id === needle || wallet.address === needle.toLowerCase() || wallet.address === needle || wallet.label.toLowerCase() === needle.toLowerCase());
+  if (target && env.DB) await env.DB.prepare(`DELETE FROM tracked_wallets WHERE id = ?1 AND user_id = ?2`).bind(target.id, String(chatId)).run();
+  await showTelegramTracking(chatId, env, panelId, target ? `Stopped tracking ${escapeTelegramHtml(target.label)}.` : 'No tracked wallet matches that.');
+}
+
+async function showTelegramTracking(chatId: number, env: Env, panelId?: number, notice?: string): Promise<void> {
+  let wallets: TrackedWallet[];
+  try {
+    wallets = await listTrackedWallets(String(chatId), env);
+  } catch (error) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('👀', 'Wallet tracking'), escapeTelegramHtml(isMissingTrackingTable(error) ? TRACKING_MIGRATION_HINT : 'Tracking could not be loaded.')), env, telegramActionKeyboard());
+    return;
+  }
+  const lines = wallets.map((wallet) => `${KIND_ICON[wallet.kind]} <b>${escapeTelegramHtml(wallet.label)}</b>  <code>${escapeTelegramHtml(shortenTelegramAddress(wallet.address))}</code> · ${wallet.alerts ? '🔔' : '🔕'}${wallet.copy_mode !== 'off' ? ` · 🤖 $${wallet.copy_amount_usd ?? 0} ${COPY_LABEL[wallet.copy_mode]}` : ''}`);
+  const buttons = wallets.map((wallet) => ({ text: `${KIND_ICON[wallet.kind]} ${wallet.label.slice(0, 14)}`, callback_data: `track:v:${wallet.id}` }));
+  const rows: TelegramButton[][] = [];
+  for (let index = 0; index < buttons.length; index += 3) rows.push(buttons.slice(index, index + 3));
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('👀', 'Wallet tracking', `Alerts within a minute when a wallet buys or sells · ${wallets.length}/${MAX_TRACKED_PER_USER}`),
+    notice ? `<b>${notice}</b>` : null,
+    wallets.length ? tgCard(lines) : tgCard(['No wallets tracked yet', 'Tap ➕ Track wallet, or send /track &lt;address&gt; [name]']),
+    tgFootnote('Tap a wallet to toggle alerts, set up 🤖 copy trading or stop tracking. Tokens without a real market (airdrop spam) are ignored.'),
+  ), env, { inline_keyboard: [...rows, [{ text: '➕ Track wallet', callback_data: 'track:add' }, { text: '◀️ Menu', callback_data: 'menu' }]] });
+}
+
+async function handleTrackCallback(chatId: number, data: string, env: Env, panelId?: number): Promise<void> {
+  const [, action, id, mode, usd] = data.split(':');
+  const userId = String(chatId);
+  const wallet = (await listTrackedWallets(userId, env).catch(() => [])).find((item) => item.id === id);
+  if (!wallet || !env.DB) return showTelegramTracking(chatId, env, panelId, 'That wallet is no longer tracked.');
+  const save = (sql: string, ...values: unknown[]) => env.DB!.prepare(sql).bind(...values, wallet.id, userId).run();
+  if (action === 'del') return removeTelegramTrackedWallet(chatId, wallet.id, env, panelId);
+  if (action === 'alerts') {
+    await save(`UPDATE tracked_wallets SET alerts = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4`, wallet.alerts ? 0 : 1, Date.now());
+    return showTrackedWallet(chatId, { ...wallet, alerts: wallet.alerts ? 0 : 1 }, env, panelId);
+  }
+  if (action === 'copy') {
+    return sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('🤖', `Copy trading · ${escapeTelegramHtml(wallet.label)}`, 'Mirror this wallet’s trades from your Hopr wallet.'),
+      tgCard([
+        '<b>Copy buys</b> — when it buys a token, you buy it too, for a fixed USD amount in that chain’s coin',
+        '<b>Buys + sells</b> — also sells the same share of your position when it sells',
+        `Limits: ${MAX_COPY_TRADES_PER_DAY} copied trades a day · tokens under $${MIN_COPY_LIQUIDITY_USD.toLocaleString('en-US')} liquidity are skipped · ≥${COPY_MIN_SLIPPAGE_PERCENT}% slippage`,
+      ]),
+    ), env, { inline_keyboard: [
+      [{ text: '🟢 Copy buys', callback_data: `track:cm:${wallet.id}:buy` }, { text: '🔁 Buys + sells', callback_data: `track:cm:${wallet.id}:buysell` }],
+      [{ text: '⏹ Copy off', callback_data: `track:cm:${wallet.id}:off` }, { text: '◀️ Back', callback_data: `track:v:${wallet.id}` }],
+    ] });
+  }
+  if (action === 'cm') {
+    if (mode === 'off') {
+      await save(`UPDATE tracked_wallets SET copy_mode = 'off', updated_at = ?1 WHERE id = ?2 AND user_id = ?3`, Date.now());
+      return showTrackedWallet(chatId, { ...wallet, copy_mode: 'off' }, env, panelId, 'Copy trading is off for this wallet.');
+    }
+    return sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('🤖', `How much per copied buy?`, `${escapeTelegramHtml(wallet.label)} · ${COPY_LABEL[mode as CopyMode]}`),
+      'Paid in the coin of the token’s chain (ETH, SOL, BNB, NEAR…) from your active Hopr wallet.',
+    ), env, { inline_keyboard: [
+      COPY_AMOUNTS.map((amount) => ({ text: `$${amount}`, callback_data: `track:ca:${wallet.id}:${mode}:${amount}` })),
+      [{ text: '◀️ Back', callback_data: `track:copy:${wallet.id}` }],
+    ] });
+  }
+  if (action === 'ca') {
+    const accounts = await listWalletAccounts(userId, env);
+    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+    return sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('🤖', 'Turn on copy trading?'),
+      tgCard([
+        `Leader  <b>${escapeTelegramHtml(wallet.label)}</b> <code>${escapeTelegramHtml(shortenTelegramAddress(wallet.address))}</code>`,
+        `Mode  <b>${COPY_LABEL[mode as CopyMode]}</b>`,
+        `Per buy  <b>$${usd}</b> in the token chain’s coin · from <b>${escapeTelegramHtml(active?.label ?? 'your active wallet')}</b>`,
+        `Fee  ${HOPR_FEE_PERCENT}% per trade · slippage ≥${COPY_MIN_SLIPPAGE_PERCENT}%`,
+      ]),
+      `⚠️ <b>Trades execute automatically.</b> Each time this wallet ${mode === 'buysell' ? 'buys or sells' : 'buys'}, Hopr signs and sends the matching trade without asking again. Copying is checked every minute, so your price will differ from theirs. Copy only wallets you trust; tokens can be scams.`,
+    ), env, { inline_keyboard: [[{ text: '✅ Start copying', callback_data: `track:ok:${wallet.id}:${mode}:${usd}` }, { text: '✖️ Cancel', callback_data: `track:v:${wallet.id}` }]] });
+  }
+  if (action === 'ok') {
+    const accounts = await listWalletAccounts(userId, env);
+    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+    await save(`UPDATE tracked_wallets SET copy_mode = ?1, copy_amount_usd = ?2, copy_wallet_id = ?3, updated_at = ?4 WHERE id = ?5 AND user_id = ?6`, mode, Number(usd), active?.id ?? null, Date.now());
+    return showTrackedWallet(chatId, { ...wallet, copy_mode: mode as CopyMode, copy_amount_usd: Number(usd), copy_wallet_id: active?.id ?? null }, env, panelId, `🤖 Copying ${escapeTelegramHtml(wallet.label)}: $${usd} per buy${mode === 'buysell' ? ', sells mirrored' : ''}.`);
+  }
+  return showTrackedWallet(chatId, wallet, env, panelId);
+}
+
+async function showTrackedWallet(chatId: number, wallet: TrackedWallet, env: Env, panelId?: number, notice?: string): Promise<void> {
+  const explorer = wallet.kind === 'near' ? `https://nearblocks.io/address/${wallet.address}` : wallet.kind === 'svm' ? `https://solscan.io/account/${wallet.address}` : `https://debank.com/profile/${wallet.address}`;
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('👀', escapeTelegramHtml(wallet.label)),
+    notice ? `<b>${notice}</b>` : null,
+    tgCard([
+      `<code>${escapeTelegramHtml(wallet.address)}</code>`,
+      `Alerts  ${wallet.alerts ? '🔔 on' : '🔕 off'}`,
+      `Copy trading  ${wallet.copy_mode === 'off' ? 'off' : `🤖 ${COPY_LABEL[wallet.copy_mode]} · $${wallet.copy_amount_usd ?? 0} per buy`}`,
+    ]),
+  ), env, { inline_keyboard: [
+    [{ text: wallet.alerts ? '🔕 Mute alerts' : '🔔 Alerts on', callback_data: `track:alerts:${wallet.id}` }, { text: '🤖 Copy trading', callback_data: `track:copy:${wallet.id}` }],
+    [{ text: '🔎 Explorer', url: explorer }, { text: '🗑 Stop tracking', callback_data: `track:del:${wallet.id}` }],
+    [{ text: '◀️ All wallets', callback_data: 'track' }],
+  ] });
+}
+
+/** Mirror one leader trade from the copier's Hopr wallet. */
+async function executeCopyTrade(tracker: TrackedWallet, trade: WalletTrade, env: Env): Promise<{ txHash: string; explorerUrl?: string }> {
+  const userId = tracker.user_id;
+  if (!env.ENCRYPTION_KEY || !env.TELEGRAM_STATE) throw new Error('Trading is not configured on this bot.');
+  const accounts = await listWalletAccounts(userId, env);
+  const row = (tracker.copy_wallet_id ? accounts.find((account) => account.id === tracker.copy_wallet_id) : null)
+    ?? accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+  const legacy = row ? null : await getCustodialWallet(userId, env);
+  const wallet = row ? { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null } : legacy;
+  if (!wallet) throw new Error('No Hopr wallet to copy with.');
+  const walletId = row?.id;
+  const profile = await readTelegramProfile(Number(userId), env).catch(() => null);
+  const slippage = Math.max(profile?.slippagePercent ?? 1, COPY_MIN_SLIPPAGE_PERCENT) / 100;
+  const rpc = nearRpcOptions(env);
+  const isNear = trade.chainId === NEAR_CHAIN_ID;
+  const chain = isNear ? null : getChainById(trade.chainId);
+  if (!isNear && !chain) throw new Error('Unsupported chain.');
+  const owner = isNear ? wallet.nearAddress : chain!.type === 'SVM' ? wallet.solanaAddress : wallet.evmAddress;
+  if (!owner) throw new Error('Your wallet has no account on this chain yet.');
+  let trade_: PendingTrade;
+  if (trade.side === 'buy') {
+    const prices = await nativePricesUsd();
+    const symbol = isNear ? 'NEAR' : chain!.nativeSymbol;
+    const coinPrice = symbol === 'USDC' ? 1 : prices[symbol];
+    if (!coinPrice) throw new Error(`No ${symbol} price right now.`);
+    const coins = (tracker.copy_amount_usd ?? 25) / coinPrice;
+    if (isNear) {
+      const metadata = await getTokenMetadata(trade.token, rpc);
+      trade_ = await prepareNearSwap({ userId, kind: 'buy', tokenIn: NEAR_TOKEN, tokenOut: { id: trade.token, symbol: metadata.symbol, decimals: metadata.decimals }, amountInUnits: parseUnits(coins.toFixed(6), NEAR_DECIMALS).toString(), slippage, walletId }, env);
+    } else {
+      const units = decimalToUnits(coins.toFixed(9), chain!.type === 'SVM' ? 9 : 18);
+      const balance = await quickNativeBalance(chain!.id, owner, rpc, 5_000);
+      if (balance !== null && balance <= BigInt(units)) throw new Error(`not enough ${symbol} on ${chain!.name} in ${row?.label ?? 'your wallet'}`);
+      trade_ = await prepareBuy({ userId, wallet, fundingChainKey: chain!.key, fundingTokenAddress: 'native', fundingAmountUnits: units, targetChainId: chain!.id, targetTokenAddress: trade.token, slippage, walletId }, env);
+    }
+  } else {
+    const held = await quickTokenBalance(trade.chainId, trade.token, owner, rpc, 5_000);
+    if (!held || BigInt(held.amount) === 0n) throw new Error(`you hold no ${trade.symbol}`);
+    // Sell the share of their position they sold (all of it when the rest is unknown).
+    const sold = BigInt(trade.amount);
+    const remaining = trade.remaining !== undefined ? BigInt(trade.remaining) : 0n;
+    const shareBps = sold + remaining > 0n ? (sold * 10_000n) / (sold + remaining) : 10_000n;
+    const amount = (BigInt(held.amount) * (shareBps > 10_000n ? 10_000n : shareBps)) / 10_000n;
+    if (amount <= 0n) throw new Error('nothing to sell');
+    if (isNear) {
+      const metadata = await getTokenMetadata(trade.token, rpc);
+      trade_ = await prepareNearSwap({ userId, kind: 'sell', tokenIn: { id: trade.token, symbol: metadata.symbol, decimals: metadata.decimals }, tokenOut: NEAR_TOKEN, amountInUnits: amount.toString(), slippage, walletId }, env);
+    } else {
+      trade_ = await prepareTokenSell({ userId, wallet, walletId, chainId: trade.chainId, tokenAddress: trade.token, amountUnits: amount.toString(), slippage }, env);
+    }
+  }
+  const result = await confirmTrade(userId, trade_.id, { evm: (chainId: number) => transactionRpc(chainId), solana: () => transactionRpc(1151111081099710), solanaBroadcast: solanaBroadcastRpcs }, env);
+  await recordTelegramReferral(userId, result, env);
+  forgetPortfolio(wallet);
+  const explorer = TELEGRAM_EXPLORERS[result.venue === 'ref' ? NEAR_CHAIN_ID : result.fromChainId ?? trade.chainId];
+  return { txHash: result.txHash, explorerUrl: explorer ? `${explorer}${encodeURIComponent(result.txHash)}` : undefined };
+}
+
+function leaderTxLink(trade: WalletTrade): string | null {
+  if (trade.txHash.startsWith('near:')) return `https://nearblocks.io/address/${trade.address}`;
+  const explorer = TELEGRAM_EXPLORERS[trade.chainId];
+  return explorer ? `${explorer}${encodeURIComponent(trade.txHash)}` : null;
+}
+
+/** The cron job for tracking: alerts and copy trades. Exported for tests. */
+export function watchWallets(env: Env) {
+  return runWalletWatch(env, {
+    latestBlock: latestEvmBlock,
+    evmTrades: fetchEvmTrades,
+    solanaTrades: fetchSolanaTrades,
+    nearTrades: (accountId, previous) => fetchNearTrades(accountId, previous, nearRpcOptions(env)),
+    markets: async (chainId, tokens) => {
+      const found = await chainMarkets(chainId, tokens);
+      return new Map([...found].map(([address, market]) => [address, { priceUsd: market.priceUsd, liquidityUsd: market.liquidityUsd, symbol: market.symbol }]));
+    },
+    alert: async (tracker, trade) => {
+      const verb = trade.side === 'buy' ? '🟢 bought' : '🔴 sold';
+      const link = leaderTxLink(trade);
+      const tokenButton = `token:refresh:${trade.token}`.length <= 64 ? [{ text: `📈 Trade ${trade.symbol.slice(0, 12)}`, callback_data: `token:refresh:${trade.token}` }] : [];
+      await sendTelegramMessage(Number(tracker.user_id), tgMessage(
+        `👀 <b>${escapeTelegramHtml(tracker.label)}</b> ${verb} <b>${escapeTelegramHtml(trade.symbol)}</b> ${chainEmoji(trade.chainId)}`,
+        tgCard([
+          `${formatTokenAmount(trade.amount, trade.decimals)} ${escapeTelegramHtml(trade.symbol)} · ≈ <b>${formatUsdValue(trade.valueUsd ?? 0)}</b>`,
+          `Price ${formatTokenPriceUsd(trade.priceUsd ?? 0)} · Liquidity ${formatCompactUsd(trade.liquidityUsd ?? 0)}`,
+          `<code>${escapeTelegramHtml(trade.token)}</code>`,
+        ]),
+      ), env, { inline_keyboard: [[...tokenButton, ...(link ? [{ text: '🔎 Transaction', url: link }] : [])], [{ text: '👀 Tracking', callback_data: 'track' }]] });
+    },
+    copy: (tracker, trade) => executeCopyTrade(tracker, trade, env),
+    copyResult: async (tracker, trade, outcome) => {
+      const what = `${trade.side === 'buy' ? 'buy' : 'sell'} of <b>${escapeTelegramHtml(trade.symbol)}</b>`;
+      const text = outcome.status === 'filled'
+        ? tgMessage(`🤖 <b>Copied ${escapeTelegramHtml(tracker.label)}'s ${what}</b>`, tgCard([`Transaction  ${outcome.explorerUrl ? `<a href="${outcome.explorerUrl}">${escapeTelegramHtml(outcome.txHash.slice(0, 12))}…</a>` : `<code>${escapeTelegramHtml(outcome.txHash)}</code>`}`]))
+        : tgMessage(`🤖 <b>${outcome.status === 'skipped' ? 'Skipped' : 'Could not copy'} ${escapeTelegramHtml(tracker.label)}'s ${what}</b>`, escapeTelegramHtml(outcome.reason));
+      await sendTelegramMessage(Number(tracker.user_id), text, env, { inline_keyboard: [[{ text: '💼 Portfolio', callback_data: 'positions:fresh' }, { text: '👀 Tracking', callback_data: 'track' }]] });
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Limit sell · take profit · stop loss (workers/orders.ts holds the order book and sweep)
