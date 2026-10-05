@@ -52,6 +52,7 @@ import { tracked, readNativeBalance, nativePricesUsd, type TrackedAmount } from 
 import { forgetPortfolio, loadPortfolio, NATIVE, pendingPortfolioLoad, quickNativeBalance, quickTokenBalance, type Portfolio, type TrackedToken } from './portfolio';
 import { apiKeyStatus, applyRpcConfig, solanaBroadcastRpcs, transactionRpc, type RpcEnv } from './rpcConfig';
 import { chainMarkets } from './portfolio';
+import { gasReserve } from './gasReserve';
 import { cancelOrder, createOrder, listOrders, ORDER_LABEL, OrderError, runOrderSweep, type LimitOrder, type OrderKind } from './orders';
 import {
   fetchEvmTrades, fetchNearTrades, fetchSolanaTrades, latestEvmBlock, MAX_COPY_TRADES_PER_DAY, MAX_TRACKED_PER_USER, MIN_COPY_LIQUIDITY_USD,
@@ -3078,8 +3079,7 @@ const MULTISEND_MAX_RECIPIENTS = 20;
 const MULTISEND_DRAFT_TTL_SECONDS = 15 * 60;
 const multiSendKey = (chatId: number) => `msdraft:v1:${chatId}`;
 /** Coins kept back for network fees on top of the amounts sent. */
-const MULTISEND_GAS_RESERVE: Record<number, bigint> = { 1151111081099710: 10_000_000n, [NEAR_CHAIN_ID]: 50_000_000_000_000_000_000_000n, 56: 1_000_000_000_000_000n, 5042: 50_000_000_000_000_000n };
-const DEFAULT_EVM_GAS_RESERVE = 300_000_000_000_000n;
+const NEAR_MULTISEND_RESERVE = 50_000_000_000_000_000_000_000n; // 0.05 NEAR for gas
 
 interface MultiSendDraft {
   chainId: number;
@@ -3242,8 +3242,11 @@ async function setMultiSendAmount(chatId: number, amount: string, env: Env, pane
   await saveMultiSend(chatId, draft, env);
   const each = parseUnits(amount, coin.decimals);
   const total = each * BigInt(draft.recipients.length);
-  const balance = await quickNativeBalance(draft.chainId, draft.from, nearRpcOptions(env), 4_000);
-  const reserve = MULTISEND_GAS_RESERVE[draft.chainId] ?? DEFAULT_EVM_GAS_RESERVE;
+  // Fees for one transfer per recipient at today's gas price (NEAR keeps its fixed gas reserve).
+  const [balance, reserve] = await Promise.all([
+    quickNativeBalance(draft.chainId, draft.from, nearRpcOptions(env), 4_000),
+    draft.chainId === NEAR_CHAIN_ID ? Promise.resolve(NEAR_MULTISEND_RESERVE) : gasReserve(draft.chainId, 'transfer', { count: draft.recipients.length }),
+  ]);
   const short = balance !== null && balance < total + reserve;
   await sendTelegramPanel(chatId, panelId, tgMessage(
     tgTitle('📤', 'Send now?'),

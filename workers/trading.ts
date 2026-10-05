@@ -20,6 +20,7 @@ import {
 } from '../src/services/walletService';
 import { getQuote, execute, executeNativeDeposit, buildSellQuoteRequest, type LifiQuote } from '../src/services/lifiTrader';
 import { readNativeBalance } from './balances';
+import { gasReserve } from './gasReserve';
 import { getChainById, getChainByKey, SUPPORTED_CHAINS } from '../src/services/chainDetector';
 import {
   buildIntentsDepositPlan,
@@ -894,13 +895,18 @@ export async function prepareNearIntentsBuy(params: {
   const hubChain = getChainById(hubChainId)!;
   if (!direct) {
     if (!env.TELEGRAM_STATE) throw new Error('Multi-step NEAR buys require TELEGRAM_STATE to resume the final swap.');
-    // Gas for the final swap (on Solana also the new token account's rent), in the delivered coin's units.
-    const reserve = hubChain.type === 'SVM' ? 5_000_000n : hubChainId === ARC_CHAIN_ID ? 100_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
+    // What the final swap costs on the hub chain (on Solana also token-account rent), in the delivered coin's units.
+    const nativeDecimals = hubChain.type === 'SVM' ? 9 : 18;
+    const toDelivered = (native: bigint) => native * 10n ** BigInt(destination.decimals) / 10n ** BigInt(nativeDecimals);
+    const hubOwner = addressOn(hubChain.type);
+    const [reserveNative, heldNative] = await Promise.all([
+      gasReserve(hubChainId, 'swap', { owner: hubOwner, mint: params.targetTokenAddress }),
+      readNativeBalance(hubChainId, hubOwner).catch(() => 0n),
+    ]);
+    const reserve = toDelivered(reserveNative);
     const delivered = BigInt(quote.minAmountOut ?? quote.amountOut);
     // Coins the wallet already holds there pay that gas first; only the shortfall comes out of the delivery.
-    const nativeDecimals = hubChain.type === 'SVM' ? 9 : 18;
-    const heldNative = await readNativeBalance(hubChainId, addressOn(hubChain.type)).catch(() => 0n);
-    const held = heldNative * 10n ** BigInt(destination.decimals) / 10n ** BigInt(nativeDecimals);
+    const held = toDelivered(heldNative);
     const shortfall = reserve > held ? reserve - held : 0n;
     const spend = delivered - shortfall;
     if (spend <= 0n) {
@@ -979,10 +985,10 @@ export async function prepareIncomingNearBuy(params: {
   if (!origin) return prepareHubToNearBuy({ ...params, chainId: chain.id }, env);
   const accountId = await ensureNearWallet(params.userId, env);
   const fromAddress = requireAddress(params.wallet, chain.type === 'SVM' ? 'SVM' : 'EVM');
-  const reserve = chain.type === 'SVM' ? 5_000_000n : chain.id === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
   const amount = BigInt(params.amountUnits);
   if (amount <= 0n) throw new Error('Enter an amount greater than zero');
-  if (await readNativeBalance(chain.id, fromAddress) < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name} for the buy and gas.`);
+  const [reserve, held] = await Promise.all([gasReserve(chain.id, 'transfer'), readNativeBalance(chain.id, fromAddress)]);
+  if (held < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name}: the buy plus ${formatUnits(reserve, chain.type === 'SVM' ? 9 : 18, 6)} ${chain.nativeSymbol} for fees needs more than the ${formatUnits(held, chain.type === 'SVM' ? 9 : 18, 6)} you hold.`);
   const rpc = nearRpcOptions(env);
   const [metadata, allTokens, nearBefore] = await Promise.all([
     getTokenMetadata(params.tokenAddress, rpc),
@@ -1061,9 +1067,9 @@ async function prepareHubToNearBuy(params: {
   if (!await intentsAsset(BASE_CHAIN_ID, 'native')) throw new Error('NEAR Intents is unavailable right now.');
   const amount = BigInt(params.amountUnits);
   if (amount <= 0n) throw new Error('Enter an amount greater than zero');
-  const reserve = chain.id === ARC_CHAIN_ID ? 100_000_000_000_000_000n : 300_000_000_000_000n;
   const evmAddress = requireAddress(params.wallet, 'EVM');
-  if (await readNativeBalance(chain.id, evmAddress) < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name} for the buy and gas.`);
+  const [reserve, held] = await Promise.all([gasReserve(chain.id, 'swap'), readNativeBalance(chain.id, evmAddress)]);
+  if (held < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name}: the buy plus ${formatUnits(reserve, 18, 6)} ${chain.nativeSymbol} for fees needs more than the ${formatUnits(held, 18, 6)} you hold.`);
   const [metadata, hubBalanceBefore] = await Promise.all([
     getTokenMetadata(params.tokenAddress, nearRpcOptions(env)),
     readNativeBalance(BASE_CHAIN_ID, evmAddress).catch(() => 0n),
@@ -1174,8 +1180,10 @@ export async function continueNearFundedBuy(userId: string, id: string, wallet: 
   const chain = getChainById(hubChainId)!;
   const owner = requireAddress(wallet, chain.type === 'EVM' ? 'EVM' : 'SVM');
   const delivered = BigInt(data.swapDetails?.amountOut ?? '0');
-  const reserve = chain.type === 'SVM' ? 5_000_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
-  const balance = await balanceOf(hubChainId, owner).catch(() => delivered);
+  const [reserve, balance] = await Promise.all([
+    gasReserve(hubChainId, 'swap', { owner, mint: continuation.targetTokenAddress }),
+    balanceOf(hubChainId, owner).catch(() => delivered),
+  ]);
   const spend = delivered < balance - reserve ? delivered : balance - reserve;
   if (spend <= 0n) return { status: 'failed', detail: `The ${chain.nativeSymbol} arrived but isn't enough to cover gas for the swap.` };
   // Hopr's fee was paid on step 1, so step 2 is fee-free.
@@ -1215,7 +1223,7 @@ async function continueHubToNear(userId: string, continuation: Continuation, wal
   const hub = getChainById(hubChainId)!;
   const balance = await balanceOf(hubChainId, requireAddress(wallet, 'EVM'));
   const arrived = BigInt(data.receiving?.amount ?? '0') || balance - BigInt(continuation.hubBalanceBefore ?? '0');
-  const reserve = 300_000_000_000_000n;
+  const reserve = await gasReserve(hubChainId, 'transfer');
   const spend = arrived < balance - reserve ? arrived : balance - reserve;
   if (spend <= 0n) return { status: 'failed', detail: `The ${hub.nativeSymbol} arrived but isn't enough to cover gas for the next step.` };
   const trade = await prepareIncomingNearBuy({

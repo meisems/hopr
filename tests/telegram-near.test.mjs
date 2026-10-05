@@ -519,7 +519,7 @@ test('NEAR-funded launchpad buy refuses the bridge when the final token has no r
 
 test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; an empty wallet is told the minimum', async () => {
   const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
-  const solanaNetwork = (lamports) => {
+  const solanaNetwork = (lamports, tokenAccounts = 0) => {
     const near = createNearNetwork();
     return {
       broadcasts: near.broadcasts,
@@ -535,6 +535,7 @@ test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; 
         // 0.1 NEAR delivers ~0.0017 SOL: less than the 0.005 SOL the final swap keeps for gas and rent.
         if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: 'e'.repeat(64), amountOut: '1750000', minAmountOut: '1700000', timeEstimate: 60 } });
         if (body?.method === 'getBalance') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: lamports } });
+        if (body?.method === 'getTokenAccountsByOwner') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: Array.from({ length: tokenAccounts }, () => ({ pubkey: 'x' })) } });
         if (href.includes('li.quest/v1/quote')) {
           return Response.json({ id: 'q', estimate: { fromAmount: '1700000', toAmount: '90000000', toAmountMin: '89000000', executionDuration: 20 }, transactionRequest: { data: 'AQ==' } });
         }
@@ -549,8 +550,15 @@ test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; 
   const refused = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 90, type: 'private' } } } }, empty.env, solanaNetwork(0));
   const reason = plain(refused.at(-1).body.text);
   assert.match(reason, /Too small for this route/);
-  assert.match(reason, /Buy with at least 0\.44\d* NEAR/);
+  // Fee + temporary wrapped-SOL account + the new BONK account: 0.0041 SOL, not a blanket 0.005.
+  assert.match(reason, /needs about 0\.0041 SOL for gas and the token account/);
+  assert.match(reason, /Buy with at least 0\.36\d* NEAR/);
   assert.match(reason, /No funds were moved/);
+
+  const holder = await custodialSetup();
+  await holder.kv.put('telegram:92', profile);
+  const smaller = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 92, type: 'private' } } } }, holder.env, solanaNetwork(0, 1));
+  assert.match(plain(smaller.at(-1).body.text), /needs about 0\.0021 SOL[\s\S]*at least 0\.1\d* NEAR/, 'an existing BONK account halves the minimum');
 
   const funded = await custodialSetup();
   await funded.kv.put('telegram:91', profile);
