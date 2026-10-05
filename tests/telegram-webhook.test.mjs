@@ -473,6 +473,18 @@ test('the Mini App is gone: /app opens the menu and no button opens a web app', 
   assert.ok(menu.reply_markup.inline_keyboard.flat().every((button) => !button.web_app));
 });
 
+test('/menu shows the EVM, SOL and NEAR deposit addresses as tap-to-copy code', async () => {
+  const wallet = { evm_address: '0x9999999999999999999999999999999999999903', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: 'hopr-user.near' };
+  const { calls } = await sendUpdate({ message: { chat: { id: 4410, type: 'private' }, text: '/menu' } }, {
+    extraEnv: { DB: walletDb(wallet) },
+    externalFetch: async () => Response.json({ jsonrpc: '2.0', id: 1, result: '0x0' }),
+  });
+  const home = calls.at(-1).body.text;
+  assert.match(home, /EVM   <code>0x9999999999999999999999999999999999999903<\/code>/);
+  assert.match(home, /SOL   <code>7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU<\/code>/);
+  assert.match(home, /NEAR  <code>hopr-user\.near<\/code>/);
+});
+
 test('Mini App and website-trading endpoints are removed; /health lists configured keys without values', async () => {
   const removed = [
     ['POST', '/api/trade/quote'], ['POST', '/api/trade/buy'], ['POST', '/api/trade/sell'], ['GET', '/api/trade/x/status'], ['POST', '/api/trade/execute'],

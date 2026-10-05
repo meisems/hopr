@@ -1025,7 +1025,7 @@ const HOME_PORTFOLIO_BUDGET_MS = 2_500;
 
 /**
  * Home screen shared by /start and /menu. Deliberately short: title, balance,
- * one line of coins, one hint. Addresses and details live behind the buttons
+ * one line of coins, the deposit addresses, one hint. Details live behind the buttons
  * (💳 Wallets, 💼 Portfolio, ❓ Help).
  */
 function telegramHomeText(heading: string, wallet: TelegramHomeWallet, portfolio: Portfolio | null): string {
@@ -1038,10 +1038,19 @@ function telegramHomeText(heading: string, wallet: TelegramHomeWallet, portfolio
     ? 'No trading wallet yet — tap 💳 Wallets to create one.'
     : funded
       ? 'Paste a token address to trade.'
-      : 'Fund your wallet from 💳 Wallets, then paste a token address to trade.';
+      : 'Send funds to an address above, then paste a token address to trade.';
+  // Tap-to-copy deposit addresses, one per line.
+  const addresses = wallet
+    ? [
+      `EVM   <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
+      `SOL   <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
+      ...(wallet.nearAddress ? [`NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`] : []),
+    ].join('\n')
+    : null;
   return tgMessage(
     `⚡ <b>${heading}</b>`,
     wallet && portfolio ? `💼 <b>${formatUsdValue(portfolio.totalUsd)}</b>${coins.length ? `\n${coins.join('  ·  ')}` : ''}` : null,
+    addresses,
     `<i>${hint}</i>`,
   );
 }
