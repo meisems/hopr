@@ -139,7 +139,7 @@ function OverviewSection() {
         <InfoCard
           icon={<Globe className="w-5 h-5" />}
           title="Confirmed Telegram Trading"
-          description="Every trade shows a live quote first and is signed only after Confirm. Transactions go through keyed, health-checked RPCs with public backups."
+          description="Buys are one tap by default — bridges finish by themselves — or switch on confirmations in /settings to review every quote. Sells always ask first. Transactions go through keyed, health-checked RPCs with public backups."
         />
       </div>
 

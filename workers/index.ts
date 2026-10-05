@@ -112,6 +112,8 @@ export interface Env extends RpcEnv {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_STATE?: KVNamespace;
+  /** Set per webhook request: run work after the reply (ctx.waitUntil). Absent in cron and tests. */
+  defer?: (task: Promise<unknown>) => void;
   /** Hopr's NEAR account: receives the NEAR Intents app fee and the Ref / Rhea swap fee (0.75%). */
   HOPR_INTENTS_FEE_ACCOUNT?: string;
   /** 1Click API key: default app-fee split is 50/50; public quotes add 25bps. */
@@ -489,6 +491,8 @@ interface TelegramProfile {
   lastTokenChainId?: number;
   lastTokenChainType?: 'EVM' | 'SVM' | 'NEAR';
   lastTokenSymbol?: string;
+  /** ⚡ One-tap buy; absent = on. */
+  oneTap?: boolean;
 }
 
 const API_RATE_LIMIT = 60;
@@ -543,6 +547,9 @@ export default {
       watchWallets(env).then((result) => {
         if (result.trades) console.log('Wallet watch', JSON.stringify(result));
       }).catch((error) => console.error('Wallet watch failed', error)),
+      sweepAutoSteps(env).then((result) => {
+        if (result.finished) console.log('Auto steps', JSON.stringify(result));
+      }).catch((error) => console.error('Auto steps failed', error)),
     ]));
   },
 
@@ -664,7 +671,9 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx?: Execution
   if (!firstTelegramDelivery(update.update_id)) return Response.json({ ok: true });
 
   const chatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
-  const work = processTelegramUpdate(update, env).catch(async (error: unknown) => {
+  // A per-request env: `defer` hands follow-up work (the one-tap bridge check) to waitUntil.
+  const requestEnv: Env = typeof ctx?.waitUntil === 'function' ? { ...env, defer: (task) => ctx.waitUntil(task.catch(() => undefined)) } : env;
+  const work = processTelegramUpdate(update, requestEnv).catch(async (error: unknown) => {
     console.error('Telegram update failed', error);
     if (chatId) {
       await telegramApiRequest('sendMessage', env, {
@@ -675,7 +684,11 @@ async function handleTelegramWebhook(request: Request, env: Env, ctx?: Execution
       });
     }
   });
-  const mustFinish = /^(trade|bundle):confirm:|^ms:send$/.test(update.callback_query?.data ?? '');
+  // Anything that may sign runs before the reply (background tasks can be cut short): confirms, and
+  // one-tap buys from a Buy button, ✏️ Buy X or Continue.
+  const replyTo = update.message?.reply_to_message;
+  const isBuyXReply = Boolean(replyTo?.from?.is_bot && replyTo.text?.startsWith(TELEGRAM_BUY_X_PROMPT));
+  const mustFinish = /^(trade|bundle):confirm:|^ms:send$|^trade:(buy|cont):/.test(update.callback_query?.data ?? '') || isBuyXReply;
   if (mustFinish || typeof ctx?.waitUntil !== 'function') await work;
   else ctx.waitUntil(work);
   return Response.json({ ok: true });
@@ -717,7 +730,7 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       || (data.startsWith('token:refresh:') && isNearAccountId(data.slice('token:refresh:'.length)))
       || /^token:pay:\d+$/.test(data)
       || /^settings:chain:\d+$/.test(data)
-      || /^settings:slippage:(0\.5|1|3|5)$/.test(data)
+      || /^settings:slippage:(0\.5|1|3|5)$/.test(data) || data === 'settings:onetap'
       || /^trade:(buy:\d{1,6}(\.\d{1,6})?|sell:(25|50|100)|custom|confirm:[0-9a-f-]+|cancel)$/.test(data);
     if (!recognized) {
       await telegramApiCall('answerCallbackQuery', env, {
@@ -787,7 +800,8 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     '🧺 Bundle buy / sell — trade a token from every wallet at once, one confirmation',
     '🎯 Limit sell · 📈 Take profit · 🛑 Stop loss — automatic sells, checked every minute (/orders)',
     '👀 /track &lt;address&gt; [name] — alerts when a wallet buys or sells · 🤖 optional copy trading',
-    'Only the <b>Confirm and submit</b> button signs and submits a trade',
+    '⚡ One-tap buy: a Buy tap buys at once from any chain; bridges finish by themselves (turn off in /settings)',
+    'Sells, /swap and bundles always wait for <b>Confirm</b>',
   ]),
   tgSection('💳', 'Wallet', [
     '/wallet — balances for your active wallet',
@@ -1392,7 +1406,7 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
     walletLines && tgSection('💼', 'Your wallet', walletLines),
     tgSection('⚙️', 'Trade setup', [
       nearViaRef ? 'Route  Ref Finance / Rhea DCL · paid in NEAR' : `Funding  ${chainEmoji(fundingChain.id)} ${escapeTelegramHtml(fundingChain.name)} (${fundingSymbol})${fundingChain.id !== chainId ? ' · cross-chain' : ''}`,
-      `Slippage  ${slippage}% · every trade is quoted before you confirm`,
+      `Slippage  ${slippage}% · ${telegramOneTap(profile) ? '⚡ one-tap buy' : 'every buy waits for your Confirm'}`,
     ]),
     tgFootnote(`${escapeTelegramHtml(marketSource)} · ${telegramUtcTime()} · Scan only — no transaction was submitted.`),
   );
@@ -1822,6 +1836,7 @@ function telegramSettingsKeyboard(profile: TelegramProfile): TelegramKeyboard {
         text: `${slippage === selectedSlippage ? '✅ ' : ''}${slippage}%`,
         callback_data: `settings:slippage:${slippage}`,
       })),
+      [{ text: profile.oneTap === false ? '🛡 One-tap buy: OFF — tap to turn on' : '⚡ One-tap buy: ON — tap to turn off', callback_data: 'settings:onetap' }],
       [{ text: '💳 Wallet', callback_data: 'wallet' }, { text: '◀️ Menu', callback_data: 'menu' }],
     ],
   };
@@ -2230,8 +2245,11 @@ async function showTelegramSettings(chatId: number, env: Env, panelId?: number):
       tgCard([
         `${chainEmoji(chain.id)} Funding chain: <b>${escapeTelegramHtml(chain.name)}</b>`,
         `🎯 Slippage preference: <b>${slippage}%</b>`,
+        telegramOneTap(profile)
+          ? '⚡ One-tap buy: <b>ON</b> — a Buy tap buys at once; bridges finish by themselves'
+          : '🛡 One-tap buy: <b>OFF</b> — every buy waits for your Confirm',
       ]),
-      tgFootnote('Tap to change. Quotes still require an explicit confirmation before submission.'),
+      tgFootnote('Tap to change. Sells always ask for confirmation.'),
     ),
     env,
     telegramSettingsKeyboard(profile),
@@ -2244,6 +2262,191 @@ function telegramQuoteMessage(side: 'BUY' | 'SELL', lines: string[]): string {
     tgCard(lines),
     tgFootnote('⏳ Prices move fast. Tap Confirm and submit to sign this quote, or Cancel to discard it.'),
   );
+}
+
+/* ------------------------------------------------------------------------ *
+ * ⚡ One-tap buy. With it on (the default), a Buy tap prepares the route and
+ * sends it at once; the same checks apply (route range, slippage, minimum
+ * output). A route with a bridge finishes by itself: step 2 is queued and
+ * runs the moment the coins arrive — checked every 3s right after step 1,
+ * then by the every-minute cron. Sells always wait for Confirm.
+ * ------------------------------------------------------------------------ */
+
+const telegramOneTap = (profile: TelegramProfile | null | undefined) => profile?.oneTap !== false;
+
+/** A quote's details, retitled for a buy that is being sent right away. */
+function oneTapText(text: string, title = 'One-tap buy · sending now'): string {
+  return text
+    .replace(/^🧾 <b>Quote ready · BUY<\/b>/, `⚡ <b>${title}</b>`)
+    .replace(/\n\n<i>⏳[^<]*<\/i>$/, '');
+}
+
+/** Offer a prepared buy for confirmation, or — with one-tap on — send it now. */
+async function deliverTelegramBuy(chatId: number, trade: PendingTrade, text: string, confirmLabel: string | undefined, env: Env, panelId?: number): Promise<void> {
+  const profile = trade.kind === 'buy' ? await readTelegramProfile(chatId, env).catch(() => null) : null;
+  if (trade.kind === 'buy' && telegramOneTap(profile)) {
+    await sendTelegramMessage(chatId, oneTapText(text, trade.sourceContinuationId ? 'Step 2 · sending now' : undefined), env);
+    await confirmTelegramTrade(chatId, trade.id, env, undefined, { oneTap: true });
+    return;
+  }
+  const keyboard = telegramTradeConfirmationKeyboard(trade.id, confirmLabel);
+  if (panelId) await sendTelegramPanel(chatId, panelId, text, env, keyboard);
+  else await sendTelegramMessage(chatId, text, env, keyboard);
+}
+
+/** Sign and send a stored quote, then report it (and, one-tap, carry a bridge through step 2). */
+async function confirmTelegramTrade(chatId: number, tradeId: string, env: Env, panelId?: number, options: { oneTap?: boolean } = {}): Promise<void> {
+  const startedAt = Date.now();
+  // Lock the quote first: removing its buttons makes a double submit impossible.
+  if (panelId) await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⏳', 'Submitting trade…'), 'Signing and broadcasting your transaction.'), env);
+  try {
+    // Signed transactions go through a keyed, health-checked RPC; Solana is also rebroadcast to backups.
+    const rpcUrls = {
+      evm: (chainId: number) => transactionRpc(chainId),
+      solana: () => transactionRpc(1151111081099710),
+      solanaBroadcast: solanaBroadcastRpcs,
+    };
+    const result = await confirmTrade(String(chatId), tradeId, rpcUrls, env);
+    void getCustodialWallet(String(chatId), env).then((wallet) => wallet && forgetPortfolio(wallet)).catch(() => undefined);
+    await recordTelegramReferral(String(chatId), result, env);
+    if (result.venue === 'intents' || result.continuationId) {
+      const explorer = TELEGRAM_EXPLORERS[result.fromChainId ?? NEAR_CHAIN_ID];
+      const automatic = Boolean(result.continuationId && options.oneTap && await queueAutoStep(String(chatId), result.continuationId, env));
+      await sendTelegramPanel(chatId, panelId, tgMessage(
+        telegramIntentsSentMessage(result),
+        automatic ? '⚡ <b>Step 2 runs automatically</b> the moment the coins arrive — no need to tap anything. You’ll get a message here.' : null,
+      ), env, {
+        inline_keyboard: [
+          ...(result.continuationId && !automatic ? [[{ text: '▶️ Continue — next step', callback_data: `trade:cont:${result.continuationId}` }]] : []),
+          ...(explorer ? [[{ text: '🔎 View transaction', url: `${explorer}${encodeURIComponent(result.txHash)}` }]] : []),
+          [{ text: '💼 Portfolio', callback_data: 'positions:fresh' }, { text: '◀️ Menu', callback_data: 'menu' }],
+        ],
+      });
+      // Fast path: most bridges land within seconds, so keep checking after the reply (the cron covers the rest).
+      if (automatic && env.defer) env.defer(pollAutoStep(String(chatId), result.continuationId!, env, startedAt + AUTO_STEP_FAST_WINDOW_MS));
+      return;
+    }
+    const profile = result.venue === 'ref' ? null : await readTelegramProfile(chatId, env).catch(() => null);
+    const explorer = result.venue === 'ref'
+      ? TELEGRAM_EXPLORERS[NEAR_CHAIN_ID]
+      : TELEGRAM_EXPLORERS[result.fromChainId ?? profile?.lastTokenChainId ?? 0];
+    await sendTelegramPanel(
+      chatId,
+      panelId,
+      tgMessage(
+        tgTitle('✅', result.venue === 'ref' && result.confirmed ? 'Swap executed' : 'Trade submitted successfully'),
+        tgCard([`Transaction: <code>${escapeTelegramHtml(result.txHash)}</code>`]),
+        tgFootnote(result.venue === 'ref' && result.confirmed
+          ? 'Executed on NEAR via Ref Finance. Tokens are already in your wallet.'
+          : 'The transaction is now on-chain; final settlement may take additional time.'),
+      ),
+      env,
+      {
+        inline_keyboard: [
+          ...(explorer ? [[{ text: '🔎 View transaction', url: `${explorer}${encodeURIComponent(result.txHash)}` }]] : []),
+          [{ text: '💼 Portfolio', callback_data: 'positions:fresh' }, { text: '◀️ Menu', callback_data: 'menu' }],
+        ],
+      },
+    );
+  } catch (error) {
+    await sendTelegramPanel(
+      chatId,
+      panelId,
+      tgMessage(tgTitle('⚠️', 'Trade was not submitted'), escapeTelegramHtml(error instanceof Error ? error.message : 'unknown error')),
+      env,
+      telegramActionKeyboard(),
+    );
+  }
+}
+
+/** Right after step 1 the worker may keep running ~30s: check the bridge in that window. */
+const AUTO_STEP_FAST_WINDOW_MS = 25_000;
+const AUTO_STEP_POLL_MS = 3_000;
+/** A bridge that hasn't landed in this long is given up on (the coins stay in the wallet). */
+const AUTO_STEP_MAX_AGE_MS = 3 * 60 * 60_000;
+
+async function queueAutoStep(userId: string, continuationId: string, env: Env): Promise<boolean> {
+  if (!env.DB) return false;
+  try {
+    await env.DB.prepare(`INSERT OR IGNORE INTO auto_steps (id, user_id, created_at) VALUES (?1, ?2, ?3)`).bind(continuationId, userId, Date.now()).run();
+    return true;
+  } catch {
+    return false; // before migration 0011: the user taps Continue
+  }
+}
+
+async function pollAutoStep(userId: string, continuationId: string, env: Env, deadline: number): Promise<void> {
+  while (Date.now() + AUTO_STEP_POLL_MS < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, AUTO_STEP_POLL_MS));
+    if (await tryAutoStep(userId, continuationId, Date.now(), env)) return;
+  }
+}
+
+/** Step 2's quote text (the coin landed on the hub chain and is swapped into the token). */
+function telegramStepTwoText(step: { trade: PendingTrade; continuation: { hubChainId?: number; targetChainId: number; targetSymbol: string; slippage: number }; delivered: bigint }): string {
+  if (step.trade.venue === 'ref' || step.trade.venue === 'intents') return telegramIncomingQuote(step.trade).text;
+  const chain = getChainById(step.continuation.hubChainId ?? step.continuation.targetChainId)!;
+  const target = getChainById(step.continuation.targetChainId)!;
+  const decimals = chain.type === 'SVM' ? 9 : 18;
+  return telegramQuoteMessage('BUY', [
+    `💸 <b>You pay</b>  ${formatUnits(step.delivered, decimals, 6)} ${escapeTelegramHtml(chain.nativeSymbol)} (arrived from NEAR)`,
+    `🎯 <b>You get</b>  ${escapeTelegramHtml(step.continuation.targetSymbol)}`,
+    `🧭 <b>Route</b>  ${chain.id === target.id ? escapeTelegramHtml(chain.name) : `${escapeTelegramHtml(chain.name)} → ${escapeTelegramHtml(target.name)}`} · LI.FI`,
+    `🛡 <b>Minimum output</b>  <code>${escapeTelegramHtml(String(step.trade.quote.estimate.toAmountMin))}</code> base units`,
+    `🎚 <b>Slippage</b>  ${Number((step.continuation.slippage * 100).toFixed(2))}%`,
+    '🏷 <b>Platform fee</b>  already paid in step 1',
+  ]);
+}
+
+/**
+ * One check of a queued step 2. Returns true once it is finished (sent, failed
+ * or given up). Whoever removes the queued row runs the step, so the fast
+ * check and the cron never run it twice.
+ */
+async function tryAutoStep(userId: string, continuationId: string, createdAt: number, env: Env): Promise<boolean> {
+  if (!env.DB) return true;
+  const chatId = Number(userId);
+  const claim = async () => ((await env.DB!.prepare(`DELETE FROM auto_steps WHERE id = ?1`).bind(continuationId).run()).meta?.changes ?? 0) === 1;
+  const stop = async (title: string, detail: string) => {
+    if (await claim()) await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', title), escapeTelegramHtml(detail)), env, telegramActionKeyboard());
+    return true;
+  };
+  const wallet = await getCustodialWallet(userId, env).catch(() => null);
+  if (!wallet) return stop('Step 2 stopped', 'Your Hopr wallet could not be read. The coins from step 1 are in your wallet.');
+  let step: Awaited<ReturnType<typeof continueNearFundedBuy>>;
+  try {
+    step = await continueNearFundedBuy(userId, continuationId, wallet, nativeBalanceUnits, env);
+  } catch (error) {
+    return stop('Step 2 failed', `${error instanceof Error ? error.message : 'unknown error'} The coins from step 1 are in your wallet.`);
+  }
+  if (step.status === 'pending') {
+    if (Date.now() - createdAt > AUTO_STEP_MAX_AGE_MS) return stop('Bridge is taking too long', 'Step 2 was not sent. When the coins arrive they stay in your Hopr wallet — buy with them directly.');
+    return false;
+  }
+  if (!await claim()) return true;
+  if (step.status === 'failed') {
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', 'Next step unavailable'), escapeTelegramHtml(step.detail)), env, telegramActionKeyboard());
+    return true;
+  }
+  await sendTelegramMessage(chatId, oneTapText(telegramStepTwoText(step), 'Step 2 · sending now'), env);
+  await confirmTelegramTrade(chatId, step.trade.id, env, undefined, { oneTap: true });
+  return true;
+}
+
+/** Cron: every queued step 2 whose coins may have arrived. */
+async function sweepAutoSteps(env: Env): Promise<{ checked: number; finished: number }> {
+  if (!env.DB || !env.ENCRYPTION_KEY) return { checked: 0, finished: 0 };
+  let rows: Array<{ id: string; user_id: string; created_at: number }>;
+  try {
+    rows = (await env.DB.prepare(`SELECT id, user_id, created_at FROM auto_steps ORDER BY created_at ASC LIMIT 25`).all<{ id: string; user_id: string; created_at: number }>()).results ?? [];
+  } catch {
+    return { checked: 0, finished: 0 }; // before migration 0011
+  }
+  let finished = 0;
+  for (const row of rows) {
+    if (await tryAutoStep(row.user_id, row.id, Number(row.created_at), env).catch(() => false)) finished += 1;
+  }
+  return { checked: rows.length, finished };
 }
 
 async function handleTelegramTradeAction(chatId: number, data: string, env: Env, panelId?: number, target?: TelegramProfile): Promise<void> {
@@ -2278,60 +2481,7 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
   }
   const confirmMatch = data.match(/^trade:confirm:([0-9a-f-]+)$/);
   if (confirmMatch) {
-    // Lock the quote first: removing its buttons makes a double submit impossible.
-    if (panelId) await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⏳', 'Submitting trade…'), 'Signing and broadcasting your transaction.'), env);
-    try {
-      // Signed transactions go through a keyed, health-checked RPC; Solana is also rebroadcast to backups.
-      const rpcUrls = {
-        evm: (chainId: number) => transactionRpc(chainId),
-        solana: () => transactionRpc(1151111081099710),
-        solanaBroadcast: solanaBroadcastRpcs,
-      };
-      const result = await confirmTrade(String(chatId), confirmMatch[1], rpcUrls, env);
-      void getCustodialWallet(String(chatId), env).then((wallet) => wallet && forgetPortfolio(wallet)).catch(() => undefined);
-      await recordTelegramReferral(String(chatId), result, env);
-      if (result.venue === 'intents' || result.continuationId) {
-        const explorer = TELEGRAM_EXPLORERS[result.fromChainId ?? NEAR_CHAIN_ID];
-        await sendTelegramPanel(chatId, panelId, telegramIntentsSentMessage(result), env, {
-          inline_keyboard: [
-            ...(result.continuationId ? [[{ text: '▶️ Continue — next step', callback_data: `trade:cont:${result.continuationId}` }]] : []),
-            ...(explorer ? [[{ text: '🔎 View transaction', url: `${explorer}${encodeURIComponent(result.txHash)}` }]] : []),
-            [{ text: '💼 Portfolio', callback_data: 'positions:fresh' }, { text: '◀️ Menu', callback_data: 'menu' }],
-          ],
-        });
-        return;
-      }
-      const profile = result.venue === 'ref' ? null : await readTelegramProfile(chatId, env).catch(() => null);
-      const explorer = result.venue === 'ref'
-        ? TELEGRAM_EXPLORERS[NEAR_CHAIN_ID]
-        : profile?.lastTokenChainId !== undefined ? TELEGRAM_EXPLORERS[profile.lastTokenChainId] : undefined;
-      await sendTelegramPanel(
-        chatId,
-        panelId,
-        tgMessage(
-          tgTitle('✅', result.venue === 'ref' && result.confirmed ? 'Swap executed' : 'Trade submitted successfully'),
-          tgCard([`Transaction: <code>${escapeTelegramHtml(result.txHash)}</code>`]),
-          tgFootnote(result.venue === 'ref' && result.confirmed
-            ? 'Executed on NEAR via Ref Finance. Tokens are already in your wallet.'
-            : 'The transaction is now on-chain; final settlement may take additional time.'),
-        ),
-        env,
-        {
-          inline_keyboard: [
-            ...(explorer ? [[{ text: '🔎 View transaction', url: `${explorer}${encodeURIComponent(result.txHash)}` }]] : []),
-            [{ text: '💼 Portfolio', callback_data: 'positions:fresh' }, { text: '◀️ Menu', callback_data: 'menu' }],
-          ],
-        },
-      );
-    } catch (error) {
-      await sendTelegramPanel(
-        chatId,
-        panelId,
-        tgMessage(tgTitle('⚠️', 'Trade was not submitted'), escapeTelegramHtml(error instanceof Error ? error.message : 'unknown error')),
-        env,
-        telegramActionKeyboard(),
-      );
-    }
+    await confirmTelegramTrade(chatId, confirmMatch[1], env, panelId);
     return;
   }
   const userId = String(chatId);
@@ -2416,21 +2566,22 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
         }, env);
         const intents = trade.intents!;
         const out = `${formatUnits(intents.expectedOut, intents.outDecimals, 6)} ${escapeTelegramHtml(intents.outSymbol)}`;
-        await sendTelegramMessage(
+        await deliverTelegramBuy(
           chatId,
+          trade,
           telegramQuoteMessage('BUY', [
             `💸 <b>You pay</b>  ${amountDecimal} NEAR`,
             ...(intents.continuation
               ? [
                 `🌉 <b>Step 1</b>  NEAR → ≈ ${out} on ${escapeTelegramHtml(getChainById(trade.toChainId)?.name ?? targetChain.name)} · NEAR Intents`,
-                `🎯 <b>Step 2</b>  ${escapeTelegramHtml(intents.outSymbol)} → ${tokenSymbol}${trade.toChainId !== targetChain.id ? ` on ${escapeTelegramHtml(targetChain.name)}` : ''} · LI.FI (you confirm it next)`,
+                `🎯 <b>Step 2</b>  ${escapeTelegramHtml(intents.outSymbol)} → ${tokenSymbol}${trade.toChainId !== targetChain.id ? ` on ${escapeTelegramHtml(targetChain.name)}` : ''} · LI.FI, as soon as it arrives`,
               ]
               : [`🎯 <b>You get</b>  ≈ ${out} · NEAR Intents`]),
             `🎚 <b>Slippage</b>  ${slippagePercent}%`,
             `🏷 <b>Platform fee</b>  ${HOPR_FEE_PERCENT}% · charged once${env.ONECLICK_JWT ? '' : ' + 0.25% 1Click routing fee'}`,
           ]),
+          intents.continuation ? '✅ Confirm step 1' : '✅ Confirm and submit',
           env,
-          telegramTradeConfirmationKeyboard(trade.id, intents.continuation ? '✅ Confirm step 1' : '✅ Confirm and submit'),
         );
         return;
       }
@@ -2449,8 +2600,9 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
         },
         env,
       );
-      await sendTelegramMessage(
+      await deliverTelegramBuy(
         chatId,
+        trade,
         telegramQuoteMessage('BUY', [
           `💸 <b>You pay</b>  ${amountDecimal} ${escapeTelegramHtml(fundingChain.nativeSymbol)}`,
           `🎯 <b>You get</b>  ${tokenSymbol}`,
@@ -2459,8 +2611,8 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
           `🎚 <b>Slippage</b>  ${slippagePercent}%`,
           `🏷 <b>Platform fee</b>  ${HOPR_FEE_PERCENT}% included`,
         ]),
+        undefined,
         env,
-        telegramTradeConfirmationKeyboard(trade.id),
       );
       return;
     }
@@ -2542,7 +2694,9 @@ function telegramNearQuoteMessage(trade: PendingTrade): string {
   );
 }
 
-async function sendTelegramNearQuote(chatId: number, trade: PendingTrade, env: Env): Promise<void> {
+/** A NEAR swap quote; buys from the token card are one-tap, /swap always asks. */
+async function sendTelegramNearQuote(chatId: number, trade: PendingTrade, env: Env, oneTapAllowed = true): Promise<void> {
+  if (oneTapAllowed && trade.kind === 'buy') return deliverTelegramBuy(chatId, trade, telegramNearQuoteMessage(trade), '✅ Confirm swap', env);
   await sendTelegramMessage(chatId, telegramNearQuoteMessage(trade), env, telegramTradeConfirmationKeyboard(trade.id, '✅ Confirm swap'));
 }
 
@@ -2594,9 +2748,7 @@ function telegramIncomingQuote(trade: PendingTrade): { text: string; confirmLabe
 
 async function sendTelegramPreparedTrade(chatId: number, trade: PendingTrade, env: Env, panelId?: number): Promise<void> {
   const { text, confirmLabel } = telegramIncomingQuote(trade);
-  const keyboard = telegramTradeConfirmationKeyboard(trade.id, confirmLabel);
-  if (panelId) await sendTelegramPanel(chatId, panelId, text, env, keyboard);
-  else await sendTelegramMessage(chatId, text, env, keyboard);
+  await deliverTelegramBuy(chatId, trade, text, confirmLabel, env, panelId);
 }
 
 async function handleTelegramNearTrade(chatId: number, data: string, profile: TelegramProfile, env: Env): Promise<void> {
@@ -2692,7 +2844,7 @@ async function handleTelegramNearSwapCommand(chatId: number, args: string[], env
       amountInUnits: parseUnits(amountText, inMeta.decimals).toString(),
       slippage: (profile?.slippagePercent ?? 1) / 100,
     }, env);
-    await sendTelegramNearQuote(chatId, trade, env);
+    await sendTelegramNearQuote(chatId, trade, env, false);
   } catch (error) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', 'No quote'), escapeTelegramHtml(error instanceof Error ? error.message : 'unknown error')), env);
   }
@@ -2847,6 +2999,14 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
     if (!chain) return sendTelegramMessage(chatId, 'That chain option is no longer available. Open /settings and try again.', env);
     const profile = await readTelegramProfile(chatId, env);
     if (!profile || !await writeTelegramProfile(chatId, { ...profile, fundingChainId: chain.id }, env)) {
+      return sendTelegramPanel(chatId, panelId, TELEGRAM_PERSISTENCE_REQUIRED, env);
+    }
+    return showTelegramSettings(chatId, env, panelId);
+  }
+
+  if (data === 'settings:onetap') {
+    const profile = await readTelegramProfile(chatId, env);
+    if (!profile || !await writeTelegramProfile(chatId, { ...profile, oneTap: !telegramOneTap(profile) }, env)) {
       return sendTelegramPanel(chatId, panelId, TELEGRAM_PERSISTENCE_REQUIRED, env);
     }
     return showTelegramSettings(chatId, env, panelId);
@@ -4249,22 +4409,7 @@ async function continueTelegramNearBuy(chatId: number, continuationId: string, e
       return;
     }
     // The coin landed on the hub chain (the target chain, or Base when NEAR Intents couldn't reach it).
-    const chain = getChainById(step.continuation.hubChainId ?? step.continuation.targetChainId)!;
-    const target = getChainById(step.continuation.targetChainId)!;
-    const decimals = chain.type === 'SVM' ? 9 : 18;
-    await sendTelegramMessage(
-      chatId,
-      telegramQuoteMessage('BUY', [
-        `💸 <b>You pay</b>  ${formatUnits(step.delivered, decimals, 6)} ${escapeTelegramHtml(chain.nativeSymbol)} (arrived from NEAR)`,
-        `🎯 <b>You get</b>  ${escapeTelegramHtml(step.continuation.targetSymbol)}`,
-        `🧭 <b>Route</b>  ${chain.id === target.id ? escapeTelegramHtml(chain.name) : `${escapeTelegramHtml(chain.name)} → ${escapeTelegramHtml(target.name)}`} · LI.FI`,
-        `🛡 <b>Minimum output</b>  <code>${escapeTelegramHtml(String(step.trade.quote.estimate.toAmountMin))}</code> base units`,
-        `🎚 <b>Slippage</b>  ${Number((step.continuation.slippage * 100).toFixed(2))}%`,
-        '🏷 <b>Platform fee</b>  already paid in step 1',
-      ]),
-      env,
-      telegramTradeConfirmationKeyboard(step.trade.id, '✅ Confirm step 2'),
-    );
+    await deliverTelegramBuy(chatId, step.trade, telegramStepTwoText(step), '✅ Confirm step 2', env);
   } catch (error) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', 'Step 2 failed'), escapeTelegramHtml(error instanceof Error ? error.message : 'unknown error')), env, telegramActionKeyboard());
   }

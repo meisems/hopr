@@ -7,7 +7,7 @@ import BrandLogo from './BrandLogo';
 const PERKS = [
   { icon: Zap, text: 'Pay from any of 7 chains' },
   { icon: Route, text: 'Best route picked for you' },
-  { icon: ShieldCheck, text: 'Live quote first — you confirm' },
+  { icon: ShieldCheck, text: 'One tap — bridges finish by themselves' },
 ];
 
 /**
@@ -40,7 +40,7 @@ export default function TelegramTradeCard({ token }: { token: DetectedToken | nu
 
       <p className="relative mt-4 text-sm leading-relaxed text-gray-400">
         {token
-          ? 'Open the bot on this token for a live quote. Pay from any chain you hold — nothing is signed until you confirm.'
+          ? 'Open the bot on this token and buy in one tap, paying from any chain you hold. Want to review each quote? Turn on confirmations in /settings.'
           : 'This site is view-only. Scan a token to check its chart, liquidity and volume — then trade it from the bot.'}
       </p>
 

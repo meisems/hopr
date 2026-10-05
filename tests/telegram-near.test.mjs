@@ -32,11 +32,24 @@ function createKv() {
 /** Minimal D1 stand-in that answers the custody queries by SQL shape. */
 function createCustodyDb(wallet) {
   const trades = [];
+  const autoSteps = new Map();
   return {
     trades,
+    autoSteps,
     prepare(sql) {
-      return {
+      const statement = {
         bind(...params) {
+          if (/auto_steps/.test(sql)) {
+            return {
+              async first() { return null; },
+              async all() { return { results: [...autoSteps.values()] }; },
+              async run() {
+                if (/INSERT OR IGNORE INTO auto_steps/.test(sql) && !autoSteps.has(params[0])) autoSteps.set(params[0], { id: params[0], user_id: params[1], created_at: params[2] });
+                if (/DELETE FROM auto_steps/.test(sql)) return { success: true, meta: { changes: autoSteps.delete(params[0]) ? 1 : 0 } };
+                return { success: true, meta: { changes: 1 } };
+              },
+            };
+          }
           return {
             async first() {
               if (/SELECT evm_address, solana_address, near_address FROM wallet_accounts/.test(sql)) {
@@ -60,6 +73,8 @@ function createCustodyDb(wallet) {
           };
         },
       };
+      // D1 also runs statements without bind().
+      return { ...statement, ...statement.bind() };
     },
   };
 }
@@ -189,7 +204,7 @@ test('long NEAR token ids use a short refresh callback that fits Telegram limits
 test('quick buy on a NEAR token quotes on Ref Finance, then Confirm signs wrap + swap and records the trade', async () => {
   const { kv, db, env, wallet } = await custodialSetup();
   const network = createNearNetwork();
-  await kv.put('telegram:72', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenChainType: 'NEAR', lastTokenSymbol: 'USDC', slippagePercent: 0.5 }));
+  await kv.put('telegram:72', JSON.stringify({ oneTap: false, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenChainType: 'NEAR', lastTokenSymbol: 'USDC', slippagePercent: 0.5 }));
 
   const quoteCalls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1', message: { message_id: 5, chat: { id: 72, type: 'private' } } } }, env, network);
   const quote = quoteCalls.at(-1);
@@ -227,7 +242,7 @@ test('quick buy on a NEAR token quotes on Ref Finance, then Confirm signs wrap +
 
 test('✏️ Buy X asks for an amount and quotes exactly what the user replies', async () => {
   const { kv, env } = await custodialSetup();
-  await kv.put('telegram:73', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:73', JSON.stringify({ oneTap: false, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const prompt = await sendUpdate({ callback_query: { id: 'x', data: 'trade:custom', message: { chat: { id: 73, type: 'private' } } } }, env, createNearNetwork());
   const promptText = prompt.at(-1).body.text;
   assert.match(promptText, /Buy X — reply with how much NEAR to spend on USDC/);
@@ -244,7 +259,7 @@ test('with a Hopr NEAR fee account, Ref swaps take 0.75% in the same transaction
   const { kv, env } = await custodialSetup();
   const network = createNearNetwork();
   const feeEnv = { ...env, HOPR_INTENTS_FEE_ACCOUNT: 'hopr-fees.near' };
-  await kv.put('telegram:75', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:75', JSON.stringify({ oneTap: false, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1', message: { message_id: 5, chat: { id: 75, type: 'private' } } } }, feeEnv, network);
   const confirm = quote.at(-1).body.reply_markup.inline_keyboard[0][0];
   await sendUpdate({ callback_query: { id: 'c', data: confirm.callback_data, message: { message_id: 6, chat: { id: 75, type: 'private' } } } }, feeEnv, network);
@@ -324,7 +339,7 @@ function createIncomingNetwork() {
 
 test('NEAR token cards offer pay-with NEAR, SOL and Robinhood ETH, with presets in the chosen coin', async () => {
   const { kv, env } = await custodialSetup();
-  await kv.put('telegram:80', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:80', JSON.stringify({ oneTap: false, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const calls = await sendUpdate({ callback_query: { id: 'pay', data: 'token:pay:1151111081099710', message: { message_id: 3, chat: { id: 80, type: 'private' } } } }, env, createNearNetwork());
   assert.equal(JSON.parse(kv.values.get('telegram:80')).fundingChainId, 1151111081099710);
   const keyboard = calls.at(-1).body.reply_markup.inline_keyboard;
@@ -336,7 +351,7 @@ test('NEAR token cards offer pay-with NEAR, SOL and Robinhood ETH, with presets 
 test('buying a NEAR token with SOL quotes NEAR Intents into NEAR, then a Ref swap', async () => {
   const { kv, env, wallet } = await custodialSetup();
   const network = createIncomingNetwork();
-  await kv.put('telegram:81', JSON.stringify({ fundingChainId: 1151111081099710, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:81', JSON.stringify({ oneTap: false, fundingChainId: 1151111081099710, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 81, type: 'private' } } } }, env, network);
   const text = plain(calls.at(-1).body.text);
   assert.match(text, /You pay  0.1 SOL on Solana/);
@@ -356,7 +371,7 @@ test('buying a NEAR token with SOL quotes NEAR Intents into NEAR, then a Ref swa
 test('buying a NEAR token with Robinhood ETH routes through NEAR Intents from hood', async () => {
   const { kv, env } = await custodialSetup();
   const network = createIncomingNetwork();
-  await kv.put('telegram:82', JSON.stringify({ fundingChainId: 4663, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:82', JSON.stringify({ oneTap: false, fundingChainId: 4663, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.01', message: { message_id: 5, chat: { id: 82, type: 'private' } } } }, env, network);
   assert.match(plain(calls.at(-1).body.text), /You pay  0.01 ETH on Robinhood Chain/);
   const quote = network.requests.filter((request) => request.href.endsWith('/v0/quote')).at(-1).body;
@@ -367,7 +382,7 @@ test('buying a NEAR token with Robinhood ETH routes through NEAR Intents from ho
 test('Arc, which NEAR Intents does not reach, buys NEAR tokens via a LI.FI hop to Base', async () => {
   const { kv, env } = await custodialSetup();
   const network = createIncomingNetwork();
-  await kv.put('telegram:83', JSON.stringify({ fundingChainId: 5042, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
+  await kv.put('telegram:83', JSON.stringify({ oneTap: false, fundingChainId: 5042, lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenSymbol: 'USDC' }));
   const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:10', message: { message_id: 5, chat: { id: 83, type: 'private' } } } }, env, network);
   const text = plain(calls.at(-1).body.text);
   assert.match(text, /You pay  10 USDC on Arc Chain/);
@@ -409,7 +424,7 @@ test('paying with NEAR for a Base token: step 1 bridges through NEAR Intents, Co
       return near.fetchImpl(url, init);
     },
   };
-  await kv.put('telegram:76', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: DEGEN, lastTokenChainId: 8453, lastTokenChainType: 'EVM', lastTokenSymbol: 'DEGEN', slippagePercent: 1 }));
+  await kv.put('telegram:76', JSON.stringify({ oneTap: false, fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: DEGEN, lastTokenChainId: 8453, lastTokenChainType: 'EVM', lastTokenSymbol: 'DEGEN', slippagePercent: 1 }));
 
   // Step 1 quote: NEAR → ETH on Base (NEAR Intents lists ETH but not DEGEN).
   const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1.0', message: { message_id: 5, chat: { id: 76, type: 'private' } } } }, feeEnv, network);
@@ -485,7 +500,7 @@ test('paying with NEAR for a BNB token falls back to ETH on Base when NEAR Inten
       return near.fetchImpl(url, init);
     },
   };
-  await kv.put('telegram:77', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: CAKE, lastTokenChainId: 56, lastTokenChainType: 'EVM', lastTokenSymbol: 'CAKE' }));
+  await kv.put('telegram:77', JSON.stringify({ oneTap: false, fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: CAKE, lastTokenChainId: 56, lastTokenChainType: 'EVM', lastTokenSymbol: 'CAKE' }));
   const quote = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1.0', message: { message_id: 5, chat: { id: 77, type: 'private' } } } }, env, network);
   assert.match(plain(quote.at(-1).body.text), /Step 1  NEAR → ≈ 0\.002 ETH on Base · NEAR Intents/);
   assert.match(plain(quote.at(-1).body.text), /Step 2  ETH → CAKE on BNB Chain · LI\.FI/);
@@ -503,7 +518,7 @@ test('paying with NEAR for a BNB token falls back to ETH on Base when NEAR Inten
 test('NEAR-funded launchpad buy refuses the bridge when the final token has no route', async () => {
   const { kv, env } = await custodialSetup();
   const near = createNearNetwork();
-  await kv.put('telegram:79', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: '0x' + '8'.repeat(40), lastTokenChainId: 8453, lastTokenSymbol: 'NEW' }));
+  await kv.put('telegram:79', JSON.stringify({ oneTap: false, fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: '0x' + '8'.repeat(40), lastTokenChainId: 8453, lastTokenSymbol: 'NEW' }));
   const network = { broadcasts: near.broadcasts, fetchImpl: async (url, init = {}) => {
     const href = String(url);
     if (href.endsWith('/v0/tokens')) return Response.json([{ assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 }]);
@@ -543,7 +558,7 @@ test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; 
       },
     };
   };
-  const profile = JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK', slippagePercent: 1 });
+  const profile = JSON.stringify({ oneTap: false, fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK', slippagePercent: 1 });
 
   const empty = await custodialSetup();
   await empty.kv.put('telegram:90', profile);
@@ -583,7 +598,7 @@ test('a buy below the route minimum is refused before anything is quoted, with v
     },
   };
   const { kv, env } = await custodialSetup();
-  await kv.put('telegram:93', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK' }));
+  await kv.put('telegram:93', JSON.stringify({ oneTap: false, fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK' }));
   const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.01', message: { message_id: 5, chat: { id: 93, type: 'private' } } } }, env, network);
   const reply = calls.at(-1).body;
   assert.match(plain(reply.text), /Amount outside this route’s range/);
@@ -594,4 +609,90 @@ test('a buy below the route minimum is refused before anything is quoted, with v
   assert.ok(offered.every((button) => Number(button.callback_data.split(':')[2]) >= 0.1), 'none below the minimum');
   assert.ok(!requests.some((href) => href.endsWith('/v0/quote')), 'nothing was quoted');
   assert.equal(network.broadcasts.length, 0);
+});
+
+/** Run anything (e.g. the cron) against the mocked network, collecting Telegram calls. */
+async function withTelegram(network, run) {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).includes('api.telegram.org')) {
+      calls.push({ url: String(url), body: init.body ? JSON.parse(init.body) : undefined });
+      return Response.json({ ok: true, result: { message_id: 999 } });
+    }
+    return network.fetchImpl(url, init);
+  };
+  try {
+    await run();
+    return calls;
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test('⚡ one-tap: a single Buy tap on a NEAR token signs and executes, no Confirm screen', async () => {
+  const { kv, env, wallet } = await custodialSetup();
+  const network = createNearNetwork();
+  await kv.put('telegram:94', JSON.stringify({ lastTokenAddress: USDC, lastTokenChainId: NEAR_CHAIN_ID, lastTokenChainType: 'NEAR', lastTokenSymbol: 'USDC', slippagePercent: 0.5 }));
+  const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1', message: { message_id: 5, chat: { id: 94, type: 'private' } } } }, env, network);
+  const texts = calls.filter((call) => call.body?.text).map((call) => plain(call.body.text));
+  assert.ok(texts.some((text) => /One-tap buy · sending now/.test(text) && /You pay  1 NEAR/.test(text)), 'the buy is shown as it is sent');
+  assert.ok(texts.some((text) => /Swap executed/.test(text)));
+  assert.equal(network.broadcasts.length, 2, 'signed straight away');
+  assert.ok(network.broadcasts.every((tx) => tx.transaction.signerId === wallet.near.address));
+  assert.ok(!calls.some((call) => JSON.stringify(call.body?.reply_markup ?? {}).includes('trade:confirm:')), 'no Confirm button was offered');
+});
+
+test('⚡ one-tap across chains: step 2 is queued and runs exactly once when the bridge lands', async () => {
+  const { kv, env, db } = await custodialSetup();
+  const DEGEN = '0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed';
+  const near = createNearNetwork();
+  let bridgeStatus = 'PENDING_DEPOSIT';
+  const network = {
+    broadcasts: near.broadcasts,
+    fetchImpl: async (url, init = {}) => {
+      const href = String(url);
+      if (href.endsWith('/v0/tokens')) {
+        return Response.json([
+          { assetId: 'nep141:base.omft.near', blockchain: 'base', symbol: 'ETH', decimals: 18 },
+          { assetId: 'nep141:wrap.near', blockchain: 'near', symbol: 'wNEAR', decimals: 24, contractAddress: 'wrap.near' },
+        ]);
+      }
+      if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: 'd'.repeat(64), amountOut: '2100000000000000', minAmountOut: '2050000000000000', timeEstimate: 90 } });
+      if (href.endsWith('/v0/deposit/submit')) return Response.json({});
+      if (href.includes('/v0/status')) return Response.json({ status: bridgeStatus, swapDetails: { amountOut: '2000000000000000' } });
+      if (href.includes('mainnet.base.org')) return Response.json({ result: `0x${(2_500_000_000_000_000n).toString(16)}` });
+      if (href.includes('li.quest/v1/quote')) {
+        return Response.json({ id: 'q', estimate: { fromAmount: '2000000000000000', toAmount: '9000000000000000000000', toAmountMin: '8900000000000000000000', executionDuration: 20 }, transactionRequest: { to: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', data: '0x', value: '0x0' } });
+      }
+      return near.fetchImpl(url, init);
+    },
+  };
+  await kv.put('telegram:95', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: DEGEN, lastTokenChainId: 8453, lastTokenChainType: 'EVM', lastTokenSymbol: 'DEGEN', slippagePercent: 1 }));
+
+  // One tap: step 1 (NEAR → ETH on Base) is signed and sent; step 2 is queued, not left to a Continue button.
+  const tap = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:1.0', message: { message_id: 5, chat: { id: 95, type: 'private' } } } }, env, network);
+  const sent = tap.at(-1).body;
+  assert.match(plain(sent.text), /Step 2 runs automatically/);
+  assert.ok(!JSON.stringify(sent.reply_markup).includes('trade:cont:'), 'no Continue button');
+  assert.ok(network.broadcasts.length > 0, 'step 1 was signed');
+  assert.equal(db.autoSteps.size, 1);
+
+  // The cron while the bridge is still in flight: nothing happens, the step stays queued.
+  const cron = async () => {
+    const tasks = [];
+    await worker.scheduled({}, env, { waitUntil: (task) => tasks.push(task) });
+    await Promise.all(tasks);
+  };
+  const pending = await withTelegram(network, cron);
+  assert.equal(db.autoSteps.size, 1);
+  assert.ok(!pending.some((call) => /Step 2 · sending now/.test(plain(call.body?.text ?? ''))));
+
+  // Bridge landed: two overlapping cron runs, one step 2.
+  bridgeStatus = 'SUCCESS';
+  const landed = await withTelegram(network, () => Promise.all([cron(), cron()]));
+  const step2 = landed.filter((call) => /Step 2 · sending now/.test(plain(call.body?.text ?? '')));
+  assert.equal(step2.length, 1, 'step 2 runs exactly once');
+  assert.match(plain(step2[0].body.text), /You pay  0\.002 ETH \(arrived from NEAR\)/);
+  assert.equal(db.autoSteps.size, 0);
 });

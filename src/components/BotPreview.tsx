@@ -78,7 +78,7 @@ export default function BotPreview({ botUrl }: { botUrl: string }) {
               </ul>
 
               <p className="mt-3 font-semibold text-white">🚀 Trade</p>
-              <p className="font-mono text-[11.5px] text-gray-400"><span className="text-gray-600">└</span> Paste any token address — Hopr finds the route, you confirm.</p>
+              <p className="font-mono text-[11.5px] text-gray-400"><span className="text-gray-600">└</span> Paste any token address — buy in one tap from any chain.</p>
               <p className="mt-2 text-right text-[10px] text-gray-600">🔐 keys encrypted · 12:04</p>
             </div>
 

@@ -88,7 +88,8 @@ test('help command lists working commands and shows navigation buttons', async (
   assert.match(plain(calls[0].body.text), /Bundle buy \/ sell/);
   assert.match(plain(calls[0].body.text), /Pay from any chain/);
   assert.match(plain(calls[0].body.text), /\/swap <amount> <from> <to>/);
-  assert.match(plain(calls[0].body.text), /Confirm and submit button signs and submits/);
+  assert.match(plain(calls[0].body.text), /One-tap buy: a Buy tap buys at once from any chain/);
+  assert.match(plain(calls[0].body.text), /Sells, \/swap and bundles always wait for Confirm/);
   assert.match(calls[0].body.text, /├ .*\n└ /, 'sections render as ├/└ trees');
   assert.match(plain(calls[0].body.text), /\/portfolio — every token you hold on all 7 chains/);
   assert.doesNotMatch(plain(calls[0].body.text), /Mini App|\/app/);
@@ -228,7 +229,7 @@ test('settings buttons persist funding-chain and slippage preferences', async ()
   }, { extraEnv: { TELEGRAM_STATE: kv } });
   assert.deepEqual(JSON.parse(kv.values.get('telegram:777')), { fundingChainId: 8453 });
   assert.match(plain(first.calls.at(-1).body.text), /Funding chain: Base/);
-  assert.equal(first.calls.at(-1).body.reply_markup.inline_keyboard.length, 6); // 7 funding chains (incl. NEAR) + slippage + nav
+  assert.equal(first.calls.at(-1).body.reply_markup.inline_keyboard.length, 7); // 7 funding chains (incl. NEAR) + slippage + one-tap + nav
   assert.deepEqual(first.calls.at(-1).body.reply_markup.inline_keyboard[1][0], { text: '✅ Base', callback_data: 'settings:chain:8453' });
 
   const second = await sendUpdate({
@@ -237,6 +238,13 @@ test('settings buttons persist funding-chain and slippage preferences', async ()
   assert.deepEqual(JSON.parse(kv.values.get('telegram:777')), { fundingChainId: 8453, slippagePercent: 3 });
   assert.match(plain(second.calls.at(-1).body.text), /Slippage preference: 3%/);
   assert.deepEqual(second.calls.at(-1).body.reply_markup.inline_keyboard[4][2], { text: '✅ 3%', callback_data: 'settings:slippage:3' });
+  assert.match(plain(second.calls.at(-1).body.text), /One-tap buy: ON/);
+
+  const third = await sendUpdate({
+    callback_query: { id: 'callback-3', data: 'settings:onetap', message: { chat: { id: 777, type: 'private' } } },
+  }, { extraEnv: { TELEGRAM_STATE: kv } });
+  assert.equal(JSON.parse(kv.values.get('telegram:777')).oneTap, false);
+  assert.match(plain(third.calls.at(-1).body.text), /One-tap buy: OFF — every buy waits for your Confirm/);
 });
 
 test('settings command explains persistence requirement when KV is not bound', async () => {
@@ -703,7 +711,7 @@ const TWO_WALLETS = [
 test('bundle buy quotes every funded wallet and asks for one confirmation; unfunded wallets are listed as skipped', async () => {
   const token = '0x3333333333333333333333333333333333330003';
   const kv = createKv();
-  await kv.put('telegram:4411', JSON.stringify({ lastTokenAddress: token, lastTokenChainId: 8453, lastTokenSymbol: 'BUN', fundingChainId: 8453 }));
+  await kv.put('telegram:4411', JSON.stringify({ oneTap: false, lastTokenAddress: token, lastTokenChainId: 8453, lastTokenSymbol: 'BUN', fundingChainId: 8453 }));
   const lifiFrom = [];
   const { calls } = await sendUpdate({ callback_query: { id: 'b', data: 'bundle:buy:0.01', message: { message_id: 8, chat: { id: 4411, type: 'private' } } } }, {
     extraEnv: { DB: walletsDb(TWO_WALLETS), TELEGRAM_STATE: kv, ENCRYPTION_KEY: 'k'.repeat(40) },

@@ -111,7 +111,7 @@ const STEPS = [
   { title: 'Scan a token', desc: 'Paste any EVM, Solana or NEAR address — the chain is resolved for you.', icon: Search },
   { title: 'Check the market', desc: 'Live chart, liquidity, FDV, volume and buy pressure. No wallet needed.', icon: BarChart3 },
   { title: 'Open the bot', desc: 'One tap opens the token in Hopr, where your encrypted wallet pays from any chain.', icon: Wallet },
-  { title: 'Confirm the quote', desc: 'LI.FI, Ref Finance or NEAR Intents — you see the live quote before anything is signed.', icon: Shield },
+  { title: 'Buy in one tap', desc: 'Hopr routes through LI.FI, Ref Finance or NEAR Intents and buys at once — bridges finish by themselves. Prefer to review? Turn on confirmations in /settings.', icon: Shield },
 ];
 
 function Dashboard({ botUrl }: { botUrl: string }) {
@@ -144,7 +144,7 @@ function Dashboard({ botUrl }: { botUrl: string }) {
             <SearchBar onTokenDetected={setSelectedToken} scanRequest={scanRequest} />
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-500">
-            {['Routes via LI.FI · Ref · NEAR Intents', 'Quote first — you confirm', 'Keys AES-256 encrypted'].map((label) => (
+            {['Routes via LI.FI · Ref · NEAR Intents', '⚡ One-tap buys from any chain', 'Keys AES-256 encrypted'].map((label) => (
               <span key={label} className="flex items-center gap-1.5"><span className="h-1 w-1 rounded-full bg-brand-400" />{label}</span>
             ))}
           </div>
