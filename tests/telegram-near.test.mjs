@@ -51,7 +51,12 @@ function createCustodyDb(wallet) {
               if (/INSERT INTO user_trades/.test(sql)) trades.push(params);
               return { success: true, meta: { changes: 1 } };
             },
-            async all() { return { results: [] }; },
+            async all() {
+              if (/SELECT \* FROM wallet_accounts WHERE user_id/.test(sql)) {
+                return { results: [{ id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: wallet.evm, solana_address: wallet.solana, near_address: wallet.near.address, near_encrypted_key: wallet.nearEncrypted, default_for: null }] };
+              }
+              return { results: [] };
+            },
           };
         },
       };
@@ -288,7 +293,7 @@ test('/wallet near <account> reads a NEAR account without linking it', async () 
   const network = createNearNetwork();
   const balance = await sendUpdate({ message: { chat: { id: 76, type: 'private' }, text: '/wallet near alice.near' } }, { ...baseEnv }, network);
   const text = plain(balance[0].body.text);
-  assert.match(text, /NEAR · alice\.near/);
+  assert.match(text, /Ⓝ NEAR\nalice\.near/);
   assert.match(text, /NEAR: 9\.9981 NEAR/); // 10 NEAR minus 182 bytes of storage staking
 });
 

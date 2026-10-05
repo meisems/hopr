@@ -15,7 +15,7 @@
 // mirrored once (a unique row in copy_trades), within a daily cap.
 
 import { jsonRpcRace } from '../src/services/rpcPool';
-import { getTokenMetadata, NEAR_CHAIN_ID, type NearRpcOptions } from '../src/services/nearService';
+import { getTokenMetadata, isValidNearAccountId, NEAR_CHAIN_ID, type NearRpcOptions } from '../src/services/nearService';
 import { SOLANA_CHAIN_ID } from './rpcConfig';
 import { readEvmBalances } from './portfolio';
 
@@ -88,8 +88,8 @@ export function walletKind(address: string): WalletKind | null {
   const value = address.trim();
   if (/^0x[a-fA-F0-9]{40}$/.test(value)) return 'evm';
   if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return 'svm';
-  if (/^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(value.toLowerCase()) && value.length >= 2 && value.length <= 64
-    && (value.toLowerCase().endsWith('.near') || /^[0-9a-f]{64}$/.test(value.toLowerCase()))) return 'near';
+  // Any NEAR account: implicit (64 hex) or named with a dot (alice.near, bob.tg, x.sweat …).
+  if (isValidNearAccountId(value.toLowerCase())) return 'near';
   return null;
 }
 

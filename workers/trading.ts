@@ -59,11 +59,21 @@ export interface TradingEnv {
   ONECLICK_JWT?: string;
 }
 
+/** The addresses that trade on each chain: each chain's default wallet (null = no wallet holds that chain). */
 export interface CustodialWallet {
-  evmAddress: string;
-  solanaAddress: string;
-  /** NEAR implicit account; null until the user first uses NEAR (see ensureNearWallet). */
+  evmAddress: string | null;
+  solanaAddress: string | null;
+  /** NEAR account; null until the user has one (see ensureNearWallet). */
   nearAddress?: string | null;
+  /** Label of the wallet behind each address (W1, W2 …). */
+  labels?: { evm?: string; solana?: string; near?: string };
+}
+
+/** The address that trades on a chain type, or a clear error when no wallet holds that chain. */
+export function requireAddress(wallet: Pick<CustodialWallet, 'evmAddress' | 'solanaAddress'>, type: 'EVM' | 'SVM'): string {
+  const address = type === 'EVM' ? wallet.evmAddress : wallet.solanaAddress;
+  if (!address) throw new Error(`No ${type === 'EVM' ? 'EVM' : 'Solana'} wallet yet. Create or import one in 💳 Wallets.`);
+  return address;
 }
 
 export function nearRpcOptions(env: TradingEnv): NearRpcOptions {
@@ -103,35 +113,140 @@ function nativeTokenAddress(chainKey: string): string {
   return chainKey === 'sol' ? SOLANA_NATIVE_TOKEN : EVM_NATIVE_TOKEN;
 }
 
-/** Fetch the user's custodial wallet, or null if they haven't created one. */
-export async function getCustodialWallet(userId: string, env: TradingEnv): Promise<CustodialWallet | null> {
-  if (!env.DB) return null;
-  type Row = { evm_address: string; solana_address: string; near_address?: string | null };
-  let row: Row | null = null;
+/* ------------------------------------------------------------------------ *
+ * Wallets and per-chain defaults.
+ *
+ * A wallet row holds keys for one or more chains: a generated wallet has all
+ * three, an imported key is a wallet of its own chain only (never mixed with
+ * other keys). Each chain has a default wallet — the one that trades there —
+ * marked in `default_for` ("evm,solana,near", migration 0010). Without that
+ * column the old single active wallet (`is_active`) decides.
+ * ------------------------------------------------------------------------ */
+
+export type WalletChain = 'evm' | 'solana' | 'near';
+export const WALLET_CHAINS: WalletChain[] = ['evm', 'solana', 'near'];
+
+export interface WalletRow {
+  id: string;
+  user_id?: string;
+  label: string;
+  source: string;
+  evm_address: string | null;
+  evm_encrypted_key?: string | null;
+  solana_address: string | null;
+  solana_encrypted_key?: string | null;
+  near_address?: string | null;
+  near_encrypted_key?: string | null;
+  is_active: number;
+  default_for?: string | null;
+  created_at?: string;
+}
+
+const WALLET_SLOT = {
+  evm: { address: 'evm_address', key: 'evm_encrypted_key' },
+  solana: { address: 'solana_address', key: 'solana_encrypted_key' },
+  near: { address: 'near_address', key: 'near_encrypted_key' },
+} as const;
+
+export function walletAddressOn(row: WalletRow, chain: WalletChain): string | null {
+  return row[WALLET_SLOT[chain].address] ?? null;
+}
+
+/** The chains a wallet holds keys for. */
+export function walletChains(row: WalletRow): WalletChain[] {
+  return WALLET_CHAINS.filter((chain) => walletAddressOn(row, chain));
+}
+
+/** Every wallet of a user, oldest first (empty before migration 0003). */
+export async function loadWalletRows(userId: string, env: TradingEnv): Promise<WalletRow[]> {
+  if (!env.DB) return [];
   try {
-    row = await firstWithNearFallback<Row>(
-      env,
-      `SELECT evm_address, solana_address, near_address FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`,
-      `SELECT evm_address, solana_address FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`,
-      [userId],
-    );
+    return (await env.DB.prepare(`SELECT * FROM wallet_accounts WHERE user_id = ?1 ORDER BY created_at ASC, id ASC`).bind(userId).all<WalletRow>()).results ?? [];
   } catch {
-    // The multi-wallet migration may not be applied yet; fall back to the legacy single-wallet table.
+    return [];
   }
-  if (!row) {
-    row = await firstWithNearFallback<Row>(
-      env,
-      `SELECT evm_address, solana_address, near_address FROM user_wallets WHERE user_id = ?1`,
-      `SELECT evm_address, solana_address FROM user_wallets WHERE user_id = ?1`,
-      [userId],
-    );
-  }
-  if (!row) return null;
-  return { evmAddress: row.evm_address, solanaAddress: row.solana_address, nearAddress: row.near_address ?? null };
+}
+
+/** The wallet that trades on a chain: marked default, else the active wallet, else the oldest one holding that chain. */
+export function defaultWalletFor<T extends WalletRow>(rows: T[], chain: WalletChain): T | null {
+  const holds = (row: T) => Boolean(walletAddressOn(row, chain));
+  return rows.find((row) => holds(row) && (row.default_for ?? '').split(',').includes(chain))
+    ?? rows.find((row) => holds(row) && row.is_active)
+    ?? rows.find(holds)
+    ?? null;
+}
+
+/** The wallet holding `address` on a chain (EVM compared case-insensitively). */
+export function walletWithAddress<T extends WalletRow>(rows: T[], chain: WalletChain, address: string): T | null {
+  const wanted = chain === 'solana' ? address : address.toLowerCase();
+  return rows.find((row) => {
+    const value = walletAddressOn(row, chain);
+    return value !== null && (chain === 'solana' ? value : value.toLowerCase()) === wanted;
+  }) ?? null;
 }
 
 /**
- * Return the user's NEAR account, generating and storing a key the first time.
+ * Make `walletId` the default for `chains` (only the chains it holds). Every
+ * other chain keeps its current default: defaults are written out explicitly,
+ * so moving one chain never silently moves another.
+ */
+export async function setDefaultWallet(userId: string, walletId: string, chains: WalletChain[], env: TradingEnv): Promise<WalletChain[]> {
+  if (!env.DB) throw new Error('DB binding required');
+  const rows = await loadWalletRows(userId, env);
+  const target = rows.find((row) => row.id === walletId);
+  if (!target) throw new Error('That wallet no longer exists.');
+  const moved = chains.filter((chain) => walletAddressOn(target, chain));
+  const owner = new Map<WalletChain, string>();
+  for (const chain of WALLET_CHAINS) {
+    const current = moved.includes(chain) ? target : defaultWalletFor(rows, chain);
+    if (current) owner.set(chain, current.id);
+  }
+  try {
+    for (const row of rows) {
+      const next = WALLET_CHAINS.filter((chain) => owner.get(chain) === row.id).join(',');
+      if ((row.default_for ?? '') !== next) {
+        await env.DB.prepare(`UPDATE wallet_accounts SET default_for = ?1 WHERE id = ?2 AND user_id = ?3`).bind(next || null, row.id, userId).run();
+      }
+    }
+  } catch (error) {
+    if (!/default_for/.test(String(error))) throw error;
+    // Before migration 0010 there is one active wallet for every chain.
+  }
+  await env.DB.prepare(`UPDATE wallet_accounts SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END WHERE user_id = ?2`).bind(walletId, userId).run();
+  return moved;
+}
+
+/** The user's trading addresses: each chain's default wallet (null when no wallet holds that chain). */
+export async function getCustodialWallet(userId: string, env: TradingEnv): Promise<CustodialWallet | null> {
+  if (!env.DB) return null;
+  const rows = await loadWalletRows(userId, env);
+  if (rows.length) {
+    const evm = defaultWalletFor(rows, 'evm');
+    const solana = defaultWalletFor(rows, 'solana');
+    const near = defaultWalletFor(rows, 'near');
+    if (!evm && !solana && !near) return null;
+    return {
+      evmAddress: evm?.evm_address ?? null,
+      solanaAddress: solana?.solana_address ?? null,
+      nearAddress: near?.near_address ?? null,
+      labels: { evm: evm?.label, solana: solana?.label, near: near?.label },
+    };
+  }
+  // Before migration 0003: the legacy single-wallet table.
+  type Row = { evm_address: string | null; solana_address: string | null; near_address?: string | null };
+  const row = await firstWithNearFallback<Row>(
+    env,
+    `SELECT evm_address, solana_address, near_address FROM user_wallets WHERE user_id = ?1`,
+    `SELECT evm_address, solana_address FROM user_wallets WHERE user_id = ?1`,
+    [userId],
+  );
+  if (!row) return null;
+  return { evmAddress: row.evm_address || null, solanaAddress: row.solana_address || null, nearAddress: row.near_address ?? null };
+}
+
+/**
+ * Return the user's NEAR account. A user whose generated wallet predates NEAR
+ * gets a NEAR key added to that generated wallet (never to an imported one).
  * The conditional UPDATE (`near_address IS NULL`) makes this safe under
  * concurrent calls: whichever key lands first wins and every caller returns
  * that stored address, so funds are never sent to an address whose key was
@@ -140,26 +255,29 @@ export async function getCustodialWallet(userId: string, env: TradingEnv): Promi
 export async function ensureNearWallet(userId: string, env: TradingEnv): Promise<string> {
   if (!env.DB) throw new Error('DB binding is required for NEAR wallets');
   if (!env.ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY secret is required for NEAR wallets');
-  const wallet = await getCustodialWallet(userId, env);
-  if (!wallet) throw new Error('Create a Hopr wallet first.');
-  if (wallet.nearAddress) return wallet.nearAddress;
+  const rows = await loadWalletRows(userId, env);
+  const existing = defaultWalletFor(rows, 'near');
+  if (existing?.near_address) return existing.near_address;
 
   const near = generateNearWallet();
   const encrypted = packEncryptedSecret(await encryptPrivateKey(near.privateKey, env.ENCRYPTION_KEY));
   try {
-    const account = await env.DB.prepare(
-      `SELECT id FROM wallet_accounts WHERE user_id = ?1 AND evm_address = ?2 AND solana_address = ?3 ORDER BY is_active DESC, created_at ASC LIMIT 1`
-    ).bind(userId, wallet.evmAddress, wallet.solanaAddress).first<{ id: string }>().catch(() => null);
-    if (account) {
+    if (rows.length) {
+      const host = rows.find((row) => row.source === 'generated' && !row.near_address && row.is_active)
+        ?? rows.find((row) => row.source === 'generated' && !row.near_address);
+      if (!host) throw new Error('No NEAR wallet yet. Create one with 📦 New wallet or import a NEAR key.');
       await env.DB.prepare(`UPDATE wallet_accounts SET near_address = ?1, near_encrypted_key = ?2 WHERE id = ?3 AND near_address IS NULL`)
-        .bind(near.address, encrypted, account.id).run();
+        .bind(near.address, encrypted, host.id).run();
       const stored = await env.DB.prepare(`SELECT near_address, near_encrypted_key FROM wallet_accounts WHERE id = ?1`)
-        .bind(account.id).first<{ near_address: string | null; near_encrypted_key: string | null }>();
+        .bind(host.id).first<{ near_address: string | null; near_encrypted_key: string | null }>();
       if (!stored?.near_address || !stored.near_encrypted_key) throw new Error('Could not store the NEAR wallet.');
       await env.DB.prepare(`UPDATE user_wallets SET near_address = ?1, near_encrypted_key = ?2 WHERE user_id = ?3 AND evm_address = ?4 AND near_address IS NULL`)
-        .bind(stored.near_address, stored.near_encrypted_key, userId, wallet.evmAddress).run();
+        .bind(stored.near_address, stored.near_encrypted_key, userId, host.evm_address ?? '').run().catch(() => undefined);
       return stored.near_address;
     }
+    const legacy = await getCustodialWallet(userId, env);
+    if (!legacy) throw new Error('Create a Hopr wallet first.');
+    if (legacy.nearAddress) return legacy.nearAddress;
     await env.DB.prepare(`UPDATE user_wallets SET near_address = ?1, near_encrypted_key = ?2 WHERE user_id = ?3 AND near_address IS NULL`)
       .bind(near.address, encrypted, userId).run();
     const stored = await env.DB.prepare(`SELECT near_address FROM user_wallets WHERE user_id = ?1`).bind(userId).first<{ near_address: string | null }>();
@@ -171,24 +289,20 @@ export async function ensureNearWallet(userId: string, env: TradingEnv): Promise
   }
 }
 
-/** The encrypted key for the user's NEAR account (the same wallet row getCustodialWallet reads). */
+/** The encrypted key for the NEAR account that signs: a given wallet (bundles), else the NEAR default. */
 async function getNearSigner(userId: string, env: TradingEnv, walletId?: string): Promise<{ accountId: string; encryptedKey: EncryptedSecret }> {
   if (!env.DB) throw new Error('DB binding required');
   type Row = { near_address: string | null; near_encrypted_key: string | null };
   let row: Row | null = null;
-  if (walletId) {
-    // A bundle trade signs with the wallet it was quoted for, not the active one.
-    row = await env.DB.prepare(`SELECT near_address, near_encrypted_key FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(walletId, userId).first<Row>();
-    if (!row?.near_address || !row.near_encrypted_key) throw new Error('That wallet has no NEAR account yet.');
-    return { accountId: row.near_address, encryptedKey: unpackEncryptedSecret(row.near_encrypted_key) };
-  }
   try {
-    row = await env.DB.prepare(
-      `SELECT near_address, near_encrypted_key FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
-    ).bind(userId).first<Row>().catch((error: unknown) => {
-      if (MISSING_NEAR_COLUMNS.test(String(error))) throw error;
-      return null; // multi-wallet table missing: use the legacy table
-    });
+    const rows = await loadWalletRows(userId, env);
+    if (walletId) {
+      // A bundle trade signs with the wallet it was quoted for, not the default one.
+      row = rows.find((item) => item.id === walletId) as Row | undefined ?? null;
+      if (!row?.near_address || !row.near_encrypted_key) throw new Error('That wallet has no NEAR account.');
+      return { accountId: row.near_address, encryptedKey: unpackEncryptedSecret(row.near_encrypted_key) };
+    }
+    row = defaultWalletFor(rows, 'near') as Row | null;
     if (!row?.near_encrypted_key) {
       row = await env.DB.prepare(`SELECT near_address, near_encrypted_key FROM user_wallets WHERE user_id = ?1`).bind(userId).first<Row>();
     }
@@ -196,7 +310,7 @@ async function getNearSigner(userId: string, env: TradingEnv, walletId?: string)
     if (MISSING_NEAR_COLUMNS.test(String(error))) throw new Error(NEAR_MIGRATION_REQUIRED);
     throw error;
   }
-  if (!row?.near_address || !row.near_encrypted_key) throw new Error('No NEAR wallet on file. Open /wallet to create one.');
+  if (!row?.near_address || !row.near_encrypted_key) throw new Error('No NEAR wallet on file. Open 💳 Wallets to create or import one.');
   return { accountId: row.near_address, encryptedKey: unpackEncryptedSecret(row.near_encrypted_key) };
 }
 
@@ -256,35 +370,40 @@ export async function createCustodialWallet(userId: string, env: TradingEnv): Pr
   return { evmAddress: wallet.evmAddress, solanaAddress: wallet.solanaAddress, nearAddress: nearStored ? near.address : null };
 }
 
+/**
+ * The encrypted EVM / Solana key that signs: a given wallet (bundles), the
+ * wallet holding `fromAddress` (a confirmed quote signs as exactly the wallet
+ * it was quoted for, even if the default changed since), else the default.
+ */
 async function getEncryptedKey(
   userId: string,
   chainType: 'EVM' | 'SVM',
   env: TradingEnv,
   walletId?: string,
+  fromAddress?: string,
 ): Promise<EncryptedSecret> {
   if (!env.DB) throw new Error('DB binding required');
-  let row: { evm_encrypted_key: string; solana_encrypted_key: string } | null = null;
-  if (walletId) {
-    // A bundle trade signs with the wallet it was quoted for, not the active one.
-    row = await env.DB.prepare(`SELECT evm_encrypted_key, solana_encrypted_key FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`)
-      .bind(walletId, userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
-    if (!row) throw new Error('That wallet no longer exists.');
-    return unpackEncryptedSecret(chainType === 'EVM' ? row.evm_encrypted_key : row.solana_encrypted_key);
+  const chain: WalletChain = chainType === 'EVM' ? 'evm' : 'solana';
+  const chainName = chainType === 'EVM' ? 'EVM' : 'Solana';
+  const rows = await loadWalletRows(userId, env);
+  if (rows.length) {
+    const row = walletId ? rows.find((item) => item.id === walletId) ?? null
+      : fromAddress ? walletWithAddress(rows, chain, fromAddress)
+        : defaultWalletFor(rows, chain);
+    if (!row) {
+      throw new Error(walletId || fromAddress
+        ? 'The wallet this quote was made for no longer exists. Request a new quote.'
+        : `No ${chainName} wallet yet. Create or import one in 💳 Wallets.`);
+    }
+    const packed = chain === 'evm' ? row.evm_encrypted_key : row.solana_encrypted_key;
+    if (!packed) throw new Error(`That wallet has no ${chainName} key.`);
+    return unpackEncryptedSecret(packed);
   }
-  try {
-    row = await env.DB.prepare(
-      `SELECT evm_encrypted_key, solana_encrypted_key FROM wallet_accounts WHERE user_id = ?1 AND evm_encrypted_key IS NOT NULL AND solana_encrypted_key IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1`
-    ).bind(userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
-  } catch {
-    // Fall through to the legacy table.
-  }
-  if (!row) {
-    row = await env.DB.prepare(
-      `SELECT evm_encrypted_key, solana_encrypted_key FROM user_wallets WHERE user_id = ?1`
-    ).bind(userId).first<{ evm_encrypted_key: string; solana_encrypted_key: string }>();
-  }
-  if (!row) throw new Error('No custodial wallet on file for this user');
-  const packed = chainType === 'EVM' ? row.evm_encrypted_key : row.solana_encrypted_key;
+  // Before migration 0003: the legacy single-wallet table.
+  const legacy = await env.DB.prepare(`SELECT evm_encrypted_key, solana_encrypted_key FROM user_wallets WHERE user_id = ?1`)
+    .bind(userId).first<{ evm_encrypted_key: string | null; solana_encrypted_key: string | null }>();
+  const packed = chainType === 'EVM' ? legacy?.evm_encrypted_key : legacy?.solana_encrypted_key;
+  if (!packed) throw new Error('No custodial wallet on file for this user');
   return unpackEncryptedSecret(packed);
 }
 
@@ -388,8 +507,8 @@ export async function prepareBuy(params: {
   const targetChain = getChainById(params.targetChainId);
   if (!fundingChain || !targetChain) throw new Error('Unsupported chain');
 
-  const fromAddress = fundingChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
-  const toAddress = targetChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const fromAddress = requireAddress(params.wallet, fundingChain.type as 'EVM' | 'SVM');
+  const toAddress = requireAddress(params.wallet, targetChain.type as 'EVM' | 'SVM');
   const arcNative = fundingChain.id === ARC_CHAIN_ID && params.fundingTokenAddress === 'native';
   const fundingTokenAddress = params.fundingTokenAddress === 'native'
     ? (arcNative ? ARC_NATIVE_USDC : nativeTokenAddress(fundingChain.key))
@@ -453,7 +572,7 @@ export async function prepareTokenSell(params: {
 }, env: TradingEnv): Promise<PendingTrade> {
   const chain = getChainById(params.chainId);
   if (!chain) throw new Error('Unsupported chain');
-  const owner = chain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const owner = requireAddress(params.wallet, chain.type as 'EVM' | 'SVM');
   const native = chain.id === ARC_CHAIN_ID ? ARC_NATIVE_USDC : nativeTokenAddress(chain.key);
   const quote = await getQuote({
     fromChain: String(chain.id), toChain: String(chain.id), fromToken: params.tokenAddress, toToken: native,
@@ -515,9 +634,9 @@ export async function prepareSell(params: {
   const fundingChain = getChainById(Number(original.funding_chain_id));
   if (!targetChain || !fundingChain) throw new Error('Unsupported chain on original trade');
 
-  const walletAddress = targetChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const walletAddress = requireAddress(params.wallet, targetChain.type as 'EVM' | 'SVM');
   // Proceeds land on the funding chain, so they need that chain's address (EVM ≠ Solana).
-  const proceedsAddress = fundingChain.type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress;
+  const proceedsAddress = requireAddress(params.wallet, fundingChain.type as 'EVM' | 'SVM');
 
   const req = buildSellQuoteRequest({
     targetChain: String(targetChain.id),
@@ -744,7 +863,7 @@ export async function prepareNearIntentsBuy(params: {
     }
     return { data, quote: quote as Required<Pick<typeof quote, 'depositAddress' | 'amountOut'>> & typeof quote };
   };
-  const addressOn = (type: 'EVM' | 'SVM' | 'NEAR') => (type === 'EVM' ? params.wallet.evmAddress : params.wallet.solanaAddress);
+  const addressOn = (type: 'EVM' | 'SVM' | 'NEAR') => requireAddress(params.wallet, type === 'EVM' ? 'EVM' : 'SVM');
 
   let direct = await intentsAsset(params.targetChainId, params.targetTokenAddress);
   let destination = direct ?? await intentsAsset(params.targetChainId, 'native');
@@ -758,7 +877,7 @@ export async function prepareNearIntentsBuy(params: {
     // NEAR Intents can't serve this chain right now (minimums, liquidity): land ETH on Base, then LI.FI crosses over.
     const base = await intentsAsset(BASE_CHAIN_ID, 'native');
     if (base) {
-      result = await quoteTo(base.assetId, params.wallet.evmAddress).catch(() => null);
+      result = await quoteTo(base.assetId, requireAddress(params.wallet, 'EVM')).catch(() => null);
       if (result) {
         direct = null;
         destination = base;
@@ -844,7 +963,7 @@ export async function prepareIncomingNearBuy(params: {
   const origin = await intentsAsset(chain.id, 'native');
   if (!origin) return prepareHubToNearBuy({ ...params, chainId: chain.id }, env);
   const accountId = await ensureNearWallet(params.userId, env);
-  const fromAddress = chain.type === 'SVM' ? params.wallet.solanaAddress : params.wallet.evmAddress;
+  const fromAddress = requireAddress(params.wallet, chain.type === 'SVM' ? 'SVM' : 'EVM');
   const reserve = chain.type === 'SVM' ? 5_000_000n : chain.id === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
   const amount = BigInt(params.amountUnits);
   if (amount <= 0n) throw new Error('Enter an amount greater than zero');
@@ -928,10 +1047,11 @@ async function prepareHubToNearBuy(params: {
   const amount = BigInt(params.amountUnits);
   if (amount <= 0n) throw new Error('Enter an amount greater than zero');
   const reserve = chain.id === ARC_CHAIN_ID ? 100_000_000_000_000_000n : 300_000_000_000_000n;
-  if (await readNativeBalance(chain.id, params.wallet.evmAddress) < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name} for the buy and gas.`);
+  const evmAddress = requireAddress(params.wallet, 'EVM');
+  if (await readNativeBalance(chain.id, evmAddress) < amount + reserve) throw new Error(`Not enough ${chain.nativeSymbol} on ${chain.name} for the buy and gas.`);
   const [metadata, hubBalanceBefore] = await Promise.all([
     getTokenMetadata(params.tokenAddress, nearRpcOptions(env)),
-    readNativeBalance(BASE_CHAIN_ID, params.wallet.evmAddress).catch(() => 0n),
+    readNativeBalance(BASE_CHAIN_ID, evmAddress).catch(() => 0n),
     ensureNearWallet(params.userId, env),
   ]);
   const trade = await prepareBuy({
@@ -1037,7 +1157,7 @@ export async function continueNearFundedBuy(userId: string, id: string, wallet: 
 
   const hubChainId = continuation.hubChainId ?? continuation.targetChainId;
   const chain = getChainById(hubChainId)!;
-  const owner = chain.type === 'EVM' ? wallet.evmAddress : wallet.solanaAddress;
+  const owner = requireAddress(wallet, chain.type === 'EVM' ? 'EVM' : 'SVM');
   const delivered = BigInt(data.swapDetails?.amountOut ?? '0');
   const reserve = chain.type === 'SVM' ? 5_000_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
   const balance = await balanceOf(hubChainId, owner).catch(() => delivered);
@@ -1078,7 +1198,7 @@ async function continueHubToNear(userId: string, continuation: Continuation, wal
   }
   if (data?.status !== 'DONE') return { status: 'pending', detail: (data?.substatus ?? data?.status ?? 'PENDING').replace(/_/g, ' ').toLowerCase() };
   const hub = getChainById(hubChainId)!;
-  const balance = await balanceOf(hubChainId, wallet.evmAddress);
+  const balance = await balanceOf(hubChainId, requireAddress(wallet, 'EVM'));
   const arrived = BigInt(data.receiving?.amount ?? '0') || balance - BigInt(continuation.hubBalanceBefore ?? '0');
   const reserve = 300_000_000_000_000n;
   const spend = arrived < balance - reserve ? arrived : balance - reserve;
@@ -1134,17 +1254,13 @@ async function confirmIncomingIntents(userId: string, trade: PendingTrade, rpcUr
   const intents = trade.intents;
   const chain = getChainById(trade.fundingChainId);
   if (!intents || !chain || !trade.fromAddress) throw new Error('This quote is incomplete. Request a new quote.');
-  const wallet = await getCustodialWallet(userId, env);
-  const owner = chain.type === 'SVM' ? wallet?.solanaAddress : wallet?.evmAddress;
-  const sameOwner = chain.type === 'SVM' ? owner === trade.fromAddress : owner?.toLowerCase() === trade.fromAddress.toLowerCase();
-  if (!sameOwner) throw new Error('Your active wallet changed since this quote. Request a new quote.');
   if (await ensureNearWallet(userId, env) !== intents.accountId) throw new Error('Your NEAR wallet changed since this quote. Request a new quote.');
 
   const result = await executeNativeDeposit({
     chainType: chain.type,
     chainId: chain.id,
     rpcUrl: chain.type === 'SVM' ? await rpcUrls.solana() : await rpcUrls.evm(chain.id),
-    encryptedKey: await getEncryptedKey(userId, chain.type, env),
+    encryptedKey: await getEncryptedKey(userId, chain.type, env, undefined, trade.fromAddress),
     encryptionSecret: env.ENCRYPTION_KEY!,
     fromAddress: trade.fromAddress,
     depositAddress: intents.depositAddress,
@@ -1227,7 +1343,7 @@ export async function confirmTrade(
   if (trade.fromChainType === 'NEAR') throw new Error('Unsupported NEAR quote. Request a new quote.');
 
   const [encryptedKey, evmRpcUrl, solanaRpcUrl] = await Promise.all([
-    getEncryptedKey(userId, trade.fromChainType, env, trade.walletId),
+    getEncryptedKey(userId, trade.fromChainType, env, trade.walletId, trade.fromAddress),
     trade.fromChainType === 'EVM' ? rpcUrls.evm(SUPPORTED_CHAINS.find((c) => c.key === trade.fromChainKey)!.id) : undefined,
     trade.fromChainType === 'SVM' ? rpcUrls.solana() : undefined,
   ]);

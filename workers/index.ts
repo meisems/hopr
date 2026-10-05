@@ -18,6 +18,16 @@
  */
 import {
   getCustodialWallet,
+  defaultWalletFor,
+  loadWalletRows,
+  setDefaultWallet,
+  walletAddressOn,
+  walletChains,
+  walletWithAddress,
+  WALLET_CHAINS,
+  type CustodialWallet,
+  type WalletChain,
+  type WalletRow,
   createCustodialWallet,
   ensureNearWallet,
   nearRpcOptions,
@@ -67,6 +77,7 @@ import {
   telegramIdentity,
 } from './referrals';
 import {
+  findNearAccountsForKey,
   formatNearAmount,
   formatUnits,
   HOPR_FEE_BPS,
@@ -74,6 +85,7 @@ import {
   getNearBalance,
   getTokenMetadata,
   isNearAccountId,
+  isValidNearAccountId,
   NATIVE_NEAR,
   NEAR_CHAIN,
   NEAR_CHAIN_ID,
@@ -81,10 +93,11 @@ import {
   parseUnits,
   resolveNearToken,
   verifyFullAccessKey,
+  viewAccount,
   viewFunction,
   type NearBalance,
 } from '../src/services/nearService';
-import { generateNearWallet, importNearKey } from '../src/services/nearSigner';
+import { generateNearWallet, importNearKey, type NearKeyPair } from '../src/services/nearSigner';
 
 export interface Env extends RpcEnv {
   DB?: D1Database;
@@ -666,10 +679,13 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       || data === 'orders' || data === 'order:place' || data === 'order:discard' || data === 'order:price'
       || ['ms:start', 'ms:to:mine', 'ms:to:paste', 'ms:custom', 'ms:amounts', 'ms:send', 'ms:cancel'].includes(data) || /^ms:chain:\d+$/.test(data) || /^ms:amt:\d{1,9}(\.\d{1,9})?$/.test(data)
       || data === 'track' || data === 'track:add' || /^track:(v|alerts|copy|del):[0-9a-f]{10}$/.test(data)
+      || /^import:(evm|solana|near)$/.test(data) || /^import:near:pick:[0-7]$/.test(data)
+      || (data.startsWith('track:a:') && walletKind(data.slice('track:a:'.length)) !== null)
       || /^track:cm:[0-9a-f]{10}:(off|buy|buysell)$/.test(data) || /^track:(ca|ok):[0-9a-f]{10}:(buy|buysell):(10|25|50|100|250)$/.test(data)
       || /^order:new:(limit|tp|sl)$/.test(data) || /^order:at:(limit|tp|sl):\d{1,4}$/.test(data) || /^order:size:(25|50|100)$/.test(data) || /^order:cancel:[0-9a-f]{10}$/.test(data)
       || /^bundle:(buy|sell)(:\d{1,6}(\.\d{1,6})?)?$/.test(data) || /^bundle:confirm:[0-9a-f]{8}$/.test(data) || data === 'bundle:cancel'
       || /^wallet:use:[\w:-]{1,52}$/.test(data)
+      || /^wallet:(v|ren|exp|del|delok):[\w:-]{1,52}$/.test(data) || /^wallet:def:[esna]:[\w:-]{1,50}$/.test(data)
       || /^token:refresh:(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(data)
       || (data.startsWith('token:refresh:') && isNearAccountId(data.slice('token:refresh:'.length)))
       || /^token:pay:\d+$/.test(data)
@@ -689,7 +705,7 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
       callback_query_id: callback.id,
       ...(telegramCallbackToast(data) ? { text: telegramCallbackToast(data) } : {}),
     });
-    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle') || data.startsWith('order') || data.startsWith('track') || data.startsWith('ms:')) && chatType !== 'private') {
+    if ((data.startsWith('lp:') || data.startsWith('trade:') || data.startsWith('token:pay:') || data === 'wallet' || data.startsWith('wallet:') || data === 'settings' || data.startsWith('settings:') || data.startsWith('positions') || data.startsWith('referral') || data.startsWith('bundle') || data.startsWith('order') || data.startsWith('track') || data.startsWith('import') || data.startsWith('ms:')) && chatType !== 'private') {
       await acknowledged;
       await sendTelegramMessage(chatId, '🔒 For privacy, check wallet balances and manage personal settings in a private chat with this bot.', env);
       return;
@@ -705,7 +721,7 @@ async function processTelegramUpdate(update: TelegramUpdate, env: Env): Promise<
   const typing = telegramMessageNeedsTyping(text, isBuyXReply)
     ? telegramApiRequest('sendChatAction', env, { chat_id: chatId, action: 'typing' })
     : undefined;
-  await Promise.all([typing, handleTelegramMessage(chatId, message?.chat?.type, text, env, replyTo, message?.from?.first_name)]);
+  await Promise.all([typing, handleTelegramMessage(chatId, message?.chat?.type, text, env, replyTo, message?.from?.first_name, message?.message_id)]);
 }
 
 /** Short toast shown on the button tap itself, so every tap gets instant feedback. */
@@ -750,7 +766,7 @@ const TELEGRAM_HELP_TEXT = tgMessage(
     '/wallet — balances for your active wallet',
     '/wallet &lt;address&gt; — one-off balance check',
     `💳 Wallets — create, switch, rename, import or delete up to ${MAX_WALLETS_PER_USER} wallets (W1, W2 …)`,
-    '/importkey &lt;evm|solana|near&gt; &lt;key&gt; — use your own key (DM only)',
+    '📥 Import — choose EVM, Solana or NEAR, then paste the key (DM only; the message is deleted)',
     '/exportkeys — reveal your private keys (DM only)',
     '📤 /multisend — send a coin from one wallet to many (your W2, W3 … or pasted addresses)',
   ]),
@@ -773,7 +789,16 @@ async function handleTelegramMessage(
   env: Env,
   replyToMessage?: TelegramMessage['reply_to_message'],
   firstName?: string,
+  messageId?: number,
 ): Promise<void> {
+  if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_IMPORT_PROMPT)) {
+    const chain = importChainFromPrompt(replyToMessage.text);
+    if (chain && chatType === 'private') {
+      await clearPendingPrompt(chatId, env);
+      await importFromPrompt(chatId, chain, text, env, messageId);
+      return;
+    }
+  }
   if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_MS_ADDRESS_PROMPT)) {
     await setMultiSendRecipients(chatId, text, env);
     return;
@@ -783,6 +808,7 @@ async function handleTelegramMessage(
     return;
   }
   if (replyToMessage?.from?.is_bot && replyToMessage.text?.startsWith(TELEGRAM_TRACK_PROMPT)) {
+    await clearPendingPrompt(chatId, env);
     await addTelegramTrackedWallet(chatId, text, env);
     return;
   }
@@ -802,6 +828,18 @@ async function handleTelegramMessage(
     }
     await handleTelegramTradeAction(chatId, `trade:buy:${amount}`, env);
     return;
+  }
+  // The bot just asked for a wallet or a key: a plain message (no "Reply") answers it too.
+  if (!replyToMessage && text && !text.startsWith('/') && chatType === 'private') {
+    const pending = await takePendingPrompt(chatId, env);
+    if (pending?.kind === 'track') {
+      await addTelegramTrackedWallet(chatId, text, env);
+      return;
+    }
+    if (pending?.kind === 'import') {
+      await importFromPrompt(chatId, pending.chain, text, env, messageId);
+      return;
+    }
   }
 
   const [rawCommand = '', ...args] = text.split(/\s+/);
@@ -945,6 +983,8 @@ async function handleTelegramMessage(
       await sendTelegramMessage(chatId, '🔒 For your safety, only send private keys in a private chat with this bot — never in a group.', env);
       return;
     }
+    // The message holds a private key: remove it from the chat before anything else.
+    if (args.length > 1) await deleteTelegramMessage(chatId, messageId, env);
     await handleTelegramImportKey(chatId, args, env);
     return;
   }
@@ -1002,7 +1042,7 @@ async function handleTelegramMessage(
   );
 }
 
-type TelegramHomeWallet = { evmAddress: string; solanaAddress: string; nearAddress?: string | null } | null;
+type TelegramHomeWallet = CustodialWallet | null;
 
 /**
  * The user's trading wallet for the home screen; creates the NEAR account for pre-NEAR wallets.
@@ -1042,10 +1082,10 @@ function telegramHomeText(heading: string, wallet: TelegramHomeWallet, portfolio
   // Tap-to-copy deposit addresses, one per line.
   const addresses = wallet
     ? [
-      `EVM   <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
-      `SOL   <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
-      ...(wallet.nearAddress ? [`NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`] : []),
-    ].join('\n')
+      wallet.evmAddress && `EVM   <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
+      wallet.solanaAddress && `SOL   <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
+      wallet.nearAddress && `NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`,
+    ].filter(Boolean).join('\n') || null
     : null;
   return tgMessage(
     `⚡ <b>${heading}</b>`,
@@ -1184,8 +1224,8 @@ async function showTelegramPositions(chatId: number, env: Env, panelId?: number,
   }
   if (!portfolio.holdings.length) {
     blocks.push(tgSection('📭', 'Nothing here yet', [
-      `EVM  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
-      `SOL  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
+      ...(wallet.evmAddress ? [`EVM  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`] : []),
+      ...(wallet.solanaAddress ? [`SOL  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`] : []),
       ...(wallet.nearAddress ? [`NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`] : []),
       'Fund any address, then paste a token to buy it',
     ]));
@@ -1216,11 +1256,13 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
   ]);
   const token = await response.json() as Record<string, unknown>;
   if (!response.ok) {
+    // A wallet address is not a token: offer to track it instead.
+    const trackable = walletKind(address) !== null && `track:a:${address}`.length <= 64;
     await sendTelegramPanel(chatId, panelId, tgMessage(
       tgTitle('🔍', 'No market found'),
       `No indexed token market was found for <code>${escapeTelegramHtml(address)}</code>.`,
-      tgFootnote('Check the address and chain, then try again.'),
-    ), env);
+      tgFootnote(trackable ? 'If this is a wallet, tap 👀 Track to get alerts when it buys or sells.' : 'Check the address and chain, then try again.'),
+    ), env, trackable ? { inline_keyboard: [[{ text: '👀 Track this wallet', callback_data: `track:a:${address}` }, { text: '◀️ Menu', callback_data: 'menu' }]] } : undefined);
     return;
   }
 
@@ -1452,109 +1494,224 @@ const TELEGRAM_PERSISTENCE_REQUIRED = tgMessage(
   tgFootnote('For a one-time read-only balance check, use /wallet &lt;public-address&gt;.'),
 );
 
-async function showTelegramWallet(chatId: number, env: Env, panelId?: number): Promise<void> {
-  let tradingWallet: { evmAddress: string; solanaAddress: string; nearAddress?: string | null } | null = null;
-  try {
-    tradingWallet = await getCustodialWallet(String(chatId), env);
-  } catch {
-    tradingWallet = null;
+/** All of a user's wallets, oldest first (empty before migration 0003). */
+async function listWalletAccounts(userId: string, env: Env): Promise<WalletAccountRow[]> {
+  return loadWalletRows(userId, env) as Promise<WalletAccountRow[]>;
+}
+
+const WALLET_CHAIN_META: Record<WalletChain, { icon: string; name: string; code: 'e' | 's' | 'n' }> = {
+  evm: { icon: '🔷', name: 'EVM', code: 'e' },
+  solana: { icon: '◎', name: 'Solana', code: 's' },
+  near: { icon: 'Ⓝ', name: 'NEAR', code: 'n' },
+};
+const WALLET_CHAIN_BY_CODE: Record<string, WalletChain> = { e: 'evm', s: 'solana', n: 'near' };
+
+/** The wallet chain a chain id trades on (every EVM network shares one key). */
+function walletChainOf(chainId: number | undefined): WalletChain {
+  return chainId === NEAR_CHAIN_ID ? 'near' : chainId === 1151111081099710 ? 'solana' : 'evm';
+}
+
+/** The default wallet for a chain id (see defaultWalletFor). */
+function walletForChain(accounts: WalletAccountRow[], chainId: number | undefined): WalletAccountRow | null {
+  return defaultWalletFor(accounts, walletChainOf(chainId));
+}
+
+/** The trading addresses of one wallet row (null where it holds no key). */
+function walletAddresses(row: WalletAccountRow): CustodialWallet {
+  return { evmAddress: row.evm_address ?? null, solanaAddress: row.solana_address ?? null, nearAddress: row.near_address ?? null };
+}
+
+function shortWalletAddress(address: string): string {
+  return address.length > 22 ? shortenTelegramAddress(address) : address;
+}
+
+/** "W1 · 🔷◎Ⓝ" — a wallet's name with the chains it holds. */
+function walletButtonText(row: WalletAccountRow, defaults: Set<WalletChain>): string {
+  const chains = walletChains(row).map((chain) => WALLET_CHAIN_META[chain].icon).join('');
+  return `${defaults.size ? '✅ ' : ''}${row.label.slice(0, 14)} · ${chains}`;
+}
+
+/** Which chains each wallet is the default for. */
+function walletDefaults(accounts: WalletAccountRow[]): Map<string, Set<WalletChain>> {
+  const map = new Map<string, Set<WalletChain>>();
+  for (const chain of WALLET_CHAINS) {
+    const row = defaultWalletFor(accounts, chain);
+    if (!row) continue;
+    if (!map.has(row.id)) map.set(row.id, new Set());
+    map.get(row.id)!.add(chain);
   }
-  if (tradingWallet) {
-    // Wallets created before NEAR support get their NEAR account on first view.
-    const [nearAddress, accounts] = await Promise.all([
-      tradingWallet.nearAddress ?? ensureNearWallet(String(chatId), env).catch(() => null),
-      listWalletAccounts(String(chatId), env),
-    ]);
-    const active = accounts.find((account) => account.evm_address?.toLowerCase() === tradingWallet!.evmAddress.toLowerCase());
-    const label = active ? `Wallet ${escapeTelegramHtml(active.label)} · active${accounts.length > 1 ? ` (${accounts.length} wallets)` : ''}` : 'Trading wallet';
-    await showTelegramWalletBalances(chatId, tradingWallet.evmAddress, tradingWallet.solanaAddress, env, { label, panelId, nearAddress: nearAddress ?? undefined, custodial: true });
+  return map;
+}
+
+function telegramWalletActionKeyboard(): TelegramKeyboard {
+  return {
+    inline_keyboard: [
+      [{ text: '🗂 Manage wallets', callback_data: 'wallet:list' }, { text: '🔄 Refresh', callback_data: 'wallet' }],
+      [{ text: '📦 New wallet', callback_data: 'wallet:generate' }, { text: '📥 Import wallet', callback_data: 'wallet:import' }],
+      [{ text: '📤 Multi-send', callback_data: 'ms:start' }, { text: '💼 Portfolio', callback_data: 'positions' }, { text: '◀️ Menu', callback_data: 'menu' }],
+    ],
+  };
+}
+
+/** 💳 Wallets: the default wallet of each chain with its balances. */
+async function showTelegramWallet(chatId: number, env: Env, panelId?: number): Promise<void> {
+  const userId = String(chatId);
+  let wallet: CustodialWallet | null = null;
+  try {
+    wallet = await getCustodialWallet(userId, env);
+  } catch {
+    wallet = null;
+  }
+  if (!wallet) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(
+      tgTitle('💳', 'No wallet yet', `Create a wallet or import one you own — up to ${MAX_WALLETS_PER_USER} wallets.`),
+      tgCard([
+        '📦 <b>Create</b> — a new encrypted EVM + Solana + NEAR wallet',
+        '📥 <b>Import</b> — bring an EVM, Solana or NEAR key you already own',
+      ]),
+      tgFootnote('Never send a seed phrase to anyone, including this bot.'),
+    ), env, telegramWalletSetupKeyboard());
     return;
   }
-
-  await sendTelegramPanel(chatId, panelId, tgMessage(
-    tgTitle('💳', 'No wallet yet', `Create a wallet or import one you own — up to ${MAX_WALLETS_PER_USER} wallets.`),
-    tgCard([
-      '📦 <b>Create</b> — a new encrypted EVM + Solana + NEAR wallet',
-      '📥 <b>Import</b> — bring a private key you already own',
-    ]),
-    tgFootnote('Never send a seed phrase to anyone, including this bot.'),
-  ), env, telegramWalletSetupKeyboard());
+  // A generated wallet from before NEAR support gets its NEAR account on first view.
+  const [nearAddress, accounts] = await Promise.all([
+    wallet.nearAddress ? Promise.resolve(wallet.nearAddress) : ensureNearWallet(userId, env).catch(() => null),
+    listWalletAccounts(userId, env),
+  ]);
+  const near = nearAddress ? defaultWalletFor(accounts, 'near') : null;
+  await showTelegramWalletBalances(chatId, wallet.evmAddress ?? undefined, wallet.solanaAddress ?? undefined, env, {
+    label: `Wallets · ${accounts.length || 1} of ${MAX_WALLETS_PER_USER}`,
+    panelId,
+    nearAddress: nearAddress ?? undefined,
+    custodial: true,
+    walletLabels: { evm: wallet.labels?.evm, solana: wallet.labels?.solana, near: near?.label ?? wallet.labels?.near },
+  });
 }
 
-/** All of a user's wallets, active first (empty before migration 0003). */
-async function listWalletAccounts(userId: string, env: Env): Promise<WalletAccountRow[]> {
-  if (!env.DB) return [];
-  return env.DB.prepare(`SELECT * FROM wallet_accounts WHERE user_id = ?1 ORDER BY is_active DESC, created_at ASC`).bind(userId)
-    .all<WalletAccountRow>().then((rows) => rows.results ?? []).catch(() => []);
-}
-
-/** A wallet can trade once it has both an EVM and a Solana key (NEAR is added on demand). */
-const canTrade = (account: WalletAccountRow) => Boolean(account.evm_address && account.solana_address);
-
-/** 🔁 Switch wallet: every wallet with its addresses; tap one to make it the trading wallet. */
+/** 🗂 Manage wallets: every wallet grouped by chain; ✅ marks each chain's default. */
 async function showTelegramWalletList(chatId: number, env: Env, panelId?: number, notice?: string): Promise<void> {
   const accounts = await listWalletAccounts(String(chatId), env);
   if (!accounts.length) return showTelegramWallet(chatId, env, panelId);
-  const activeId = accounts.find((account) => account.is_active && canTrade(account))?.id ?? accounts.find(canTrade)?.id;
-  const lines = accounts.map((account) => {
-    const mark = account.id === activeId ? '✅' : canTrade(account) ? '▫️' : '⛔';
-    const parts = [
-      account.evm_address && `EVM ${shortenTelegramAddress(account.evm_address)}`,
-      account.solana_address && `SOL ${shortenTelegramAddress(account.solana_address)}`,
-      account.near_address && `NEAR ${account.near_address.length > 20 ? shortenTelegramAddress(account.near_address) : account.near_address}`,
-    ].filter(Boolean).join(' · ');
-    return `${mark} <b>${escapeTelegramHtml(account.label)}</b>${account.source === 'imported' ? ' <i>imported</i>' : ''}\n   <code>${escapeTelegramHtml(parts)}</code>`;
+  const defaults = walletDefaults(accounts);
+  const sections = WALLET_CHAINS.map((chain) => {
+    const holders = accounts.filter((row) => walletAddressOn(row, chain));
+    const meta = WALLET_CHAIN_META[chain];
+    if (!holders.length) return `${meta.icon} <b>${meta.name}</b>\n└ <i>none — 📥 import or 📦 create one</i>`;
+    return `${meta.icon} <b>${meta.name}</b>\n${tgCard(holders.map((row) => {
+      const isDefault = defaults.get(row.id)?.has(chain);
+      return `${isDefault ? '✅' : '▫️'} <b>${escapeTelegramHtml(row.label)}</b>  <code>${escapeTelegramHtml(shortWalletAddress(walletAddressOn(row, chain)!))}</code>${row.source === 'imported' ? '  <i>imported</i>' : ''}`;
+    }))}`;
   });
-  const buttons = accounts.filter((account) => canTrade(account) && `wallet:use:${account.id}`.length <= 64).map((account) => ({
-    text: `${account.id === activeId ? '✅ ' : ''}${account.label.slice(0, 14)}`,
-    callback_data: `wallet:use:${account.id}`,
-  }));
+  const buttons = accounts.filter((row) => `wallet:v:${row.id}`.length <= 64)
+    .map((row) => ({ text: walletButtonText(row, defaults.get(row.id) ?? new Set()), callback_data: `wallet:v:${row.id}` }));
   const rows: TelegramButton[][] = [];
-  for (let index = 0; index < buttons.length; index += 3) rows.push(buttons.slice(index, index + 3));
+  for (let index = 0; index < buttons.length; index += 2) rows.push(buttons.slice(index, index + 2));
   await sendTelegramPanel(chatId, panelId, tgMessage(
-    tgTitle('🔁', 'Switch wallet', `${accounts.length} of ${MAX_WALLETS_PER_USER} wallets · trades use the ✅ wallet`),
+    tgTitle('🗂', 'Your wallets', `${accounts.length} of ${MAX_WALLETS_PER_USER} · ✅ = the wallet that trades on that chain`),
     notice ? `<b>${notice}</b>` : null,
-    lines.join('\n'),
-    tgFootnote('Tap a wallet to make it active. ⛔ = single-chain key, kept for export only.'),
+    sections.join('\n\n'),
+    tgFootnote('Tap a wallet to make it the default, rename, export or delete it. Imported keys stay their own wallet.'),
   ), env, {
     inline_keyboard: [
       ...rows,
-      [{ text: '✏️ Rename active', callback_data: 'wallet:rename' }, { text: '📦 New wallet', callback_data: 'wallet:generate' }],
-      [{ text: '📥 Import', callback_data: 'wallet:import' }, { text: '💳 Wallet', callback_data: 'wallet' }, { text: '◀️ Menu', callback_data: 'menu' }],
+      [{ text: '📦 New wallet', callback_data: 'wallet:generate' }, { text: '📥 Import', callback_data: 'wallet:import' }],
+      [{ text: '💳 Balances', callback_data: 'wallet' }, { text: '◀️ Menu', callback_data: 'menu' }],
     ],
   });
 }
 
-async function useTelegramWallet(chatId: number, walletId: string, env: Env, panelId?: number): Promise<void> {
-  const userId = String(chatId);
-  const target = (await listWalletAccounts(userId, env)).find((account) => account.id === walletId);
-  if (!target || !canTrade(target) || !env.DB) return showTelegramWalletList(chatId, env, panelId, 'That wallet is not available.');
-  await env.DB.prepare(`UPDATE wallet_accounts SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END WHERE user_id = ?2`).bind(walletId, userId).run();
-  return showTelegramWalletList(chatId, env, panelId, `✅ ${escapeTelegramHtml(target.label)} is now your trading wallet.`);
+/** One wallet: its addresses, which chains it is default for, and its actions. */
+async function showTelegramWalletDetail(chatId: number, walletId: string, env: Env, panelId?: number, notice?: string): Promise<void> {
+  const accounts = await listWalletAccounts(String(chatId), env);
+  const row = accounts.find((item) => item.id === walletId);
+  if (!row) return showTelegramWalletList(chatId, env, panelId, 'That wallet no longer exists.');
+  const defaults = walletDefaults(accounts).get(row.id) ?? new Set<WalletChain>();
+  const chains = walletChains(row);
+  const lines = chains.map((chain) => {
+    const meta = WALLET_CHAIN_META[chain];
+    return `${meta.icon} <b>${meta.name}</b>${defaults.has(chain) ? '  ✅ default' : ''}\n<code>${escapeTelegramHtml(walletAddressOn(row, chain)!)}</code>`;
+  });
+  const missing = chains.filter((chain) => !defaults.has(chain));
+  const useButtons: TelegramButton[] = missing.map((chain) => ({ text: `✅ Use for ${WALLET_CHAIN_META[chain].name}`, callback_data: `wallet:def:${WALLET_CHAIN_META[chain].code}:${row.id}` }));
+  if (missing.length > 1) useButtons.unshift({ text: '✅ Use for all its chains', callback_data: `wallet:def:a:${row.id}` });
+  const useRows: TelegramButton[][] = [];
+  for (let index = 0; index < useButtons.length; index += 2) useRows.push(useButtons.slice(index, index + 2));
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('💳', `${escapeTelegramHtml(row.label)}`, `${row.source === 'imported' ? 'Imported' : 'Created in Hopr'} · ${chains.map((chain) => WALLET_CHAIN_META[chain].name).join(' + ')}`),
+    notice ? `<b>${notice}</b>` : null,
+    lines.join('\n\n'),
+    tgFootnote(missing.length ? 'Make it the default to trade with it on that chain.' : 'This wallet trades on every chain it holds.'),
+  ), env, {
+    inline_keyboard: [
+      ...useRows,
+      [{ text: '✏️ Rename', callback_data: `wallet:ren:${row.id}` }, { text: '🔑 Export keys', callback_data: `wallet:exp:${row.id}` }],
+      [{ text: '🗑 Delete', callback_data: `wallet:del:${row.id}` }, { text: '◀️ All wallets', callback_data: 'wallet:list' }],
+    ],
+  });
 }
 
-/** Deletes only the active wallet; the oldest remaining wallet becomes active. */
-async function deleteActiveTelegramWallet(chatId: number, env: Env, panelId?: number): Promise<void> {
+/** Make a wallet the default for one chain (or every chain it holds). */
+async function setTelegramDefaultWallet(chatId: number, walletId: string, code: string, env: Env, panelId?: number): Promise<void> {
+  const userId = String(chatId);
+  const row = (await listWalletAccounts(userId, env)).find((item) => item.id === walletId);
+  if (!row || !env.DB) return showTelegramWalletList(chatId, env, panelId, 'That wallet no longer exists.');
+  const chains = code === 'a' ? walletChains(row) : [WALLET_CHAIN_BY_CODE[code]].filter((chain): chain is WalletChain => Boolean(chain));
+  const moved = await setDefaultWallet(userId, walletId, chains, env);
+  void getCustodialWallet(userId, env).then((wallet) => wallet && forgetPortfolio(wallet)).catch(() => undefined);
+  const names = moved.map((chain) => WALLET_CHAIN_META[chain].name).join(', ');
+  return showTelegramWalletDetail(chatId, walletId, env, panelId, moved.length ? `✅ ${escapeTelegramHtml(row.label)} now trades on ${names}.` : 'Nothing changed.');
+}
+
+/** Old "switch wallet" buttons: make that wallet the default for every chain it holds. */
+async function useTelegramWallet(chatId: number, walletId: string, env: Env, panelId?: number): Promise<void> {
+  return setTelegramDefaultWallet(chatId, walletId, 'a', env, panelId);
+}
+
+async function confirmTelegramWalletDelete(chatId: number, walletId: string, env: Env, panelId?: number): Promise<void> {
+  const row = (await listWalletAccounts(String(chatId), env)).find((item) => item.id === walletId);
+  if (!row) return showTelegramWalletList(chatId, env, panelId, 'That wallet no longer exists.');
+  return sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('⚠️', `Delete ${escapeTelegramHtml(row.label)} permanently?`),
+    tgCard([
+      ...walletChains(row).map((chain) => `${WALLET_CHAIN_META[chain].icon} <code>${escapeTelegramHtml(shortWalletAddress(walletAddressOn(row, chain)!))}</code>`),
+      'Only this wallet is deleted; your other wallets stay.',
+      'Without a backup of its keys, the wallet and its funds <b>cannot be recovered</b>.',
+    ]),
+  ), env, {
+    inline_keyboard: [
+      [{ text: '🔑 Export keys first', callback_data: `wallet:exp:${row.id}` }],
+      [{ text: '🗑 Delete permanently', callback_data: `wallet:delok:${row.id}` }],
+      [{ text: '◀️ Keep it', callback_data: `wallet:v:${row.id}` }],
+    ],
+  });
+}
+
+/** Delete one wallet; chains it was default for fall back to another wallet holding them. */
+async function deleteTelegramWallet(chatId: number, walletId: string, env: Env, panelId?: number): Promise<void> {
   const userId = String(chatId);
   if (!env.DB) return sendTelegramPanel(chatId, panelId, '🧩 Wallet storage is not configured.', env);
   const accounts = await listWalletAccounts(userId, env);
-  const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
-  if (active) {
-    await env.DB.prepare(`DELETE FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(active.id, userId).run();
-    await env.DB.prepare(`DELETE FROM user_wallets WHERE user_id = ?1 AND (evm_address = ?2 OR solana_address = ?3)`).bind(userId, active.evm_address ?? '', active.solana_address ?? '').run().catch(() => undefined);
-    await env.DB.prepare(`UPDATE wallet_accounts SET is_active = 1 WHERE id = (SELECT id FROM wallet_accounts WHERE user_id = ?1 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY created_at ASC LIMIT 1)`).bind(userId).run();
-  } else {
-    // Before migration 0003 the legacy table is the only store.
-    await env.DB.prepare('DELETE FROM user_wallets WHERE user_id = ?1').bind(userId).run().catch(() => undefined);
+  const row = accounts.find((item) => item.id === walletId);
+  if (!row) return showTelegramWalletList(chatId, env, panelId, 'That wallet no longer exists.');
+  await env.DB.prepare(`DELETE FROM wallet_accounts WHERE id = ?1 AND user_id = ?2`).bind(row.id, userId).run();
+  await env.DB.prepare(`DELETE FROM user_wallets WHERE user_id = ?1 AND (evm_address = ?2 OR solana_address = ?3)`).bind(userId, row.evm_address ?? '', row.solana_address ?? '').run().catch(() => undefined);
+  const remaining = accounts.filter((item) => item.id !== row.id);
+  if (row.is_active && remaining.length) {
+    await env.DB.prepare(`UPDATE wallet_accounts SET is_active = 1 WHERE id = ?1`).bind(remaining[0].id).run();
   }
-  return sendTelegramPanel(chatId, panelId, tgMessage(
-    tgTitle('✅', `Wallet ${active ? escapeTelegramHtml(active.label) + ' ' : ''}deleted permanently`),
-    'It cannot be recovered without a backup of its keys.',
-  ), env, telegramWalletActionKeyboard());
+  return showTelegramWalletList(chatId, env, panelId, `🗑 ${escapeTelegramHtml(row.label)} deleted.`);
+}
+
+/** Old "delete wallet" button: the wallet that trades on EVM (else any). */
+async function deleteActiveTelegramWallet(chatId: number, env: Env, panelId?: number): Promise<void> {
+  const accounts = await listWalletAccounts(String(chatId), env);
+  const row = defaultWalletFor(accounts, 'evm') ?? accounts[0];
+  if (!row) return showTelegramWallet(chatId, env, panelId);
+  return confirmTelegramWalletDelete(chatId, row.id, env, panelId);
 }
 
 /** NEAR block for the wallet card: spendable NEAR plus any NEP-141 tokens held. */
-async function telegramNearBalanceBlock(nearAddress: string, env: Env, custodial: boolean): Promise<string> {
+async function telegramNearBalanceBlock(nearAddress: string, env: Env, custodial: boolean, walletLabel?: string): Promise<string> {
   let detail: NearBalance | undefined;
   const reading = await tracked(env, `397:${nearAddress}`, async () => {
     detail = await getNearBalance(nearAddress, [], nearRpcOptions(env));
@@ -1563,7 +1720,7 @@ async function telegramNearBalanceBlock(nearAddress: string, env: Env, custodial
   const lines = [`${chainEmoji(NEAR_CHAIN_ID)} <b>NEAR</b>: ${telegramTrackedAmount(reading, 24, 'NEAR')}`];
   for (const token of detail?.tokens ?? []) lines.push(`🪙 <b>${escapeTelegramHtml(token.symbol)}</b>: ${escapeTelegramHtml(formatUnits(token.balance, token.decimals))}`);
   if (custodial && reading?.value === 0n && !reading.cachedAt) lines.push('<i>Fund this address with NEAR to cover trades and storage.</i>');
-  return `<b>NEAR</b> · <code>${escapeTelegramHtml(nearAddress)}</code>\n${tgCard(lines)}`;
+  return `Ⓝ <b>NEAR</b>${walletLabel ? ` · ✅ ${escapeTelegramHtml(walletLabel)}` : ''}\n<code>${escapeTelegramHtml(nearAddress)}</code>\n${tgCard(lines)}`;
 }
 
 function telegramTrackedAmount(reading: TrackedAmount | null, decimals: number, symbol: string): string {
@@ -1577,9 +1734,10 @@ async function showTelegramWalletBalances(
   evmAddress: string | undefined,
   solanaAddress: string | undefined,
   env: Env,
-  options: { label?: string; panelId?: number; nearAddress?: string; custodial?: boolean } = {},
+  options: { label?: string; panelId?: number; nearAddress?: string; custodial?: boolean; walletLabels?: { evm?: string; solana?: string; near?: string } } = {},
 ): Promise<void> {
-  const blocks: string[] = [tgTitle('💳', options.label ?? 'Wallet', 'Native balances across supported chains')];
+  const blocks: string[] = [tgTitle('💳', options.label ?? 'Wallet', options.walletLabels ? 'The ✅ default wallet of each chain · 🗂 Manage wallets to change' : 'Native balances across supported chains')];
+  const tag = (label: string | undefined) => (label ? ` · ✅ ${escapeTelegramHtml(label)}` : '');
   // Every chain (and the price list) is read at once: the card waits for the slowest RPC, not their sum.
   const pricesPromise = nativePricesUsd().catch(() => ({} as Record<string, number>));
   const evmChains = TELEGRAM_CHAINS.filter((chain) => chain.id !== 1151111081099710 && chain.id !== NEAR_CHAIN_ID);
@@ -1597,30 +1755,19 @@ async function showTelegramWalletBalances(
         const usd = reading && price ? ` · ≈$${(Number(reading.value) / 1e18 * price).toFixed(2)}` : '';
         return `${chainEmoji(chain.id)} <b>${escapeTelegramHtml(chain.name)}</b>: ${telegramTrackedAmount(reading, 18, chain.symbol)}${usd}`;
       });
-      return `<b>EVM</b> · <code>${escapeTelegramHtml(evmAddress)}</code>\n${tgCard(lines)}`;
+      return `🔷 <b>EVM</b>${tag(options.walletLabels?.evm)}\n<code>${escapeTelegramHtml(evmAddress)}</code>\n${tgCard(lines)}`;
     })() : null,
     solanaAddress ? (async () => {
       const reading = await tracked(env, `1151111081099710:${solanaAddress}`, () => readNativeBalance(1151111081099710, solanaAddress));
       const line = `${chainEmoji(1151111081099710)} <b>Solana</b>: ${telegramTrackedAmount(reading, 9, 'SOL')}`;
-      return `<b>Solana</b> · <code>${escapeTelegramHtml(solanaAddress)}</code>\n${tgCard([line])}`;
+      return `◎ <b>Solana</b>${tag(options.walletLabels?.solana)}\n<code>${escapeTelegramHtml(solanaAddress)}</code>\n${tgCard([line])}`;
     })() : null,
-    options.nearAddress ? telegramNearBalanceBlock(options.nearAddress, env, Boolean(options.custodial)) : null,
+    options.nearAddress ? telegramNearBalanceBlock(options.nearAddress, env, Boolean(options.custodial), options.walletLabels?.near) : null,
   ]);
   for (const block of [evmBlock, solanaBlock, nearBlock]) if (block) blocks.push(block);
 
   blocks.push(tgFootnote(`Checked ${telegramUtcTime()} · tap an address to copy it · cached balances carry their last-read time`));
   await sendTelegramPanel(chatId, options.panelId, tgMessage(...blocks), env, telegramWalletActionKeyboard());
-}
-
-function telegramWalletActionKeyboard(): TelegramKeyboard {
-  return {
-    inline_keyboard: [
-      [{ text: '🔄 Refresh', callback_data: 'wallet' }, { text: '🔁 Switch wallet', callback_data: 'wallet:list' }],
-      [{ text: '📦 New wallet', callback_data: 'wallet:generate' }, { text: '📥 Import wallet', callback_data: 'wallet:import' }],
-      [{ text: '📤 Multi-send', callback_data: 'ms:start' }, { text: '🔑 Export keys', callback_data: 'wallet:export' }],
-      [{ text: '🗑 Delete wallet', callback_data: 'wallet:delete' }, { text: '💼 Portfolio', callback_data: 'positions' }, { text: '◀️ Menu', callback_data: 'menu' }],
-    ],
-  };
 }
 
 function telegramSettingsKeyboard(profile: TelegramProfile): TelegramKeyboard {
@@ -1671,14 +1818,15 @@ function telegramExportWarningKeyboard(): TelegramKeyboard {
  * attempted ~60 seconds after sending — the caller should still tell the user
  * to move funds to self-custody if they export.
  */
-async function showTelegramWalletExport(chatId: number, env: Env): Promise<void> {
+async function showTelegramWalletExport(chatId: number, env: Env, walletId?: string): Promise<void> {
   const userId = String(chatId);
   if (!env.DB || !env.ENCRYPTION_KEY) {
     await sendTelegramMessage(chatId, '🧩 Exporting keys requires the bot owner to configure <code>DB</code> and <code>ENCRYPTION_KEY</code>.', env, telegramActionKeyboard());
     return;
   }
-  // The active wallet — the one trades sign with — not the legacy single-wallet row.
-  const active = (await listWalletAccounts(userId, env)).find((account) => account.evm_address && account.solana_address);
+  // The chosen wallet, else the one that trades on EVM; the legacy table only before migration 0003.
+  const accounts = await listWalletAccounts(userId, env);
+  const active = (walletId ? accounts.find((account) => account.id === walletId) : null) ?? defaultWalletFor(accounts, 'evm') ?? accounts[0];
   const row = active
     ? { evm_address: active.evm_address!, evm_encrypted_key: active.evm_encrypted_key!, solana_address: active.solana_address!, solana_encrypted_key: active.solana_encrypted_key! }
     : await env.DB.prepare(
@@ -1700,7 +1848,7 @@ async function showTelegramWalletExport(chatId: number, env: Env): Promise<void>
       .catch(() => null); // no NEAR columns before migrations/0004_add_near_chain.sql
   const nearKey = await decryptIfPresent(near?.near_encrypted_key);
   const text = tgMessage(
-    tgTitle('🔑', 'Private keys', 'Anyone with these keys has full control of these wallets.'),
+    tgTitle('🔑', active ? `Private keys · ${escapeTelegramHtml(active.label)}` : 'Private keys', 'Anyone with these keys has full control of this wallet.'),
     evmKey && `<b>EVM</b> · ${escapeTelegramHtml(shortenTelegramAddress(row.evm_address))}\n<code>${escapeTelegramHtml(evmKey)}</code>`,
     solKey && `<b>Solana</b> · ${escapeTelegramHtml(shortenTelegramAddress(row.solana_address))}\n<code>${escapeTelegramHtml(solKey)}</code>`,
     nearKey && near?.near_address && `<b>NEAR</b> · ${escapeTelegramHtml(shortenTelegramAddress(near.near_address))}\n<code>${escapeTelegramHtml(nearKey)}</code>`,
@@ -1716,124 +1864,271 @@ async function showTelegramWalletExport(chatId: number, env: Env): Promise<void>
   }
 }
 
-/** /importkey evm <key> or /importkey solana <key> — stores an existing wallet instead of generating one. */
+/* ------------------------------------------------------------------------ *
+ * Wallet import. 📥 Import → choose EVM / Solana / NEAR → paste the key.
+ * The key message is deleted right away. An imported key becomes a wallet of
+ * its own chain only (never mixed with other keys) and that chain's default;
+ * a key the user already has just becomes the default again.
+ * ------------------------------------------------------------------------ */
+
+type ImportChain = 'evm' | 'solana' | 'near';
+const IMPORT_CHAIN_LABEL: Record<ImportChain, string> = { evm: 'EVM', solana: 'Solana', near: 'NEAR' };
+
+/** Prefix of the force-reply prompt asking for a key; the chain name follows it. */
+const TELEGRAM_IMPORT_PROMPT = '🔑 Import — reply with your';
+
+type ImportPlacement = { walletLabel: string; placement: 'existing' | 'new'; address: string };
+type ImportOutcome = (ImportPlacement & { implicitOnly?: boolean }) | { choose: string[] } | { error: string };
+
+function importChainOf(value: string | undefined): ImportChain | null {
+  const chain = value?.toLowerCase();
+  return chain === 'evm' || chain === 'eth' ? 'evm' : chain === 'solana' || chain === 'sol' ? 'solana' : chain === 'near' ? 'near' : null;
+}
+
+async function showTelegramImportPicker(chatId: number, env: Env, panelId?: number): Promise<void> {
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('📥', 'Import a wallet', 'Choose what to import'),
+    tgCard([
+      '🔷 <b>EVM</b> — one key for Base, Arbitrum, BNB, Robinhood &amp; Arc',
+      '◎ <b>Solana</b> — your base58 secret key',
+      'Ⓝ <b>NEAR</b> — your ed25519 key; the account (e.g. alice.near) is found for you',
+    ]),
+    tgFootnote(`🔐 Keys are stored encrypted, and your message with the key is deleted right after. Up to ${MAX_WALLETS_PER_USER} wallets.`),
+  ), env, {
+    inline_keyboard: [
+      [{ text: '🔷 EVM', callback_data: 'import:evm' }, { text: '◎ Solana', callback_data: 'import:solana' }, { text: 'Ⓝ NEAR', callback_data: 'import:near' }],
+      [{ text: '◀️ Wallets', callback_data: 'wallet' }],
+    ],
+  });
+}
+
+async function promptTelegramImport(chatId: number, chain: ImportChain, env: Env): Promise<void> {
+  await setPendingPrompt(chatId, { kind: 'import', chain }, env);
+  const extra = chain === 'near' ? ' — add the account name after it if you know it (e.g. <code>ed25519:… alice.near</code>)' : '';
+  await sendTelegramMessage(chatId, `${TELEGRAM_IMPORT_PROMPT} ${IMPORT_CHAIN_LABEL[chain]} private key${extra}. Your message is deleted right after.`, env, {
+    force_reply: true,
+    input_field_placeholder: chain === 'evm' ? '0x… private key' : chain === 'solana' ? 'base58 secret key' : 'ed25519:… [alice.near]',
+  });
+}
+
+/** The chain a key prompt asked for, read back from the prompt the user replied to. */
+function importChainFromPrompt(prompt: string): ImportChain | null {
+  return importChainOf(prompt.slice(TELEGRAM_IMPORT_PROMPT.length).trim().split(/\s+/)[0]);
+}
+
+async function deleteTelegramMessage(chatId: number, messageId: number | undefined, env: Env): Promise<void> {
+  // Bots may delete incoming messages in private chats; a failure just leaves the message.
+  if (messageId) await telegramApiRequest('deleteMessage', env, { chat_id: chatId, message_id: messageId });
+}
+
+/** A pasted key: remove the message holding it first, then import. */
+async function importFromPrompt(chatId: number, chain: ImportChain, text: string, env: Env, messageId?: number): Promise<void> {
+  await deleteTelegramMessage(chatId, messageId, env);
+  await handleTelegramImportKey(chatId, [chain, ...text.trim().split(/\s+/)], env);
+}
+
+/** /importkey <evm|solana|near> <key> [account.near], or a key pasted after choosing a chain. */
 async function handleTelegramImportKey(chatId: number, args: string[], env: Env): Promise<void> {
   if (!env.DB || !env.ENCRYPTION_KEY) {
     await sendTelegramMessage(chatId, '🧩 Importing a key requires the bot owner to configure <code>DB</code> and <code>ENCRYPTION_KEY</code>.', env);
     return;
   }
-  const [network, rawKey] = args;
-  const userId = String(chatId);
-  const imported = (label: string, address: string) => tgMessage(
-    tgTitle('✅', `${label} key imported`),
-    `<code>${escapeTelegramHtml(address)}</code>`,
-    tgFootnote('🧹 Delete your previous message containing the raw key now.'),
-  );
-  try {
-    if (network?.toLowerCase() === 'evm' || network?.toLowerCase() === 'solana') {
-      // The imported key becomes a new active wallet, paired with fresh keys for the other chains,
-      // so no existing (possibly funded) key is ever overwritten.
-      const isEvm = network.toLowerCase() === 'evm';
-      const imported = isEvm ? importEvmKey(rawKey ?? '') : importSolanaKey(rawKey ?? '');
-      const fresh = generateDualWallet();
-      const near = generateNearWallet();
-      try {
-        const row = await storeWalletAccount(userId, {
-          evmAddress: isEvm ? imported.address : fresh.evmAddress,
-          evmPrivateKey: isEvm ? imported.privateKey : fresh.evmPrivateKey,
-          solanaAddress: isEvm ? fresh.solanaAddress : imported.address,
-          solanaPrivateKey: isEvm ? fresh.solanaPrivateKey : imported.privateKey,
-          nearAddress: near.address,
-          nearPrivateKey: near.privateKey,
-        }, '', 'imported', env);
-        await sendTelegramMessage(chatId, tgMessage(
-          tgTitle('✅', `${isEvm ? 'EVM' : 'Solana'} key imported as ${escapeTelegramHtml(row.label)}`, 'It is now your active trading wallet.'),
-          `<code>${escapeTelegramHtml(imported.address)}</code>`,
-          tgFootnote('🧹 Delete your previous message containing the raw key now. Switch wallets any time in 💳 Wallets.'),
-        ), env, telegramWalletActionKeyboard());
-        return;
-      } catch (error) {
-        if (error instanceof WalletLimitError) {
-          await sendTelegramMessage(chatId, tgMessage(tgTitle('💳', 'Key not imported'), escapeTelegramHtml(error.message)), env, telegramWalletActionKeyboard());
-          return;
-        }
-        // Before migration 0003 there is no wallet_accounts table: use the legacy single-wallet store below.
-      }
-    }
-    if (network?.toLowerCase() === 'evm') {
-      const { address, privateKey } = importEvmKey(rawKey ?? '');
-      const encrypted = packEncryptedSecret(await encryptPrivateKey(privateKey, env.ENCRYPTION_KEY));
-      await env.DB.prepare(
-        `INSERT INTO user_wallets (user_id, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key)
-         VALUES (?1, ?2, ?3, COALESCE((SELECT solana_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT solana_encrypted_key FROM user_wallets WHERE user_id = ?1), ''))
-         ON CONFLICT(user_id) DO UPDATE SET evm_address = excluded.evm_address, evm_encrypted_key = excluded.evm_encrypted_key`
-      ).bind(userId, address, encrypted).run();
-      await sendTelegramMessage(chatId, imported('EVM', address), env, telegramActionKeyboard());
-    } else if (network?.toLowerCase() === 'solana') {
-      const { address, privateKey } = importSolanaKey(rawKey ?? '');
-      const encrypted = packEncryptedSecret(await encryptPrivateKey(privateKey, env.ENCRYPTION_KEY));
-      await env.DB.prepare(
-        `INSERT INTO user_wallets (user_id, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key)
-         VALUES (?1, COALESCE((SELECT evm_address FROM user_wallets WHERE user_id = ?1), ''), COALESCE((SELECT evm_encrypted_key FROM user_wallets WHERE user_id = ?1), ''), ?2, ?3)
-         ON CONFLICT(user_id) DO UPDATE SET solana_address = excluded.solana_address, solana_encrypted_key = excluded.solana_encrypted_key`
-      ).bind(userId, address, encrypted).run();
-      await sendTelegramMessage(chatId, imported('Solana', address), env, telegramActionKeyboard());
-    } else if (network?.toLowerCase() === 'near') {
-      const outcome = await importTelegramNearKey(userId, rawKey ?? '', args[2]?.toLowerCase(), env);
-      if ('error' in outcome) {
-        await sendTelegramMessage(chatId, tgMessage(tgTitle('⚠️', 'NEAR key not imported'), escapeTelegramHtml(outcome.error)), env);
-        return;
-      }
-      await sendTelegramMessage(chatId, imported('NEAR', outcome.accountId), env, telegramActionKeyboard());
-    } else {
-      await sendTelegramMessage(chatId, tgMessage(tgTitle('📥', 'Import a wallet'), tgCard([
-        '/importkey evm &lt;private-key&gt;',
-        '/importkey solana &lt;base58-secret-key&gt;',
-        '/importkey near &lt;ed25519:key&gt; [account.near]',
-      ])), env);
-    }
-  } catch {
-    await sendTelegramMessage(chatId, '⚠️ That key could not be parsed. Double-check the format and try again — and delete the bad message either way.', env);
+  const chain = importChainOf(args[0]);
+  const rawKey = args[1] ?? '';
+  if (!chain || !rawKey) {
+    await showTelegramImportPicker(chatId, env);
+    return;
   }
+  const userId = String(chatId);
+  let evmOrSolana: { address: string; privateKey: string } | null = null;
+  let near: NearKeyPair | null = null;
+  try {
+    if (chain === 'near') near = importNearKey(rawKey);
+    else evmOrSolana = chain === 'evm' ? importEvmKey(rawKey) : importSolanaKey(rawKey);
+  } catch {
+    await sendTelegramMessage(chatId, tgMessage(
+      tgTitle('⚠️', `That is not a valid ${IMPORT_CHAIN_LABEL[chain]} private key`),
+      chain === 'evm' ? 'Expected 64 hex characters, with or without <code>0x</code>.'
+        : chain === 'solana' ? 'Expected the base58 secret key (about 88 characters), as exported by Phantom or Solflare.'
+          : 'Expected <code>ed25519:…</code>, as exported by your NEAR wallet.',
+    ), env, { inline_keyboard: [[{ text: '🔁 Try again', callback_data: `import:${chain}` }, { text: '📥 Import', callback_data: 'wallet:import' }]] });
+    return;
+  }
+
+  let outcome: ImportOutcome;
+  try {
+    outcome = near
+      ? await importTelegramNearKey(userId, near, args[2]?.toLowerCase(), env)
+      : await placeImportedKey(userId, chain, evmOrSolana!.address, evmOrSolana!.privateKey, env);
+  } catch {
+    outcome = { error: 'The check could not finish (network or storage busy). Nothing was imported — try again in a minute.' };
+  }
+
+  if ('choose' in outcome && near) {
+    await offerTelegramNearAccounts(chatId, outcome.choose, near, env);
+    return;
+  }
+  await reportTelegramImport(chatId, chain, outcome, env);
 }
 
 /**
- * Store an imported NEAR key as the user's NEAR trading account. A named
- * account must list the key as a full-access key on-chain. Refuses to replace
- * a current NEAR account that still holds funds, so a key is never discarded
- * while money depends on it.
+ * A NEAR key does not encode its account: named accounts (alice.near) are
+ * found in the key index and confirmed on-chain, so importing a named
+ * account's key imports that account — never the key's unused implicit one.
  */
-async function importTelegramNearKey(userId: string, rawKey: string, namedAccount: string | undefined, env: Env): Promise<{ accountId: string } | { error: string }> {
-  const implicitRequested = namedAccount !== undefined && /^[0-9a-f]{64}$/.test(namedAccount);
-  const pair = importNearKey(rawKey, namedAccount && !implicitRequested ? namedAccount : undefined);
-  if (implicitRequested && pair.accountId !== namedAccount) return { error: 'That key does not control the implicit account you entered.' };
+async function importTelegramNearKey(userId: string, pair: NearKeyPair, namedAccount: string | undefined, env: Env): Promise<ImportOutcome> {
   const rpc = nearRpcOptions(env);
-  if (namedAccount && !implicitRequested && !await verifyFullAccessKey(pair.accountId, pair.publicKey, rpc)) {
-    return { error: `That key is not a full-access key of ${pair.accountId}.` };
-  }
-  const current = await getCustodialWallet(userId, env).catch(() => null);
-  if (!current) return { error: 'Create a Hopr trading wallet first (Wallet → Create wallet), then import your NEAR key into it.' };
-  if (current.nearAddress && current.nearAddress !== pair.accountId) {
-    const balance = await getNearBalance(current.nearAddress, [], rpc).catch(() => null);
-    if (!balance || (balance.exists && (BigInt(balance.totalYocto) > 0n || balance.tokens.length > 0))) {
-      return { error: `Your current NEAR wallet (${current.nearAddress}) still holds funds or could not be checked. Export its key with /exportkeys and move the funds before replacing it.` };
+  let accountId: string;
+  if (namedAccount) {
+    if (!isValidNearAccountId(namedAccount)) return { error: `“${namedAccount}” is not a valid NEAR account name.` };
+    if (namedAccount !== pair.accountId && !await verifyFullAccessKey(namedAccount, pair.publicKey, rpc)) {
+      return { error: `That key is not a full-access key of ${namedAccount}.` };
     }
+    accountId = namedAccount;
+  } else {
+    const accounts = await findNearAccountsForKey(pair.publicKey, pair.accountId, rpc);
+    if (accounts.length > 1) return { choose: accounts };
+    accountId = accounts[0] ?? pair.accountId;
   }
-  const encrypted = packEncryptedSecret(await encryptPrivateKey(pair.privateKey, env.ENCRYPTION_KEY!));
+  const placed = await placeImportedKey(userId, 'near', accountId, pair.privateKey, env);
+  return 'error' in placed ? placed : { ...placed, implicitOnly: accountId === pair.accountId };
+}
+
+const NEAR_PICK_TTL_SECONDS = 300;
+const nearPickKey = (chatId: number) => `nearpick:v1:${chatId}`;
+
+/** The key controls several NEAR accounts: let the user choose (the key waits encrypted, briefly). */
+async function offerTelegramNearAccounts(chatId: number, accounts: string[], pair: NearKeyPair, env: Env): Promise<void> {
+  const store = env.TELEGRAM_STATE ?? env.CACHE;
+  const listing = tgCard(accounts.map((account) => `<code>${escapeTelegramHtml(account)}</code>`));
+  if (!store) {
+    await sendTelegramMessage(chatId, tgMessage(
+      tgTitle('Ⓝ', 'This key controls several NEAR accounts'),
+      listing,
+      'Import one by sending <code>/importkey near &lt;key&gt; &lt;account&gt;</code>.',
+    ), env);
+    return;
+  }
+  const key = packEncryptedSecret(await encryptPrivateKey(pair.privateKey, env.ENCRYPTION_KEY!));
+  await store.put(nearPickKey(chatId), JSON.stringify({ accounts, key }), { expirationTtl: NEAR_PICK_TTL_SECONDS });
+  await sendTelegramMessage(chatId, tgMessage(
+    tgTitle('Ⓝ', 'Choose the NEAR account to import', 'This key controls more than one account.'),
+    listing,
+    tgFootnote('This choice expires in 5 minutes.'),
+  ), env, {
+    inline_keyboard: [
+      ...accounts.map((account, index) => [{ text: account.length > 40 ? `${account.slice(0, 18)}…${account.slice(-18)}` : account, callback_data: `import:near:pick:${index}` }]),
+      [{ text: '✖️ Cancel', callback_data: 'wallet' }],
+    ],
+  });
+}
+
+async function pickTelegramNearAccount(chatId: number, index: number, env: Env, panelId?: number): Promise<void> {
+  const store = env.TELEGRAM_STATE ?? env.CACHE;
+  const raw = await store?.get(nearPickKey(chatId)).catch(() => null);
+  let pending: { accounts?: string[]; key?: string } | null = null;
   try {
-    await env.DB!.prepare(
-      `UPDATE wallet_accounts SET near_address = ?1, near_encrypted_key = ?2
-         WHERE id = (SELECT id FROM wallet_accounts WHERE user_id = ?3 AND evm_address IS NOT NULL AND solana_address IS NOT NULL ORDER BY is_active DESC, created_at ASC LIMIT 1)`
-    ).bind(pair.accountId, encrypted, userId).run().catch((error: unknown) => {
-      if (/near_/.test(String(error))) throw error; // missing NEAR columns
-    });
-    await env.DB!.prepare(`UPDATE user_wallets SET near_address = ?1, near_encrypted_key = ?2 WHERE user_id = ?3`)
-      .bind(pair.accountId, encrypted, userId).run();
+    pending = raw ? JSON.parse(raw) : null;
+  } catch {
+    pending = null;
+  }
+  const accountId = pending?.accounts?.[index];
+  if (!pending?.key || !accountId || !env.DB || !env.ENCRYPTION_KEY) {
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⌛', 'That choice expired'), 'Import the key again from 📥 Import.'), env, { inline_keyboard: [[{ text: '📥 Import', callback_data: 'wallet:import' }]] });
+    return;
+  }
+  await store!.delete(nearPickKey(chatId)).catch(() => undefined);
+  let outcome: ImportOutcome;
+  try {
+    const pair = importNearKey(await decryptPrivateKey(unpackEncryptedSecret(pending.key), env.ENCRYPTION_KEY));
+    outcome = await importTelegramNearKey(String(chatId), pair, accountId, env);
+  } catch {
+    outcome = { error: 'The check could not finish (network or storage busy). Nothing was imported — try again in a minute.' };
+  }
+  await reportTelegramImport(chatId, 'near', outcome, env, panelId);
+}
+
+/** An imported key is a wallet of its own chain (never mixed into another wallet) and becomes that chain's default. */
+async function placeImportedKey(userId: string, chain: ImportChain, address: string, privateKey: string, env: Env): Promise<ImportPlacement | { error: string }> {
+  const rows = await listWalletAccounts(userId, env);
+  // Already one of the user's wallets: make it the default instead of adding a duplicate.
+  const owned = walletWithAddress(rows, chain, address);
+  if (owned) {
+    await setDefaultWallet(userId, owned.id, [chain], env);
+    return { walletLabel: owned.label, placement: 'existing', address };
+  }
+  try {
+    const row = await storeWalletAccount(userId, {
+      evmAddress: chain === 'evm' ? address : null,
+      evmPrivateKey: chain === 'evm' ? privateKey : null,
+      solanaAddress: chain === 'solana' ? address : null,
+      solanaPrivateKey: chain === 'solana' ? privateKey : null,
+      nearAddress: chain === 'near' ? address : null,
+      nearPrivateKey: chain === 'near' ? privateKey : null,
+    }, '', 'imported', env, [chain]);
+    return { walletLabel: row.label, placement: 'new', address };
   } catch (error) {
-    if (/near_/.test(String(error))) return { error: 'NEAR wallets need migrations/0004_add_near_chain.sql applied first.' };
+    if (error instanceof WalletLimitError) return { error: error.message };
     throw error;
   }
-  return { accountId: pair.accountId };
+}
+
+async function reportTelegramImport(chatId: number, chain: ImportChain, outcome: ImportOutcome, env: Env, panelId?: number): Promise<void> {
+  const label = IMPORT_CHAIN_LABEL[chain];
+  if ('error' in outcome || 'choose' in outcome) {
+    const reason = 'error' in outcome ? outcome.error : 'Choose the account to import.';
+    await sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('⚠️', `${label} key not imported`), escapeTelegramHtml(reason)), env, {
+      inline_keyboard: [[{ text: '🔁 Try again', callback_data: `import:${chain}` }, { text: '💳 Wallets', callback_data: 'wallet' }]],
+    });
+    return;
+  }
+  const wallet = escapeTelegramHtml(outcome.walletLabel);
+  const title = outcome.placement === 'existing' ? `Already yours — ${wallet} is your ${label} wallet` : `${label} key imported as ${wallet}`;
+  const notes = [
+    `${wallet} now trades on ${label}. Your other chains keep their wallets.`,
+    outcome.implicitOnly ? 'No named account (like alice.near) uses this key, so its own account was imported. If your wallet has a name, import again with the name after the key.' : null,
+  ].filter(Boolean) as string[];
+  await sendTelegramPanel(chatId, panelId, tgMessage(
+    tgTitle('✅', title),
+    `<code>${escapeTelegramHtml(outcome.address)}</code>`,
+    tgCard(notes),
+  ), env, telegramWalletActionKeyboard());
+}
+
+/* ---- Prompts that also accept a plain (non-reply) answer ---------------- */
+
+type PendingPrompt = { kind: 'track' } | { kind: 'import'; chain: ImportChain };
+/** A prompt waits this long for its answer (KV's minimum TTL is 60s). */
+const PROMPT_TTL_SECONDS = 120;
+const promptKey = (chatId: number) => `prompt:v1:${chatId}`;
+
+/** Remember what the bot just asked for, so the next plain message answers it even without "Reply". */
+async function setPendingPrompt(chatId: number, prompt: PendingPrompt, env: Env): Promise<void> {
+  const store = env.TELEGRAM_STATE ?? env.CACHE;
+  await store?.put(promptKey(chatId), JSON.stringify({ ...prompt, at: Date.now() }), { expirationTtl: PROMPT_TTL_SECONDS }).catch(() => undefined);
+}
+
+async function clearPendingPrompt(chatId: number, env: Env): Promise<void> {
+  const store = env.TELEGRAM_STATE ?? env.CACHE;
+  await store?.delete(promptKey(chatId)).catch(() => undefined);
+}
+
+/** The open prompt, if any; reading it closes it. */
+async function takePendingPrompt(chatId: number, env: Env): Promise<PendingPrompt | null> {
+  const store = env.TELEGRAM_STATE ?? env.CACHE;
+  if (!store) return null;
+  const raw = await store.get(promptKey(chatId)).catch(() => null);
+  if (!raw) return null;
+  await store.delete(promptKey(chatId)).catch(() => undefined);
+  try {
+    const prompt = JSON.parse(raw) as { kind?: string; chain?: string; at?: number };
+    if (!prompt.at || Date.now() - prompt.at > PROMPT_TTL_SECONDS * 1000) return null;
+    if (prompt.kind === 'track') return { kind: 'track' };
+    const chain = importChainOf(prompt.chain);
+    return prompt.kind === 'import' && chain ? { kind: 'import', chain } : null;
+  } catch {
+    return null;
+  }
 }
 
 async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<void> {
@@ -1847,7 +2142,7 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
     return;
   }
   const existing = await getCustodialWallet(userId, env);
-  let wallet: { evmAddress: string; solanaAddress: string; nearAddress?: string | null };
+  let wallet: CustodialWallet;
   let label: string | null = null;
   if (!existing) {
     wallet = await createCustodialWallet(userId, env);
@@ -1855,8 +2150,8 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
     // Another wallet (up to the cap); it becomes the active one.
     try {
       const near = generateNearWallet();
-      const row = await storeWalletAccount(userId, { ...generateDualWallet(), nearAddress: near.address, nearPrivateKey: near.privateKey }, '', 'generated', env);
-      wallet = { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null };
+      const row = await storeWalletAccount(userId, { ...generateDualWallet(), nearAddress: near.address, nearPrivateKey: near.privateKey }, '', 'generated', env, WALLET_CHAINS);
+      wallet = walletAddresses(row);
       label = row.label;
     } catch (error) {
       const message = error instanceof WalletLimitError ? error.message : 'Wallet storage is unavailable. Apply migrations/0003_multi_wallets.sql, then try again.';
@@ -1868,10 +2163,10 @@ async function showTelegramWalletGenerate(chatId: number, env: Env): Promise<voi
   await sendTelegramMessage(
     chatId,
     tgMessage(
-      tgTitle('✦', label ? `Wallet ${escapeTelegramHtml(label)} created` : 'Your Hopr wallet is ready', label ? 'It is now your active trading wallet · switch any time in 💳 Wallets.' : 'Welcome to your private cross-chain command center.'),
+      tgTitle('✦', label ? `Wallet ${escapeTelegramHtml(label)} created` : 'Your Hopr wallet is ready', label ? 'It now trades on every chain · change defaults any time in 🗂 Manage wallets.' : 'Welcome to your private cross-chain command center.'),
       tgCard([
-        `<b>EVM</b>  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
-        `<b>Solana</b>  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
+        ...(wallet.evmAddress ? [`<b>EVM</b>  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`] : []),
+        ...(wallet.solanaAddress ? [`<b>Solana</b>  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`] : []),
         ...(nearAddress ? [`<b>NEAR</b>  <code>${escapeTelegramHtml(nearAddress)}</code>`] : []),
       ]),
       !existing && `<b>Next step</b>\nFund any address, then paste a token address to trade.`,
@@ -2411,6 +2706,7 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
   if (data.startsWith('ms:')) return handleMultiSendCallback(chatId, data, env, panelId);
   if (data === 'track') return showTelegramTracking(chatId, env, panelId);
   if (data === 'track:add') return promptTelegramTrack(chatId, env);
+  if (data.startsWith('track:a:')) return addTelegramTrackedWallet(chatId, data.slice('track:a:'.length), env);
   if (data.startsWith('track:')) return handleTrackCallback(chatId, data, env, panelId);
   if (data.startsWith('order:new:')) return startTelegramOrder(chatId, data.slice('order:new:'.length) as OrderKind, env, panelId);
   if (data.startsWith('order:at:')) {
@@ -2432,6 +2728,17 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
   }
   if (data.startsWith('bundle:confirm:')) return confirmTelegramBundle(chatId, data.slice('bundle:confirm:'.length), env, panelId);
   if (data === 'bundle:cancel') return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('✖️', 'Bundle cancelled'), 'No transaction was signed or submitted.'), env, telegramActionKeyboard());
+  const walletAction = data.match(/^wallet:(v|ren|exp|del|delok):([\w:-]{1,52})$/);
+  if (walletAction) {
+    const [, action, walletId] = walletAction;
+    if (action === 'v') return showTelegramWalletDetail(chatId, walletId, env, panelId);
+    if (action === 'ren') return promptTelegramWalletRename(chatId, env, walletId);
+    if (action === 'exp') return showTelegramWalletExport(chatId, env, walletId);
+    if (action === 'del') return confirmTelegramWalletDelete(chatId, walletId, env, panelId);
+    return deleteTelegramWallet(chatId, walletId, env, panelId);
+  }
+  const defaultMatch = data.match(/^wallet:def:([esna]):([\w:-]{1,50})$/);
+  if (defaultMatch) return setTelegramDefaultWallet(chatId, defaultMatch[2], defaultMatch[1], env, panelId);
   if (data.startsWith('wallet:use:')) return useTelegramWallet(chatId, data.slice('wallet:use:'.length), env, panelId);
   if (data === 'trade:start') return showTelegramBuySell(chatId, env);
   if (data === 'wallet') return showTelegramWallet(chatId, env, panelId);
@@ -2458,36 +2765,16 @@ async function handleTelegramCallback(chatId: number, data: string, env: Env, pa
   if (data === 'wallet:generate') {
     return showTelegramWalletGenerate(chatId, env);
   }
-  if (data === 'wallet:delete') {
-    return sendTelegramPanel(
-      chatId,
-      panelId,
-      tgMessage(
-        tgTitle('⚠️', 'Delete the active wallet permanently?'),
-        tgCard(['Only the ✅ active wallet is deleted; your other wallets stay.', 'This cannot be undone.', 'If you did not back up the private keys, the wallet and its funds <b>cannot be recovered</b>.']),
-      ),
-      env,
-      { inline_keyboard: [[{ text: '🔑 Export keys first', callback_data: 'wallet:export' }], [{ text: '🗑 Delete permanently', callback_data: 'wallet:delete:confirm' }], [{ text: '◀️ Keep my wallet', callback_data: 'wallet' }]] },
-    );
-  }
+  if (data === 'wallet:delete') return deleteActiveTelegramWallet(chatId, env, panelId);
   if (data === 'wallet:delete:confirm') return deleteActiveTelegramWallet(chatId, env, panelId);
   if (data === 'wallet:export') {
     return showTelegramWalletExport(chatId, env);
   }
-  if (data === 'wallet:import') {
-    return sendTelegramPanel(
-      chatId,
-      panelId,
-      tgMessage(
-        tgTitle('📥', 'Import a wallet you own'),
-        'Send one of these as a direct message (not in a group):',
-        tgCard(['/importkey evm &lt;private-key&gt;', '/importkey solana &lt;base58-secret-key&gt;', '/importkey near &lt;ed25519:key&gt; [account.near]']),
-        tgFootnote(`🧹 Delete your message right after sending it. An imported key becomes a new active wallet (up to ${MAX_WALLETS_PER_USER}).`),
-      ),
-      env,
-      telegramActionKeyboard(),
-    );
-  }
+  if (data === 'wallet:import') return showTelegramImportPicker(chatId, env, panelId);
+  const importMatch = data.match(/^import:(evm|solana|near)$/);
+  if (importMatch) return promptTelegramImport(chatId, importMatch[1] as ImportChain, env);
+  const pickMatch = data.match(/^import:near:pick:([0-7])$/);
+  if (pickMatch) return pickTelegramNearAccount(chatId, Number(pickMatch[1]), env, panelId);
   const payMatch = data.match(/^token:pay:(\d+)$/);
   if (payMatch) {
     const chain = TELEGRAM_CHAINS.find((item) => item.id === Number(payMatch[1]));
@@ -2643,11 +2930,7 @@ async function handleApiRequest(
   return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders });
 }
 
-type WalletAccountRow = {
-  id: string; user_id: string; label: string; source: string; evm_address: string | null; evm_encrypted_key: string | null;
-  solana_address: string | null; solana_encrypted_key: string | null; near_address?: string | null; near_encrypted_key?: string | null;
-  is_active: number; created_at: string;
-};
+type WalletAccountRow = WalletRow & { user_id: string; created_at: string };
 
 class WalletLimitError extends Error {
   constructor() {
@@ -2655,12 +2938,17 @@ class WalletLimitError extends Error {
   }
 }
 
+/**
+ * Store a wallet. Slots it has no key for stay empty (an imported key is a
+ * wallet of its own chain only). It becomes the default for `defaultFor`.
+ */
 async function storeWalletAccount(
   userId: string,
   wallet: { evmAddress: string | null; evmPrivateKey: string | null; solanaAddress: string | null; solanaPrivateKey: string | null; nearAddress?: string | null; nearPrivateKey?: string | null },
   label: string,
   source: 'generated' | 'imported',
   env: Env,
+  defaultFor: WalletChain[],
 ): Promise<WalletAccountRow> {
   if (!env.DB || !env.ENCRYPTION_KEY) throw new Error('Wallet storage is not configured.');
   const count = await env.DB.prepare(`SELECT COUNT(*) AS total FROM wallet_accounts WHERE user_id = ?1`).bind(userId).first<{ total: number }>();
@@ -2670,21 +2958,23 @@ async function storeWalletAccount(
   const evmEncrypted = await encrypt(wallet.evmPrivateKey);
   const solanaEncrypted = await encrypt(wallet.solanaPrivateKey);
   const nearEncrypted = await encrypt(wallet.nearPrivateKey);
-  const finalLabel = label.trim() || await nextWalletLabel(userId, env);
-  const hasNear = Boolean(wallet.nearAddress && nearEncrypted);
-  if (!hasNear) {
-    await env.DB.prepare(`UPDATE wallet_accounts SET is_active = 0 WHERE user_id = ?1`).bind(userId).run();
-    await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)`).bind(id, userId, finalLabel.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted).run();
-  } else {
-    // Insert first, then activate: a failed insert (e.g. before migration 0004) must not leave the user with no active wallet.
+  const finalLabel = (label.trim() || await nextWalletLabel(userId, env)).slice(0, 80);
+  const base = [id, userId, finalLabel, source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted];
+  const withoutNear = `INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)`;
+  // Insert first, then make it default: a failed insert must never leave a chain without its wallet.
+  if (wallet.nearAddress && nearEncrypted) {
     try {
-      await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, near_address, near_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)`).bind(id, userId, finalLabel.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted, wallet.nearAddress, nearEncrypted).run();
+      await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, near_address, near_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)`)
+        .bind(...base, wallet.nearAddress, nearEncrypted).run();
     } catch (error) {
       if (!/near_/.test(String(error))) throw error;
-      await env.DB.prepare(`INSERT INTO wallet_accounts (id, user_id, label, source, evm_address, evm_encrypted_key, solana_address, solana_encrypted_key, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)`).bind(id, userId, finalLabel.slice(0, 80), source, wallet.evmAddress, evmEncrypted, wallet.solanaAddress, solanaEncrypted).run();
+      if (!wallet.evmAddress && !wallet.solanaAddress) throw new Error('NEAR wallets need migrations/0004_add_near_chain.sql applied first.');
+      await env.DB.prepare(withoutNear).bind(...base).run();
     }
-    await env.DB.prepare(`UPDATE wallet_accounts SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END WHERE user_id = ?2`).bind(id, userId).run();
+  } else {
+    await env.DB.prepare(withoutNear).bind(...base).run();
   }
+  await setDefaultWallet(userId, id, defaultFor, env);
   return (await env.DB.prepare(`SELECT * FROM wallet_accounts WHERE id = ?1`).bind(id).first<WalletAccountRow>())!;
 }
 
@@ -2831,7 +3121,7 @@ const MULTISEND_EXPIRED = tgMessage(tgTitle('⌛', 'Multi-send expired'), 'Start
 
 async function startMultiSend(chatId: number, env: Env, panelId?: number): Promise<void> {
   const accounts = await listWalletAccounts(String(chatId), env);
-  if (!accounts.some(canTrade) && !await getCustodialWallet(String(chatId), env).catch(() => null)) {
+  if (!accounts.length && !await getCustodialWallet(String(chatId), env).catch(() => null)) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('📤', 'Multi-send needs a wallet'), 'Create one in 💳 Wallets first.'), env, telegramWalletSetupKeyboard());
     return;
   }
@@ -2840,7 +3130,7 @@ async function startMultiSend(chatId: number, env: Env, panelId?: number): Promi
   const rows: TelegramButton[][] = [];
   for (let index = 0; index < buttons.length; index += 3) rows.push(buttons.slice(index, index + 3));
   await sendTelegramPanel(chatId, panelId, tgMessage(
-    tgTitle('📤', 'Multi-send', 'Send one coin from your active wallet to many wallets at once.'),
+    tgTitle('📤', 'Multi-send', 'Send one coin from that chain’s ✅ wallet to many wallets at once.'),
     tgFootnote('Pick the coin to send. Next: your other Hopr wallets or pasted addresses, then the amount each.'),
   ), env, { inline_keyboard: [...rows, [{ text: '✖️ Cancel', callback_data: 'ms:cancel' }]] });
 }
@@ -2855,14 +3145,14 @@ async function handleMultiSendCallback(chatId: number, data: string, env: Env, p
     const chainId = Number(data.slice('ms:chain:'.length));
     const userId = String(chatId);
     const accounts = await listWalletAccounts(userId, env);
-    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+    const active = walletForChain(accounts, chainId);
     const legacy = active ? null : await getCustodialWallet(userId, env).catch(() => null);
     const addressOf = (wallet: { evm_address?: string | null; solana_address?: string | null; near_address?: string | null }) =>
       chainId === NEAR_CHAIN_ID ? wallet.near_address ?? null : chainId === 1151111081099710 ? wallet.solana_address ?? null : wallet.evm_address ?? null;
     const from = active ? addressOf(active) : legacy ? addressOf({ evm_address: legacy.evmAddress, solana_address: legacy.solanaAddress, near_address: legacy.nearAddress }) : null;
-    if (!from) return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📤', 'No account on that chain'), 'Your active wallet has no account there yet. Open 💳 Wallets once (NEAR accounts are created on first use).'), env, telegramWalletActionKeyboard());
+    if (!from) return sendTelegramPanel(chatId, panelId, tgMessage(tgTitle('📤', 'No account on that chain'), 'None of your wallets holds that chain yet. Create or import one in 💳 Wallets.'), env, telegramWalletActionKeyboard());
     const coin = multiSendCoin(chainId);
-    const others = accounts.filter((account) => account.id !== active?.id && canTrade(account) && addressOf(account));
+    const others = accounts.filter((account) => account.id !== active?.id && addressOf(account));
     await saveMultiSend(chatId, { chainId, walletId: active?.id ?? null, walletLabel: active?.label ?? 'W1', from, recipients: [] }, env);
     return sendTelegramPanel(chatId, panelId, tgMessage(
       tgTitle('📤', `Multi-send ${coin.symbol} · ${escapeTelegramHtml(coin.name)}`, `From ${escapeTelegramHtml(active?.label ?? 'your wallet')} <code>${escapeTelegramHtml(shortenTelegramAddress(from))}</code>`),
@@ -2877,7 +3167,7 @@ async function handleMultiSendCallback(chatId: number, data: string, env: Env, p
   if (!draft) return sendTelegramPanel(chatId, panelId, MULTISEND_EXPIRED, env, telegramWalletActionKeyboard());
   if (data === 'ms:to:mine') {
     const accounts = await listWalletAccounts(String(chatId), env);
-    draft.recipients = accounts.filter((account) => account.id !== draft.walletId && canTrade(account)).flatMap((account) => {
+    draft.recipients = accounts.filter((account) => account.id !== draft.walletId).flatMap((account) => {
       const address = draft.chainId === NEAR_CHAIN_ID ? account.near_address : draft.chainId === 1151111081099710 ? account.solana_address : account.evm_address;
       return address && address !== draft.from ? [{ address, label: account.label }] : [];
     }).slice(0, MULTISEND_MAX_RECIPIENTS);
@@ -3017,6 +3307,7 @@ async function listTrackedWallets(userId: string, env: Env): Promise<TrackedWall
 }
 
 async function promptTelegramTrack(chatId: number, env: Env): Promise<void> {
+  await setPendingPrompt(chatId, { kind: 'track' }, env);
   await sendTelegramMessage(chatId, `${TELEGRAM_TRACK_PROMPT} (EVM, Solana or NEAR) and an optional name`, env, {
     force_reply: true,
     input_field_placeholder: '0x… / base58 / name.near  then a name',
@@ -3122,24 +3413,21 @@ async function handleTrackCallback(chatId: number, data: string, env: Env, panel
     ] });
   }
   if (action === 'ca') {
-    const accounts = await listWalletAccounts(userId, env);
-    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
     return sendTelegramPanel(chatId, panelId, tgMessage(
       tgTitle('🤖', 'Turn on copy trading?'),
       tgCard([
         `Leader  <b>${escapeTelegramHtml(wallet.label)}</b> <code>${escapeTelegramHtml(shortenTelegramAddress(wallet.address))}</code>`,
         `Mode  <b>${COPY_LABEL[mode as CopyMode]}</b>`,
-        `Per buy  <b>$${usd}</b> in the token chain’s coin · from <b>${escapeTelegramHtml(active?.label ?? 'your active wallet')}</b>`,
+        `Per buy  <b>$${usd}</b> in the token chain’s coin · from your ✅ wallet on that chain`,
         `Fee  ${HOPR_FEE_PERCENT}% per trade · slippage ≥${COPY_MIN_SLIPPAGE_PERCENT}%`,
       ]),
       `⚠️ <b>Trades execute automatically.</b> Each time this wallet ${mode === 'buysell' ? 'buys or sells' : 'buys'}, Hopr signs and sends the matching trade without asking again. Copying is checked every minute, so your price will differ from theirs. Copy only wallets you trust; tokens can be scams.`,
     ), env, { inline_keyboard: [[{ text: '✅ Start copying', callback_data: `track:ok:${wallet.id}:${mode}:${usd}` }, { text: '✖️ Cancel', callback_data: `track:v:${wallet.id}` }]] });
   }
   if (action === 'ok') {
-    const accounts = await listWalletAccounts(userId, env);
-    const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
-    await save(`UPDATE tracked_wallets SET copy_mode = ?1, copy_amount_usd = ?2, copy_wallet_id = ?3, updated_at = ?4 WHERE id = ?5 AND user_id = ?6`, mode, Number(usd), active?.id ?? null, Date.now());
-    return showTrackedWallet(chatId, { ...wallet, copy_mode: mode as CopyMode, copy_amount_usd: Number(usd), copy_wallet_id: active?.id ?? null }, env, panelId, `🤖 Copying ${escapeTelegramHtml(wallet.label)}: $${usd} per buy${mode === 'buysell' ? ', sells mirrored' : ''}.`);
+    // No fixed wallet: each copied trade uses the user's default wallet for the leader's chain.
+    await save(`UPDATE tracked_wallets SET copy_mode = ?1, copy_amount_usd = ?2, copy_wallet_id = ?3, updated_at = ?4 WHERE id = ?5 AND user_id = ?6`, mode, Number(usd), null, Date.now());
+    return showTrackedWallet(chatId, { ...wallet, copy_mode: mode as CopyMode, copy_amount_usd: Number(usd), copy_wallet_id: null }, env, panelId, `🤖 Copying ${escapeTelegramHtml(wallet.label)}: $${usd} per buy${mode === 'buysell' ? ', sells mirrored' : ''}.`);
   }
   return showTrackedWallet(chatId, wallet, env, panelId);
 }
@@ -3166,10 +3454,10 @@ async function executeCopyTrade(tracker: TrackedWallet, trade: WalletTrade, env:
   const userId = tracker.user_id;
   if (!env.ENCRYPTION_KEY || !env.TELEGRAM_STATE) throw new Error('Trading is not configured on this bot.');
   const accounts = await listWalletAccounts(userId, env);
-  const row = (tracker.copy_wallet_id ? accounts.find((account) => account.id === tracker.copy_wallet_id) : null)
-    ?? accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+  const pinned = tracker.copy_wallet_id ? accounts.find((account) => account.id === tracker.copy_wallet_id) : null;
+  const row = (pinned && walletAddressOn(pinned, walletChainOf(trade.chainId)) ? pinned : null) ?? walletForChain(accounts, trade.chainId);
   const legacy = row ? null : await getCustodialWallet(userId, env);
-  const wallet = row ? { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null } : legacy;
+  const wallet = row ? walletAddresses(row) : legacy;
   if (!wallet) throw new Error('No Hopr wallet to copy with.');
   const walletId = row?.id;
   const profile = await readTelegramProfile(Number(userId), env).catch(() => null);
@@ -3303,7 +3591,7 @@ async function startTelegramOrder(chatId: number, kind: OrderKind, env: Env, pan
     await sendTelegramMessage(chatId, tgMessage(tgTitle(ORDER_ICON[kind], 'Pick a token first'), `Paste a token address, then tap ${ORDER_ICON[kind]} ${ORDER_LABEL[kind]} on its card.`), env, telegramActionKeyboard());
     return;
   }
-  const wallet = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+  const wallet = walletForChain(accounts, profile.lastTokenChainId);
   const legacy = wallet ? null : await getCustodialWallet(userId, env).catch(() => null);
   if (!wallet && !legacy) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle(ORDER_ICON[kind], 'Orders need a Hopr wallet'), 'Create one in 💳 Wallets first.'), env, telegramWalletSetupKeyboard());
@@ -3476,7 +3764,7 @@ async function executeOrder(order: LimitOrder, env: Env): Promise<{ txHash: stri
   const row = order.wallet_id ? accounts.find((account) => account.id === order.wallet_id) : null;
   if (order.wallet_id && !row) throw new OrderError('The wallet this order was placed with no longer exists.', true);
   const legacy = row ? null : await getCustodialWallet(userId, env);
-  const wallet = row ? { evmAddress: row.evm_address!, solanaAddress: row.solana_address!, nearAddress: row.near_address ?? null } : legacy;
+  const wallet = row ? walletAddresses(row) : legacy;
   if (!wallet) throw new OrderError('No Hopr wallet on file.', true);
   const isNear = order.chain_id === NEAR_CHAIN_ID;
   const owner = isNear ? wallet.nearAddress ?? null : order.chain_id === 1151111081099710 ? wallet.solanaAddress : wallet.evmAddress;
@@ -3524,9 +3812,9 @@ export function sweepOrders(env: Env) {
 
 const renameKey = (chatId: number) => `rename:v1:${chatId}`;
 
-async function promptTelegramWalletRename(chatId: number, env: Env): Promise<void> {
+async function promptTelegramWalletRename(chatId: number, env: Env, walletId?: string): Promise<void> {
   const accounts = await listWalletAccounts(String(chatId), env);
-  const active = accounts.find((account) => account.is_active && canTrade(account)) ?? accounts.find(canTrade);
+  const active = (walletId ? accounts.find((account) => account.id === walletId) : null) ?? defaultWalletFor(accounts, 'evm') ?? accounts[0];
   const store = env.TELEGRAM_STATE ?? env.CACHE;
   if (!active || !store) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('✏️', 'Rename wallet'), 'Create a wallet first in 💳 Wallets.'), env, telegramWalletSetupKeyboard());
@@ -3544,16 +3832,16 @@ async function renameTelegramWallet(chatId: number, text: string, env: Env): Pro
   const store = env.TELEGRAM_STATE ?? env.CACHE;
   const walletId = await store?.get(renameKey(chatId)).catch(() => null);
   if (!walletId || !env.DB) {
-    await sendTelegramMessage(chatId, tgMessage(tgTitle('✏️', 'Rename expired'), 'Open 💳 Wallets → 🔁 Switch wallet → ✏️ Rename active to try again.'), env);
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('✏️', 'Rename expired'), 'Open 💳 Wallets → 🗂 Manage wallets → tap the wallet → ✏️ Rename.'), env);
     return;
   }
   if (!/^[\p{L}\p{N} _.\-]{1,20}$/u.test(name)) {
-    await sendTelegramMessage(chatId, tgMessage(tgTitle('✏️', 'Name not saved'), 'Use 1–20 letters, numbers, spaces, dots, dashes or underscores. Tap ✏️ Rename active to try again.'), env);
+    await sendTelegramMessage(chatId, tgMessage(tgTitle('✏️', 'Name not saved'), 'Use 1–20 letters, numbers, spaces, dots, dashes or underscores. Tap ✏️ Rename to try again.'), env);
     return;
   }
   await env.DB.prepare(`UPDATE wallet_accounts SET label = ?1 WHERE id = ?2 AND user_id = ?3`).bind(name, walletId, String(chatId)).run();
   await store?.delete(renameKey(chatId)).catch(() => undefined);
-  await showTelegramWalletList(chatId, env, undefined, `✅ Wallet renamed to ${escapeTelegramHtml(name)}.`);
+  await showTelegramWalletDetail(chatId, walletId, env, undefined, `✅ Renamed to ${escapeTelegramHtml(name)}.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3579,9 +3867,17 @@ function bundleRoute(profile: TelegramProfile): { fundingChainId: number; error?
   return { fundingChainId };
 }
 
+/** Wallets that can join a bundle: they hold the token's chain and, for buys, the pay-from chain. */
+function bundleWallets(accounts: WalletAccountRow[], kind: 'buy' | 'sell', profile: TelegramProfile | null): WalletAccountRow[] {
+  if (!profile?.lastTokenChainId) return [];
+  const needs = new Set<WalletChain>([walletChainOf(profile.lastTokenChainId)]);
+  if (kind === 'buy') needs.add(walletChainOf(bundleRoute(profile).fundingChainId));
+  return accounts.filter((row) => [...needs].every((chain) => walletAddressOn(row, chain)));
+}
+
 async function showTelegramBundleMenu(chatId: number, kind: 'buy' | 'sell', env: Env, panelId?: number): Promise<void> {
   const [profile, accounts] = await Promise.all([readTelegramProfile(chatId, env).catch(() => null), listWalletAccounts(String(chatId), env)]);
-  const wallets = accounts.filter(canTrade);
+  const wallets = bundleWallets(accounts, kind, profile);
   if (!profile?.lastTokenAddress || !profile.lastTokenChainId) {
     await sendTelegramMessage(chatId, tgMessage(tgTitle('🧺', 'Pick a token first'), 'Paste a token address, then tap 🧺 Bundle buy or sell on its card.'), env, telegramActionKeyboard());
     return;
@@ -3623,7 +3919,7 @@ async function showTelegramBundleMenu(chatId: number, kind: 'buy' | 'sell', env:
 async function prepareTelegramBundle(chatId: number, kind: 'buy' | 'sell', value: string, env: Env, panelId?: number): Promise<void> {
   const userId = String(chatId);
   const [profile, accounts] = await Promise.all([readTelegramProfile(chatId, env).catch(() => null), listWalletAccounts(userId, env)]);
-  const wallets = accounts.filter(canTrade);
+  const wallets = bundleWallets(accounts, kind, profile);
   if (!profile?.lastTokenAddress || !profile.lastTokenChainId || !wallets.length || !env.ENCRYPTION_KEY) {
     await showTelegramBundleMenu(chatId, kind, env, panelId);
     return;
@@ -3650,7 +3946,7 @@ async function prepareTelegramBundle(chatId: number, kind: 'buy' | 'sell', value
 
   const quoteWallet = async (wallet: WalletAccountRow) => {
     const label = wallet.label;
-    const addresses = { evmAddress: wallet.evm_address!, solanaAddress: wallet.solana_address!, nearAddress: wallet.near_address ?? null };
+    const addresses = walletAddresses(wallet);
     try {
       if (kind === 'buy') {
         if (isNear) {
@@ -3803,7 +4099,7 @@ async function showTelegramReferral(chatId: number, env: Env, panelId?: number, 
         ...((stats.paidUsd ?? 0) > 0 || (stats.requestedUsd ?? 0) > 0 ? [`💸 Paid ${formatRewardUsd(stats.paidUsd)} · requested ${formatRewardUsd(stats.requestedUsd)}`] : []),
       ]),
       tgSection('💳', 'Payouts', [
-        wallet ? `USDC to your Hopr wallet <code>${escapeTelegramHtml(wallet.evmAddress)}</code>` : 'Create a Hopr wallet (💳 Wallets) to receive payouts',
+        wallet?.evmAddress ? `USDC to your Hopr wallet <code>${escapeTelegramHtml(wallet.evmAddress)}</code>` : 'Create or import an EVM wallet (💳 Wallets) to receive payouts',
         `Platform fee: ${HOPR_FEE_PERCENT}% on trades and bridges`,
       ]),
       tgFootnote('Rewards count once the route provider confirms the trade.'),
@@ -3832,7 +4128,7 @@ async function showTelegramReferral(chatId: number, env: Env, panelId?: number, 
 async function claimTelegramReferral(chatId: number, env: Env, panelId?: number): Promise<void> {
   if (!env.DB) return showTelegramReferral(chatId, env, panelId);
   const wallet = await getCustodialWallet(String(chatId), env).catch(() => null);
-  if (!wallet) return showTelegramReferral(chatId, env, panelId, 'Create a Hopr wallet first — payouts are sent to it.');
+  if (!wallet?.evmAddress) return showTelegramReferral(chatId, env, panelId, 'Create or import an EVM wallet first — payouts are sent to it.');
   const result = await claimReferralRewards(telegramIdentity(String(chatId)), wallet.evmAddress, env).catch((error) => ({ requested: false as const, error: String(error), status: 500 }));
   return showTelegramReferral(chatId, env, panelId, result.requested
     ? `✅ Payout of ${formatRewardUsd(result.amountUsd)} requested — USDC will be sent to your Hopr wallet.`

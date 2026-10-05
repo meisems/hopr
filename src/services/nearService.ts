@@ -62,6 +62,17 @@ export function isNearImplicitAccount(value: string): boolean {
  * Top-level names without a dot are accepted only when they are 2–64 chars
  * and lowercase, to avoid matching arbitrary words.
  */
+/**
+ * Any syntactically valid NEAR account id (implicit, or named with at least
+ * one dot: `alice.near`, `x.sweat`, `bob.tg`…). Used for wallets and keys,
+ * where the account is known to be an account rather than a token guess.
+ */
+export function isValidNearAccountId(value: string): boolean {
+  if (value.length < 2 || value.length > 64) return false;
+  if (isNearImplicitAccount(value)) return true;
+  return value.includes('.') && /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(value);
+}
+
 export function isNearAccountId(value: string): boolean {
   if (value.length < 2 || value.length > 64) return false;
   if (isNearImplicitAccount(value)) return true;
@@ -107,7 +118,11 @@ export class NearRpcError extends Error {
 export interface NearRpcOptions {
   urls?: string[];
   fetchImpl?: typeof fetch;
+  /** Per-provider deadline; a hanging provider fails over instead of stalling the call. */
+  timeoutMs?: number;
 }
+
+const NEAR_RPC_TIMEOUT_MS = 8_000;
 
 function rpcUrls(options: NearRpcOptions = {}): string[] {
   const urls = (options.urls ?? []).filter(Boolean);
@@ -128,6 +143,7 @@ export async function nearRpc<T>(method: string, params: unknown, options: NearR
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 'hopr', method, params }),
+        signal: AbortSignal.timeout(options.timeoutMs ?? NEAR_RPC_TIMEOUT_MS),
       });
       if (response.status === 429 || response.status >= 500) {
         lastError = new NearRpcError(`NEAR RPC ${url} returned HTTP ${response.status}`);
@@ -249,15 +265,54 @@ export async function getNearBalance(accountId: string, extraTokenIds: string[] 
  * Confirm `publicKey` is a full-access key on `accountId` — required before
  * accepting an imported key for a named account.
  */
+/**
+ * True when `publicKey` is a full-access key of `accountId`. A missing key or
+ * account is a plain `false`; when every RPC provider is unreachable this
+ * throws, so callers can say "try again" instead of "wrong key".
+ */
 export async function verifyFullAccessKey(accountId: string, publicKey: string, options?: NearRpcOptions): Promise<boolean> {
   try {
     const key = await nearRpc<{ permission: unknown }>('query', {
       request_type: 'view_access_key', finality: 'final', account_id: accountId, public_key: publicKey,
     }, options);
     return key.permission === 'FullAccess';
-  } catch {
+  } catch (error) {
+    if (isNearRpcUnreachable(error)) throw error;
     return false;
   }
+}
+
+/** Every provider failed for transport reasons (timeouts, 429/5xx), not an answer about the account. */
+export function isNearRpcUnreachable(error: unknown): boolean {
+  return !(error instanceof NearRpcError) || /HTTP|rate limited|no result|All NEAR RPC/.test(error.message);
+}
+
+/**
+ * Every account a key controls with full access. A NEAR key does not encode
+ * its account: named accounts (`alice.near`) are looked up in FastNEAR's
+ * public-key index, the key's own implicit account is always a candidate,
+ * and each candidate is confirmed on-chain. Named accounts come first.
+ */
+export async function findNearAccountsForKey(
+  publicKey: string,
+  implicitAccountId: string,
+  options?: NearRpcOptions,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  let indexed: string[] = [];
+  try {
+    const response = await fetchImpl(`https://api.fastnear.com/v0/public_key/${publicKey}`, { signal: AbortSignal.timeout(4_000) });
+    if (response.ok) {
+      const body = await response.json() as { account_ids?: unknown };
+      if (Array.isArray(body.account_ids)) indexed = body.account_ids.filter((id): id is string => typeof id === 'string' && isValidNearAccountId(id));
+    }
+  } catch {
+    // Index unavailable: the implicit account is still checked below.
+  }
+  const candidates = [...new Set([...indexed, implicitAccountId])].slice(0, 8);
+  const verified = await Promise.all(candidates.map(async (id) => (await verifyFullAccessKey(id, publicKey, options) ? id : null)));
+  const implicit = (id: string) => /^[0-9a-f]{64}$/.test(id);
+  return verified.filter((id): id is string => id !== null).sort((left, right) => Number(implicit(left)) - Number(implicit(right)));
 }
 
 // ---------------------------------------------------------------------------

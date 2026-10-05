@@ -13,6 +13,7 @@ function createKv() {
   return {
     async get(key) { return values.get(key) ?? null; },
     async put(key, value) { values.set(key, value); },
+    async delete(key) { values.delete(key); },
     values,
   };
 }
@@ -165,7 +166,7 @@ test('/wallet <address> reads balances without requiring saved profile storage',
   const { calls } = await sendUpdate({ message: { chat: { id: 459, type: 'private' }, text: `/wallet ${address}` } }, {
     externalFetch: async () => Response.json({ result: '0x38d7ea4c68000' }),
   });
-  assert.match(calls[0].body.text, /<b>EVM<\/b> · <code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);
+  assert.match(calls[0].body.text, /🔷 <b>EVM<\/b>\n<code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);
   assert.match(calls[0].body.text, /<b>Base<\/b>: 0\.001 <code>ETH<\/code>/);
 });
 
@@ -570,11 +571,11 @@ test('Portfolio lists every holding across chains with values, 24h change and to
   assert.ok(buttons.flat().some((button) => button.callback_data === 'positions:fresh'));
 });
 
-test('the wallet manager switches the active wallet in the bot', async () => {
+test('the wallet manager groups wallets by chain and sets each chain’s default separately', async () => {
   const runs = [];
   const accounts = [
-    { id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: null },
-    { id: 'w2', label: 'W2', source: 'imported', is_active: 0, evm_address: '0x2222222222222222222222222222222222222222', solana_address: 'DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy', near_address: null },
+    { id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: null, default_for: null },
+    { id: 'w2', label: 'W2', source: 'imported', is_active: 0, evm_address: '0x2222222222222222222222222222222222222222', solana_address: null, near_address: null, default_for: null },
   ];
   const db = {
     prepare(sql) {
@@ -588,13 +589,15 @@ test('the wallet manager switches the active wallet in the bot', async () => {
   };
   const list = await sendUpdate({ callback_query: { id: 'wl', data: 'wallet:list', message: { message_id: 5, chat: { id: 4408, type: 'private' } } } }, { extraEnv: { DB: db } });
   const panel = list.calls.at(-1).body;
-  assert.match(plain(panel.text), /Switch wallet/);
-  assert.match(plain(panel.text), /✅ W1/);
-  const switchButtons = panel.reply_markup.inline_keyboard[0];
-  assert.deepEqual(switchButtons.map((button) => button.callback_data), ['wallet:use:w1', 'wallet:use:w2']);
-  await sendUpdate({ callback_query: { id: 'wu', data: 'wallet:use:w2', message: { message_id: 5, chat: { id: 4408, type: 'private' } } } }, { extraEnv: { DB: db } });
-  const activation = runs.find((run) => /SET is_active = CASE WHEN id = \?1/.test(run.sql));
-  assert.deepEqual(activation.params, ['w2', '4408']);
+  const text = plain(panel.text);
+  assert.match(text, /Your wallets/);
+  assert.match(text, /🔷 EVM\n├ ✅ W1 .*\n└ ▫️ W2 .*imported/);
+  assert.match(text, /◎ Solana\n└ ✅ W1/, 'the EVM-only import is not listed under Solana');
+  assert.deepEqual(panel.reply_markup.inline_keyboard[0].map((button) => button.callback_data), ['wallet:v:w1', 'wallet:v:w2']);
+
+  await sendUpdate({ callback_query: { id: 'wd', data: 'wallet:def:e:w2', message: { message_id: 5, chat: { id: 4408, type: 'private' } } } }, { extraEnv: { DB: db } });
+  const defaults = runs.filter((run) => /SET default_for/.test(run.sql)).map((run) => run.params);
+  assert.deepEqual(defaults, [['solana', 'w1', '4408'], ['evm', 'w2', '4408']], 'W2 takes EVM; W1 keeps Solana');
 });
 
 test('token card shows what you hold of the token and what you can pay with', async () => {
@@ -637,18 +640,25 @@ test('token card shows what you hold of the token and what you can pay with', as
   assert.deepEqual(watchlist[0], { chainId: 8453, address: token, symbol: 'HELD' }, 'opened tokens are tracked for the portfolio');
 });
 
-test('/importkey evm becomes a new active wallet instead of overwriting a funded key', async () => {
+test('/importkey evm becomes its own wallet and the EVM default, without touching the other chains', async () => {
   const runs = [];
+  const rows = [{ id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: null, default_for: null }];
   const db = {
     prepare(sql) {
       const statement = (params = []) => ({
         async first() {
-          if (/COUNT\(\*\)/.test(sql)) return { total: 1 };
-          if (/SELECT \* FROM wallet_accounts WHERE id/.test(sql)) return { id: params[0], label: 'W2', source: 'imported', evm_address: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23', solana_address: 'x', is_active: 1 };
+          if (/COUNT\(\*\)/.test(sql)) return { total: rows.length };
+          if (/SELECT \* FROM wallet_accounts WHERE id/.test(sql)) return rows.find((row) => row.id === params[0]) ?? null;
           return null;
         },
-        async all() { return { results: [{ label: 'W1' }] }; },
-        async run() { runs.push({ sql, params }); return { success: true, meta: { changes: 1 } }; },
+        async all() { return { results: /wallet_accounts/.test(sql) ? rows : [] }; },
+        async run() {
+          runs.push({ sql, params });
+          if (/INSERT INTO wallet_accounts/.test(sql)) {
+            rows.push({ id: params[0], label: params[2], source: params[3], evm_address: params[4], solana_address: params[6], near_address: null, is_active: 0, default_for: null });
+          }
+          return { success: true, meta: { changes: 1 } };
+        },
       });
       return { ...statement(), bind: (...params) => statement(params) };
     },
@@ -662,6 +672,9 @@ test('/importkey evm becomes a new active wallet instead of overwriting a funded
   assert.ok(insert, 'stored as a wallet_accounts row');
   assert.equal(insert.params[3], 'imported');
   assert.equal(insert.params[4], '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23');
+  assert.equal(insert.params[6], null, 'no Solana key is mixed into the imported wallet');
+  const defaults = runs.filter((run) => /SET default_for/.test(run.sql)).map((run) => run.params.slice(0, 2));
+  assert.deepEqual(defaults, [['solana', 'w1'], ['evm', insert.params[0]]], 'W1 keeps Solana; the import trades on EVM');
   assert.ok(!runs.some((run) => /user_wallets/.test(run.sql) && /UPDATE|ON CONFLICT/.test(run.sql)), 'the legacy wallet row is never overwritten');
   assert.match(plain(calls.at(-1).body.text), /EVM key imported as W2/);
   assert.ok(!JSON.stringify(calls).includes(key.slice(2)), 'the raw key is never echoed back');
@@ -741,4 +754,131 @@ test('wallets are named W1, W2 … and can be renamed from the bot', async () =>
   await kv.put('rename:v1:4413', 'w1');
   const bad = await sendUpdate({ message: { chat: { id: 4413, type: 'private' }, text: '<script>', reply_to_message: { text: ask.text, from: { is_bot: true } } } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
   assert.match(plain(bad.calls.at(-1).body.text), /Name not saved/);
+});
+
+/** D1 stand-in that keeps inserted wallets, so imports can be followed end to end. */
+function importDb(rows, runs = []) {
+  return {
+    prepare(sql) {
+      const statement = (params = []) => ({
+        async first() {
+          if (/COUNT\(\*\)/.test(sql)) return { total: rows.length };
+          if (/SELECT \* FROM wallet_accounts WHERE id/.test(sql)) return rows.find((row) => row.id === params[0]) ?? null;
+          return null;
+        },
+        async all() { return { results: /wallet_accounts/.test(sql) ? rows : [] }; },
+        async run() {
+          runs.push({ sql, params });
+          if (/INSERT INTO wallet_accounts/.test(sql)) {
+            rows.push({ id: params[0], label: params[2], source: params[3], evm_address: params[4], solana_address: params[6], near_address: params[8] ?? null, is_active: 0, default_for: null });
+          }
+          return { success: true, meta: { changes: 1 } };
+        },
+      });
+      return { ...statement(), bind: (...params) => statement(params) };
+    },
+  };
+}
+
+/** FastNEAR's key index plus NEAR RPC: `accounts` maps account id → its full-access public key. */
+function nearKeyNetwork(indexed, accounts) {
+  return async (url, init) => {
+    const href = String(url);
+    if (href.includes('api.fastnear.com/v0/public_key/')) {
+      return Response.json({ public_key: decodeURIComponent(href.split('/').pop()), account_ids: indexed });
+    }
+    const body = init?.body ? JSON.parse(init.body) : {};
+    if (body.params?.request_type === 'view_access_key') {
+      const { account_id: accountId, public_key: publicKey } = body.params;
+      if (accounts[accountId] === publicKey) return Response.json({ jsonrpc: '2.0', id: body.id, result: { permission: 'FullAccess', nonce: 1 } });
+      return Response.json({ jsonrpc: '2.0', id: body.id, error: { name: 'HANDLER_ERROR', cause: { name: 'UNKNOWN_ACCESS_KEY' }, message: 'access key does not exist' } });
+    }
+    throw new Error(`Unexpected request ${href}`);
+  };
+}
+
+test('📥 Import → NEAR → a pasted key (no Reply) imports the named account it controls, as its own wallet', async () => {
+  const { generateNearWallet } = await import('../src/services/nearSigner.ts');
+  const key = generateNearWallet();
+  const rows = [{ id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: 'a'.repeat(64), default_for: null }];
+  const runs = [];
+  const kv = createKv();
+  const extraEnv = { DB: importDb(rows, runs), TELEGRAM_STATE: kv, ENCRYPTION_KEY: 'test-encryption-key-test-encryption-key' };
+
+  const picker = await sendUpdate({ callback_query: { id: 'ip', data: 'wallet:import', message: { message_id: 3, chat: { id: 5001, type: 'private' } } } }, { extraEnv });
+  assert.deepEqual(picker.calls.at(-1).body.reply_markup.inline_keyboard[0].map((button) => button.callback_data), ['import:evm', 'import:solana', 'import:near']);
+  const prompt = await sendUpdate({ callback_query: { id: 'in', data: 'import:near', message: { message_id: 3, chat: { id: 5001, type: 'private' } } } }, { extraEnv });
+  assert.match(prompt.calls.at(-1).body.text, /reply with your NEAR private key/);
+
+  // The user just pastes the key as a normal message.
+  const { calls } = await sendUpdate({ message: { message_id: 44, chat: { id: 5001, type: 'private' }, text: key.privateKey } }, {
+    extraEnv,
+    externalFetch: nearKeyNetwork(['alice.near'], { 'alice.near': key.publicKey }),
+  });
+  assert.equal(calls[0].url.split('/').at(-1), 'deleteMessage', 'the key message is deleted first');
+  assert.equal(calls[0].body.message_id, 44);
+  const insert = runs.find((run) => /INSERT INTO wallet_accounts/.test(run.sql));
+  assert.equal(insert.params[8], 'alice.near', 'the named account, not the key’s implicit account');
+  assert.equal(insert.params[4], null, 'no EVM key is mixed in');
+  assert.equal(insert.params[6], null, 'no Solana key is mixed in');
+  const defaults = runs.filter((run) => /SET default_for/.test(run.sql)).map((run) => run.params.slice(0, 2));
+  assert.deepEqual(defaults, [['evm,solana', 'w1'], ['near', insert.params[0]]], 'W1 keeps EVM + Solana; the import trades on NEAR');
+  const result = plain(calls.at(-1).body.text);
+  assert.match(result, /NEAR key imported as W2/);
+  assert.match(result, /alice\.near/);
+  assert.ok(!JSON.stringify(calls).includes(key.privateKey.slice(8)), 'the raw key is never echoed back');
+});
+
+test('a NEAR key that controls several accounts asks which one to import', async () => {
+  const { generateNearWallet } = await import('../src/services/nearSigner.ts');
+  const key = generateNearWallet();
+  const rows = [];
+  const runs = [];
+  const kv = createKv();
+  const extraEnv = { DB: importDb(rows, runs), TELEGRAM_STATE: kv, ENCRYPTION_KEY: 'test-encryption-key-test-encryption-key' };
+  const network = nearKeyNetwork(['alice.near', 'bob.tg'], { 'alice.near': key.publicKey, 'bob.tg': key.publicKey });
+  const { calls } = await sendUpdate({ message: { chat: { id: 5002, type: 'private' }, text: `/importkey near ${key.privateKey}` } }, { extraEnv, externalFetch: network });
+  const choice = calls.at(-1).body;
+  assert.match(plain(choice.text), /Choose the NEAR account to import/);
+  assert.deepEqual(choice.reply_markup.inline_keyboard.slice(0, 2).map((row) => row[0].text), ['alice.near', 'bob.tg']);
+  assert.ok(!runs.some((run) => /INSERT INTO wallet_accounts/.test(run.sql)), 'nothing is stored before the choice');
+
+  await sendUpdate({ callback_query: { id: 'pk', data: 'import:near:pick:1', message: { message_id: 8, chat: { id: 5002, type: 'private' } } } }, { extraEnv, externalFetch: network });
+  const insert = runs.find((run) => /INSERT INTO wallet_accounts/.test(run.sql));
+  assert.equal(insert.params[8], 'bob.tg');
+});
+
+test('importing a key you already have makes that wallet the default instead of duplicating it', async () => {
+  const key = '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318';
+  const rows = [
+    { id: 'w1', label: 'W1', source: 'generated', is_active: 1, evm_address: '0x1111111111111111111111111111111111111111', solana_address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', near_address: null, default_for: null },
+    { id: 'w2', label: 'Main', source: 'imported', is_active: 0, evm_address: '0x2c7536e3605d9c16a7a3d7b1898e529396a65c23', solana_address: null, near_address: null, default_for: null },
+  ];
+  const runs = [];
+  const { calls } = await sendUpdate({ message: { chat: { id: 5003, type: 'private' }, text: `/importkey evm ${key}` } }, {
+    extraEnv: { DB: importDb(rows, runs), ENCRYPTION_KEY: 'test-encryption-key-test-encryption-key' },
+  });
+  assert.ok(!runs.some((run) => /INSERT INTO wallet_accounts/.test(run.sql)), 'no duplicate wallet');
+  assert.match(plain(calls.at(-1).body.text), /Already yours — Main is your EVM wallet/);
+});
+
+test('👀 Track wallet accepts a pasted address without Reply', async () => {
+  const kv = createKv();
+  const runs = [];
+  const db = {
+    prepare(sql) {
+      const statement = (params = []) => ({
+        async first() { return null; },
+        async all() { return { results: [] }; },
+        async run() { runs.push({ sql, params }); return { success: true, meta: { changes: 1 } }; },
+      });
+      return { ...statement(), bind: (...params) => statement(params) };
+    },
+  };
+  await sendUpdate({ callback_query: { id: 'ta', data: 'track:add', message: { message_id: 2, chat: { id: 5004, type: 'private' } } } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
+  await sendUpdate({ message: { chat: { id: 5004, type: 'private' }, text: 'whale.near Whale' } }, { extraEnv: { DB: db, TELEGRAM_STATE: kv } });
+  const insert = runs.find((run) => /INSERT INTO tracked_wallets/.test(run.sql));
+  assert.ok(insert, 'the plain message was taken as the wallet to track');
+  assert.ok(insert.params.includes('whale.near'));
+  assert.ok(insert.params.includes('near'));
 });

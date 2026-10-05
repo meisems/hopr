@@ -336,6 +336,8 @@ In a private chat with the bot:
 
 ### Limit / take-profit / stop-loss orders
 
+`migrations/0010_wallet_chain_defaults.sql` adds per-chain default wallets: each chain (EVM, Solana, NEAR) trades from its ✅ wallet, and an imported key is stored as a wallet of its own chain only. NEAR imports find the account a key controls (FastNEAR key index, confirmed on-chain), so a `alice.near` key imports `alice.near`. Until the migration is applied the bot falls back to one active wallet.
+
 `migrations/0008_limit_orders.sql` (applied by `npx wrangler d1 migrations apply hopr-db --remote`) creates the order book. `wrangler.toml` registers a cron trigger (`* * * * *`, for both the default and `production` environments) that runs the worker's `scheduled` handler every minute to check prices and execute triggered orders. After deploying, confirm it under Workers → hopr → Settings → Triggers, and watch the `Order sweep` log lines when an order fires. Orders sign with the stored wallet keys, so `ENCRYPTION_KEY`, `TELEGRAM_STATE` and a keyed RPC per chain (see above) must be configured.
 
 ### Wallet tracking and copy trading

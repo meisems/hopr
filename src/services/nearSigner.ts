@@ -12,7 +12,7 @@
 import { ed25519 } from '@noble/curves/ed25519';
 import { sha256 } from '@noble/hashes/sha2';
 import bs58 from 'bs58';
-import { isNearAccountId, nearRpc, NearRpcError, type NearAction, type NearRpcOptions, type NearTransactionPlan } from './nearService';
+import { isValidNearAccountId, nearRpc, NearRpcError, type NearAction, type NearRpcOptions, type NearTransactionPlan } from './nearService';
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -70,7 +70,7 @@ function decodeNearSecret(privateKey: string): { seed: Uint8Array; publicKey: Ui
  * is a full-access key of that account (see verifyFullAccessKey).
  */
 export function importNearKey(privateKey: string, accountId?: string): NearKeyPair {
-  if (accountId !== undefined && !isNearAccountId(accountId)) throw new Error('Invalid NEAR account id');
+  if (accountId !== undefined && !isValidNearAccountId(accountId)) throw new Error('Invalid NEAR account id');
   const { seed } = decodeNearSecret(privateKey);
   return keyPairFromSeed(seed, accountId);
 }
