@@ -195,10 +195,11 @@ test('token address gets real market lookup details from DexScreener', async () 
   assert.match(card, /no transaction was submitted/);
   const keyboard = calls[0].body.reply_markup.inline_keyboard;
   assert.deepEqual(keyboard[0].map((button) => button.text), ['🔄 Refresh', '✖️ Close']);
+  // Base ETH presets (not 0.1 / 0.5 / 1 ETH, which suited no chain's coin).
   assert.deepEqual(keyboard[1], [
-    { text: '🟢 Buy 0.1 ETH', callback_data: 'trade:buy:0.1' },
-    { text: '🟢 Buy 0.5 ETH', callback_data: 'trade:buy:0.5' },
-    { text: '🟢 Buy 1.0 ETH', callback_data: 'trade:buy:1.0' },
+    { text: '🟢 Buy 0.005 ETH', callback_data: 'trade:buy:0.005' },
+    { text: '🟢 Buy 0.01 ETH', callback_data: 'trade:buy:0.01' },
+    { text: '🟢 Buy 0.05 ETH', callback_data: 'trade:buy:0.05' },
   ]);
   assert.deepEqual(keyboard[3].map((button) => button.callback_data), ['token:pay:397', 'token:pay:1151111081099710', 'token:pay:4663']);
   assert.deepEqual(keyboard[4].map((button) => button.text), ['✏️ Buy X', '⛓ Base', '🎚 Slip 1%']);
@@ -461,7 +462,7 @@ test('/start t_<address> from the website opens that token\'s trading panel', as
   assert.equal(chatActions.length, 1);
   const card = calls.at(-1).body;
   assert.match(plain(card.text), /WEB  \|  WEB Token/);
-  assert.ok(card.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === 'trade:buy:0.1'));
+  assert.ok(card.reply_markup.inline_keyboard.flat().some((button) => button.callback_data?.startsWith('trade:buy:')));
 });
 
 test('the Mini App is gone: /app opens the menu and no button opens a web app', async () => {

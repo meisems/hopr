@@ -171,8 +171,8 @@ test('NEAR token address opens a NEAR market card with NEAR-denominated quick bu
   const card = plain(calls[0].body.text);
   assert.match(card, /Ⓝ NEAR · 🏪 Rhea/);
   assert.match(card, /Route  Ref Finance \/ Rhea DCL · paid in NEAR/);
-  assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[1].map((button) => button.callback_data), ['trade:buy:0.5', 'trade:buy:1', 'trade:buy:5']);
-  assert.equal(calls[0].body.reply_markup.inline_keyboard[1][1].text, '🟢 Buy 1 NEAR');
+  assert.deepEqual(calls[0].body.reply_markup.inline_keyboard[1].map((button) => button.callback_data), ['trade:buy:0.1', 'trade:buy:0.5', 'trade:buy:1']);
+  assert.equal(calls[0].body.reply_markup.inline_keyboard[1][1].text, '🟢 Buy 0.5 NEAR');
   assert.equal(calls[0].body.reply_markup.inline_keyboard[5][1].url, 'https://nearblocks.io/token/token.v2.ref-finance.near');
   for (const row of calls[0].body.reply_markup.inline_keyboard) {
     for (const button of row) if (button.callback_data) assert.ok(Buffer.byteLength(button.callback_data) <= 64, button.callback_data);
@@ -564,4 +564,34 @@ test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; 
   await funded.kv.put('telegram:91', profile);
   const quoted = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 91, type: 'private' } } } }, funded.env, solanaNetwork(10_000_000));
   assert.equal(quoted.at(-1).body.reply_markup.inline_keyboard[0][0].text, '✅ Confirm step 1', 'held SOL pays the gas, so 0.1 NEAR goes through');
+});
+
+test('a buy below the route minimum is refused before anything is quoted, with valid amounts offered', async () => {
+  const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const near = createNearNetwork();
+  const requests = [];
+  const network = {
+    broadcasts: near.broadcasts,
+    fetchImpl: async (url, init = {}) => {
+      const href = String(url);
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      requests.push(href);
+      if (href.endsWith('/v0/tokens')) return Response.json([{ assetId: 'nep141:sol.omft.near', blockchain: 'sol', symbol: 'SOL', decimals: 9 }]);
+      if (body?.method === 'getBalance') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: 0 } });
+      if (body?.method === 'getTokenAccountsByOwner') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: [] } });
+      return near.fetchImpl(url, init);
+    },
+  };
+  const { kv, env } = await custodialSetup();
+  await kv.put('telegram:93', JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK' }));
+  const calls = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.01', message: { message_id: 5, chat: { id: 93, type: 'private' } } } }, env, network);
+  const reply = calls.at(-1).body;
+  assert.match(plain(reply.text), /Amount outside this route’s range/);
+  assert.match(plain(reply.text), /minimum for this route is \d+(\.\d+)? NEAR/);
+  assert.match(plain(reply.text), /Nothing was quoted or sent/);
+  const offered = reply.reply_markup.inline_keyboard[0].filter((button) => button.callback_data?.startsWith('trade:buy:'));
+  assert.ok(offered.length > 0, 'valid amounts are offered');
+  assert.ok(offered.every((button) => Number(button.callback_data.split(':')[2]) >= 0.1), 'none below the minimum');
+  assert.ok(!requests.some((href) => href.endsWith('/v0/quote')), 'nothing was quoted');
+  assert.equal(network.broadcasts.length, 0);
 });

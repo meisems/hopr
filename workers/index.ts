@@ -53,6 +53,7 @@ import { forgetPortfolio, loadPortfolio, NATIVE, pendingPortfolioLoad, quickNati
 import { apiKeyStatus, applyRpcConfig, solanaBroadcastRpcs, transactionRpc, type RpcEnv } from './rpcConfig';
 import { chainMarkets } from './portfolio';
 import { gasReserve } from './gasReserve';
+import { buyAmountProblem, buyButtonAmounts, buyLimits, formatAmount, niceCeil, type BuyLimits } from './buyLimits';
 import { cancelOrder, createOrder, listOrders, ORDER_LABEL, OrderError, runOrderSweep, type LimitOrder, type OrderKind } from './orders';
 import {
   fetchEvmTrades, fetchNearTrades, fetchSolanaTrades, latestEvmBlock, MAX_COPY_TRADES_PER_DAY, MAX_TRACKED_PER_USER, MIN_COPY_LIQUIDITY_USD,
@@ -339,6 +340,9 @@ function telegramActionKeyboard(): TelegramKeyboard {
 
 interface TokenKeyboardContext {
   chainId?: number;
+  /** Buy amounts already fitted to the route's limits (see buyButtonAmounts). */
+  buyAmounts?: string[];
+  buyLimits?: BuyLimits | null;
   /** Chain the quick buys are paid from (any supported chain, including NEAR). */
   fundingChainId?: number;
   /** Native symbol the quick buys spend (ETH, SOL, BNB, NEAR …). */
@@ -352,12 +356,37 @@ interface TokenKeyboardContext {
 }
 
 /** Quick-buy presets for the pay-from chain: NEAR keeps 0.5/1/5; NEAR tokens paid elsewhere use chain-sized presets. */
+/** One-tap buy presets in the pay-from coin (filtered to the route's limits on each card). */
+function telegramBuyPresets(fundingChainId: number | undefined): string[] {
+  if (fundingChainId === NEAR_CHAIN_ID) return ['0.1', '0.5', '1', '5', '10'];
+  return getNetwork(fundingChainId ?? 8453)?.quickBuy ?? QUICK_BUY_AMOUNTS;
+}
+
 function telegramQuickBuyAmounts(tokenChainId: number | undefined, fundingChainId: number | undefined): string[] {
-  if (tokenChainId === NEAR_CHAIN_ID) {
-    if (fundingChainId === undefined || fundingChainId === NEAR_CHAIN_ID) return NEAR_QUICK_BUY_AMOUNTS;
-    return getNetwork(fundingChainId)?.quickBuy.slice(0, 3) ?? QUICK_BUY_AMOUNTS;
+  const funding = fundingChainId ?? (tokenChainId === NEAR_CHAIN_ID ? NEAR_CHAIN_ID : 8453);
+  return telegramBuyPresets(funding).slice(0, 3);
+}
+
+/** The Buy row: amounts within the route's limits, or a nudge to fund the wallet. */
+function telegramBuyRow(amounts: string[], fundingSymbol: string, limits: BuyLimits | null): TelegramButton[] {
+  if (!amounts.length && limits) {
+    return [{ text: `💳 Fund ≥ ${formatAmount(niceCeil(limits.min))} ${fundingSymbol} to buy`, callback_data: 'wallet' }];
   }
-  return QUICK_BUY_AMOUNTS;
+  return amounts.map((amount) => ({ text: `🟢 Buy ${amount}${fundingSymbol ? ` ${fundingSymbol}` : ''}`, callback_data: `trade:buy:${amount}` }));
+}
+
+/** A route's limits within a time budget (null when they can't be read in time: presets apply). */
+async function telegramBuyLimits(chatId: number, profile: TelegramProfile, wallet: CustodialWallet | null, env: Env, budgetMs = 2_500): Promise<BuyLimits | null> {
+  if (!wallet || !profile.lastTokenAddress || profile.lastTokenChainId === undefined) return null;
+  const fundingChainId = profile.fundingChainId ?? (profile.lastTokenChainId === NEAR_CHAIN_ID ? NEAR_CHAIN_ID : 8453);
+  const limits = buyLimits({
+    tokenChainId: profile.lastTokenChainId,
+    tokenAddress: profile.lastTokenAddress,
+    fundingChainId,
+    wallet,
+    near: nearRpcOptions(env),
+  }).catch(() => null);
+  return Promise.race([limits, new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs))]);
 }
 
 /** How long a token card waits for balances to choose Pay-with chains (usually cached already). */
@@ -391,10 +420,7 @@ function telegramTokenKeyboard(address: string, context: TokenKeyboardContext = 
         { text: '🔄 Refresh', callback_data: refresh },
         { text: '✖️ Close', callback_data: 'dismiss' },
       ],
-      telegramQuickBuyAmounts(context.chainId, context.fundingChainId).map((amount) => ({
-        text: `🟢 Buy ${amount}${fundingSymbol ? ` ${fundingSymbol}` : ''}`,
-        callback_data: `trade:buy:${amount}`,
-      })),
+      telegramBuyRow(context.buyAmounts ?? telegramQuickBuyAmounts(context.chainId, context.fundingChainId), fundingSymbol, context.buyLimits ?? null),
       [
         { text: '🔴 Sell 25%', callback_data: 'trade:sell:25' },
         { text: '🔴 Sell 50%', callback_data: 'trade:sell:50' },
@@ -1310,10 +1336,14 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
   const tokenOwner = ownerOn(chainId);
   const fundingOwner = ownerOn(fundingChain.id);
   const nearRpc = nearRpcOptions(env);
-  const [held, payBalance] = await Promise.all([
+  const [held, payBalance, limits] = await Promise.all([
     tokenOwner && chainId !== undefined ? quickTokenBalance(chainId, address, tokenOwner, nearRpc) : Promise.resolve(null),
     fundingOwner ? quickNativeBalance(fundingChain.id, fundingOwner, nearRpc) : Promise.resolve(null),
+    chainId !== undefined
+      ? telegramBuyLimits(chatId, { ...(profile ?? {}), lastTokenAddress: address, lastTokenChainId: chainId, fundingChainId: fundingChain.id }, wallet, env)
+      : Promise.resolve(null),
   ]);
+  const buyAmounts = buyButtonAmounts(telegramBuyPresets(fundingChain.id), limits);
   const heldUnits = held ? BigInt(held.amount) : 0n;
   const heldValue = held && heldUnits > 0n && price > 0 ? Number(formatUnits(heldUnits, held.decimals, 8).replace(/,/g, '')) * price : null;
   const walletLines = wallet ? [
@@ -1385,6 +1415,8 @@ async function lookupTelegramToken(chatId: number, address: string, env: Env, pa
     : Promise.resolve();
   await Promise.all([persisted, watched, sendTelegramPanel(chatId, panelId, result, env, telegramTokenKeyboard(address, {
     chainId,
+    buyAmounts,
+    buyLimits: limits,
     fundingChainId: fundingChain.id,
     fundingSymbol,
     fundingChainName: fundingChain.name.replace(' One', '').replace(' Chain', ''),
@@ -2221,11 +2253,15 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
       await sendTelegramMessage(chatId, tgMessage(tgTitle('🔎', 'Pick a token first'), 'Paste a token address, then tap ✏️ Buy X on its panel.'), env, telegramActionKeyboard());
       return;
     }
-    const symbol = profile.lastTokenChainId === NEAR_CHAIN_ID
-      ? 'NEAR'
-      : TELEGRAM_CHAINS.find((chain) => chain.id === (profile.fundingChainId ?? 8453))?.symbol ?? 'native';
+    const fundingChainId = profile.fundingChainId ?? (profile.lastTokenChainId === NEAR_CHAIN_ID ? NEAR_CHAIN_ID : 8453);
+    const symbol = TELEGRAM_CHAINS.find((chain) => chain.id === fundingChainId)?.symbol ?? 'native';
+    const wallet = await getCustodialWallet(String(chatId), env).catch(() => null);
+    const limits = await telegramBuyLimits(chatId, profile, wallet, env);
+    const range = limits
+      ? ` Minimum ${formatAmount(niceCeil(limits.min))}${limits.max !== null && limits.max >= limits.min ? `, up to ${formatAmount(limits.max)}` : ''} ${symbol}.`
+      : '';
     // Force-reply: the answer comes back as a reply to this exact prompt.
-    await sendTelegramMessage(chatId, `${TELEGRAM_BUY_X_PROMPT} ${symbol} to spend on ${profile.lastTokenSymbol ?? 'this token'}.`, env, {
+    await sendTelegramMessage(chatId, `${TELEGRAM_BUY_X_PROMPT} ${symbol} to spend on ${profile.lastTokenSymbol ?? 'this token'}.${range}`, env, {
       force_reply: true,
       input_field_placeholder: `Amount in ${symbol}, e.g. 1`,
     }, null);
@@ -2324,6 +2360,24 @@ async function handleTelegramTradeAction(chatId: number, data: string, env: Env,
   if (!env.ENCRYPTION_KEY) {
     await sendTelegramMessage(chatId, '🧩 Trading is not available: the bot owner has not set <code>ENCRYPTION_KEY</code>.', env, telegramActionKeyboard());
     return;
+  }
+
+  // Refuse amounts the route can't complete (stale buttons, ✏️ Buy X) before quoting anything.
+  const requested = data.match(/^trade:buy:(\d{1,12}(?:\.\d{1,24})?)$/);
+  if (requested) {
+    const limits = await telegramBuyLimits(chatId, profile, wallet, env, 4_000);
+    const problem = limits ? buyAmountProblem(Number(requested[1]), limits) : null;
+    if (limits && problem) {
+      const fundingChainId = profile.fundingChainId ?? (profile.lastTokenChainId === NEAR_CHAIN_ID ? NEAR_CHAIN_ID : 8453);
+      const fits = buyButtonAmounts(telegramBuyPresets(fundingChainId), limits);
+      await sendTelegramMessage(chatId, tgMessage(tgTitle('✋', 'Amount outside this route’s range'), escapeTelegramHtml(problem), tgFootnote('Nothing was quoted or sent.')), env, {
+        inline_keyboard: [
+          telegramBuyRow(fits, limits.symbol, limits),
+          [{ text: '✏️ Buy X', callback_data: 'trade:custom' }, { text: '◀️ Back to token', callback_data: 'token:refresh:last' }],
+        ],
+      });
+      return;
+    }
   }
 
   if (profile.lastTokenChainId === NEAR_CHAIN_ID) {

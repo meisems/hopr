@@ -1021,8 +1021,11 @@ export async function prepareIncomingNearBuy(params: {
   const preview = await quoteOnce(true);
   if (!direct) {
     // Validate the final pool before offering a funding transaction.
-    const input = BigInt(preview.minAmountOut ?? preview.amountOut!) * 98n / 100n - NEAR_GAS_RESERVE_YOCTO;
-    if (input <= 0n) throw new Error('Amount too small for NEAR gas and the final swap');
+    // NEAR already in the wallet pays the gas first; only the shortfall comes out of what arrives.
+    const heldNear = BigInt(nearBefore.availableYocto);
+    const gasShortfall = NEAR_GAS_RESERVE_YOCTO > heldNear ? NEAR_GAS_RESERVE_YOCTO - heldNear : 0n;
+    const input = BigInt(preview.minAmountOut ?? preview.amountOut!) * 98n / 100n - gasShortfall;
+    if (input <= 0n) throw new Error('Too small for this route: NEAR gas (~0.05 NEAR) is paid from what arrives. Buy a larger amount or keep some NEAR in your wallet. No funds were moved.');
     await getNearSwapQuote({ tokenIn: WRAP_NEAR, tokenOut: params.tokenAddress, amountIn: input.toString(), slippage: params.slippage, rpc });
   }
   const balance = nearBefore;
