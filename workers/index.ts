@@ -1023,32 +1023,26 @@ async function loadTelegramHomeWallet(chatId: number, chatType: string | undefin
 /** The home screen shows the chains that answered within this budget; the rest keep loading. */
 const HOME_PORTFOLIO_BUDGET_MS = 2_500;
 
-/** Home screen shared by /start and /menu: a dashboard of balance, per-chain coins, wallet, then how to trade. */
+/**
+ * Home screen shared by /start and /menu. Deliberately short: title, balance,
+ * one line of coins, one hint. Addresses and details live behind the buttons
+ * (💳 Wallets, 💼 Portfolio, ❓ Help).
+ */
 function telegramHomeText(heading: string, wallet: TelegramHomeWallet, portfolio: Portfolio | null): string {
-  const natives = portfolio?.holdings.filter((holding) => holding.address === NATIVE) ?? [];
-  const pending = portfolio?.pendingChains.length
-    ? `\n<i>⏳ ${portfolio.pendingChains.map((id) => TELEGRAM_CHAIN_NAMES[id] ?? id).join(', ')} loading…</i>`
-    : '';
+  const coins = (portfolio?.holdings ?? [])
+    .filter((holding) => holding.address === NATIVE && BigInt(holding.amount) > 0n)
+    .slice(0, 4)
+    .map((holding) => `${chainEmoji(holding.chainId)} ${formatTokenAmount(holding.amount, holding.decimals)} ${escapeTelegramHtml(holding.symbol)}`);
+  const funded = Boolean(portfolio && (portfolio.totalUsd > 0 || coins.length));
+  const hint = !wallet
+    ? 'No trading wallet yet — tap 💳 Wallets to create one.'
+    : funded
+      ? 'Paste a token address to trade.'
+      : 'Fund your wallet from 💳 Wallets, then paste a token address to trade.';
   return tgMessage(
-    tgTitle('⚡', heading, 'Cross-chain trading terminal · 7 chains · you confirm every trade'),
-    wallet && portfolio
-      ? `💼 <b>Portfolio</b>  ━  <b>${formatUsdValue(portfolio.totalUsd)}</b>\n${natives.length
-        ? tgCard(natives.slice(0, 7).map((holding) => `${chainEmoji(holding.chainId)} <b>${escapeTelegramHtml(holding.symbol)}</b>  ${formatTokenAmount(holding.amount, holding.decimals)}${holding.valueUsd !== null ? `  <i>${formatUsdValue(holding.valueUsd)}</i>` : ''}`))
-        : '└ <i>Empty — fund an address below to start trading</i>'}${pending}`
-      : null,
-    wallet
-      ? tgSection('💳', 'Wallet  <i>· tap to copy</i>', [
-        `EVM   <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
-        `SOL   <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
-        ...(wallet.nearAddress ? [`NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`] : []),
-      ])
-      : tgSection('💳', 'Wallet', ['No trading wallet yet — tap 💳 Wallets to create one in one tap']),
-    tgSection('🚀', 'Quick start', [
-      '<b>Paste any token address</b> to open its trading panel',
-      'Pay from any chain — Hopr finds the route, you confirm the live quote',
-      'Ⓝ /swap for NEAR pairs · 🎯 limit, TP &amp; SL in Orders',
-    ]),
-    tgFootnote(`◎ Solana · 🔷 Base · 🔵 Arbitrum · 🟡 BNB · 🟩 Robinhood · ◢ Arc · Ⓝ NEAR\n🔐 Keys AES-256 encrypted · ${telegramUtcTime()}`),
+    `⚡ <b>${heading}</b>`,
+    wallet && portfolio ? `💼 <b>${formatUsdValue(portfolio.totalUsd)}</b>${coins.length ? `\n${coins.join('  ·  ')}` : ''}` : null,
+    `<i>${hint}</i>`,
   );
 }
 

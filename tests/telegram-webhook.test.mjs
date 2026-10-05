@@ -468,7 +468,8 @@ test('the Mini App is gone: /app opens the menu and no button opens a web app', 
     extraEnv: { TELEGRAM_MINI_APP_URL: 'https://hopr.example/' },
   });
   const menu = calls.at(-1).body;
-  assert.match(plain(menu.text), /Cross-chain trading terminal/);
+  assert.match(plain(menu.text), /⚡ Hopr/);
+  assert.ok(plain(menu.text).split('\n').length <= 5, 'the home screen stays short');
   assert.ok(menu.reply_markup.inline_keyboard.flat().every((button) => !button.web_app));
 });
 
