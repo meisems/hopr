@@ -33,6 +33,7 @@ import {
   NEAR_CHAIN_ID,
   NEAR_GAS_RESERVE_YOCTO,
   formatNearAmount,
+  formatUnits,
   planAttachedDeposit,
   refInputContract,
   splitHoprFee,
@@ -893,9 +894,23 @@ export async function prepareNearIntentsBuy(params: {
   const hubChain = getChainById(hubChainId)!;
   if (!direct) {
     if (!env.TELEGRAM_STATE) throw new Error('Multi-step NEAR buys require TELEGRAM_STATE to resume the final swap.');
+    // Gas for the final swap (on Solana also the new token account's rent), in the delivered coin's units.
     const reserve = hubChain.type === 'SVM' ? 5_000_000n : hubChainId === ARC_CHAIN_ID ? 100_000n : hubChainId === 56 ? 1_000_000_000_000_000n : 300_000_000_000_000n;
-    const spend = BigInt(quote.minAmountOut ?? quote.amountOut) - reserve;
-    if (spend <= 0n) throw new Error('This amount cannot cover the final swap and gas. No funds were moved.');
+    const delivered = BigInt(quote.minAmountOut ?? quote.amountOut);
+    // Coins the wallet already holds there pay that gas first; only the shortfall comes out of the delivery.
+    const nativeDecimals = hubChain.type === 'SVM' ? 9 : 18;
+    const heldNative = await readNativeBalance(hubChainId, addressOn(hubChain.type)).catch(() => 0n);
+    const held = heldNative * 10n ** BigInt(destination.decimals) / 10n ** BigInt(nativeDecimals);
+    const shortfall = reserve > held ? reserve - held : 0n;
+    const spend = delivered - shortfall;
+    if (spend <= 0n) {
+      // Enough NEAR that, after the shortfall, about half a reserve's worth is left to swap.
+      const needed = (amount * (shortfall * 3n / 2n) + delivered - 1n) / delivered;
+      const coin = hubChain.nativeSymbol;
+      throw new Error(`Too small for this route. The final swap on ${hubChain.name} needs about ${formatUnits(reserve, destination.decimals, 4)} ${coin} for gas${hubChain.type === 'SVM' ? ' and the token account' : ''}, `
+        + `and ${formatNearAmount(amount.toString())} NEAR only delivers about ${formatUnits(delivered, destination.decimals, 5)} ${coin}. `
+        + `Buy with at least ${formatNearAmount(needed.toString())} NEAR, keep a little ${coin} in your ${hubChain.name} wallet, or pay with ${coin} directly. No funds were moved.`);
+    }
     // Check the final market before offering the bridge for confirmation. The route
     // is quoted again after delivery because this preview can expire or lose liquidity.
     try {

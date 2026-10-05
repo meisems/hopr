@@ -516,3 +516,44 @@ test('NEAR-funded launchpad buy refuses the bridge when the final token has no r
   assert.equal(near.broadcasts.length, 0);
   assert.ok(!calls.at(-1).body.reply_markup?.inline_keyboard?.flat().some(b => b.callback_data?.startsWith('trade:confirm:')));
 });
+
+test('paying 0.1 NEAR for a Solana token: SOL already in the wallet covers gas; an empty wallet is told the minimum', async () => {
+  const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const solanaNetwork = (lamports) => {
+    const near = createNearNetwork();
+    return {
+      broadcasts: near.broadcasts,
+      fetchImpl: async (url, init = {}) => {
+        const href = String(url);
+        const body = init.body ? JSON.parse(init.body) : undefined;
+        if (href.endsWith('/v0/tokens')) {
+          return Response.json([
+            { assetId: 'nep141:sol.omft.near', blockchain: 'sol', symbol: 'SOL', decimals: 9 },
+            { assetId: 'nep141:wrap.near', blockchain: 'near', symbol: 'wNEAR', decimals: 24, contractAddress: 'wrap.near' },
+          ]);
+        }
+        // 0.1 NEAR delivers ~0.0017 SOL: less than the 0.005 SOL the final swap keeps for gas and rent.
+        if (href.endsWith('/v0/quote')) return Response.json({ quote: { depositAddress: 'e'.repeat(64), amountOut: '1750000', minAmountOut: '1700000', timeEstimate: 60 } });
+        if (body?.method === 'getBalance') return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: lamports } });
+        if (href.includes('li.quest/v1/quote')) {
+          return Response.json({ id: 'q', estimate: { fromAmount: '1700000', toAmount: '90000000', toAmountMin: '89000000', executionDuration: 20 }, transactionRequest: { data: 'AQ==' } });
+        }
+        return near.fetchImpl(url, init);
+      },
+    };
+  };
+  const profile = JSON.stringify({ fundingChainId: NEAR_CHAIN_ID, lastTokenAddress: BONK, lastTokenChainId: 1151111081099710, lastTokenChainType: 'SVM', lastTokenSymbol: 'BONK', slippagePercent: 1 });
+
+  const empty = await custodialSetup();
+  await empty.kv.put('telegram:90', profile);
+  const refused = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 90, type: 'private' } } } }, empty.env, solanaNetwork(0));
+  const reason = plain(refused.at(-1).body.text);
+  assert.match(reason, /Too small for this route/);
+  assert.match(reason, /Buy with at least 0\.44\d* NEAR/);
+  assert.match(reason, /No funds were moved/);
+
+  const funded = await custodialSetup();
+  await funded.kv.put('telegram:91', profile);
+  const quoted = await sendUpdate({ callback_query: { id: 'q', data: 'trade:buy:0.1', message: { message_id: 5, chat: { id: 91, type: 'private' } } } }, funded.env, solanaNetwork(10_000_000));
+  assert.equal(quoted.at(-1).body.reply_markup.inline_keyboard[0][0].text, '✅ Confirm step 1', 'held SOL pays the gas, so 0.1 NEAR goes through');
+});
