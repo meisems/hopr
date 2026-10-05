@@ -18,7 +18,7 @@ interface ThemeContextType {
 
 // New key: the old 'hopr-theme' value was written automatically, so it does not reflect a real choice.
 const STORAGE_KEY = 'hopr-theme-preference';
-const THEME_COLORS: Record<ResolvedTheme, string> = { dark: '#07080b', light: '#f5f7fa' };
+const THEME_COLORS: Record<ResolvedTheme, string> = { dark: '#08080d', light: '#f6f6fa' };
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 function readPreference(): ThemePreference {

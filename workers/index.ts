@@ -297,23 +297,28 @@ const NEAR_QUICK_BUY_AMOUNTS = ['0.5', '1', '5'];
 function telegramActionKeyboard(): TelegramKeyboard {
   return {
     inline_keyboard: [
+      // Trade first, then what you hold, discovery, account, and housekeeping last.
       [
         { text: '🟢 Buy', callback_data: 'trade:start' },
         { text: '🔴 Sell', callback_data: 'positions' },
       ],
       [
         { text: '💼 Portfolio', callback_data: 'positions' },
-        { text: '💳 Wallets', callback_data: 'wallet' },
+        { text: '🎯 Orders', callback_data: 'orders' },
       ],
       [
         { text: '📡 Launch radar', callback_data: 'pools' },
-        { text: '⚙️ Settings', callback_data: 'settings' },
+        { text: '👀 Tracking', callback_data: 'track' },
       ],
       [
+        { text: '💳 Wallets', callback_data: 'wallet' },
         { text: '🎁 Refer & Earn', callback_data: 'referral' },
-        { text: '❓ Help', callback_data: 'help' },
       ],
-      [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '👀 Tracking', callback_data: 'track' }, { text: '🔄 Refresh', callback_data: 'menu' }],
+      [
+        { text: '⚙️ Settings', callback_data: 'settings' },
+        { text: '❓ Help', callback_data: 'help' },
+        { text: '🔄 Refresh', callback_data: 'menu' },
+      ],
     ],
   };
 }
@@ -1018,28 +1023,32 @@ async function loadTelegramHomeWallet(chatId: number, chatType: string | undefin
 /** The home screen shows the chains that answered within this budget; the rest keep loading. */
 const HOME_PORTFOLIO_BUDGET_MS = 2_500;
 
-/** Home screen shared by /start and /menu: portfolio value and per-chain coins, wallet, then how to trade. */
+/** Home screen shared by /start and /menu: a dashboard of balance, per-chain coins, wallet, then how to trade. */
 function telegramHomeText(heading: string, wallet: TelegramHomeWallet, portfolio: Portfolio | null): string {
   const natives = portfolio?.holdings.filter((holding) => holding.address === NATIVE) ?? [];
+  const pending = portfolio?.pendingChains.length
+    ? `\n<i>⏳ ${portfolio.pendingChains.map((id) => TELEGRAM_CHAIN_NAMES[id] ?? id).join(', ')} loading…</i>`
+    : '';
   return tgMessage(
-    tgTitle('⚡', heading, 'Cross-chain trading terminal · Solana · Base · Arbitrum · BNB · Robinhood · Arc · NEAR'),
+    tgTitle('⚡', heading, 'Cross-chain trading terminal · 7 chains · you confirm every trade'),
     wallet && portfolio
-      ? `💼 <b>Portfolio</b>  <b>${formatUsdValue(portfolio.totalUsd)}</b>${portfolio.pendingChains.length ? `  <i>· ${portfolio.pendingChains.map((id) => TELEGRAM_CHAIN_NAMES[id] ?? id).join(', ')} loading</i>` : ''}${natives.length ? `\n${tgCard(natives.slice(0, 7).map((holding) => `${chainEmoji(holding.chainId)} ${escapeTelegramHtml(holding.symbol)}  ${formatTokenAmount(holding.amount, holding.decimals)}${holding.valueUsd !== null ? ` · ${formatUsdValue(holding.valueUsd)}` : ''}`))}` : '\n└ <i>Empty — fund an address below to start trading</i>'}`
+      ? `💼 <b>Portfolio</b>  ━  <b>${formatUsdValue(portfolio.totalUsd)}</b>\n${natives.length
+        ? tgCard(natives.slice(0, 7).map((holding) => `${chainEmoji(holding.chainId)} <b>${escapeTelegramHtml(holding.symbol)}</b>  ${formatTokenAmount(holding.amount, holding.decimals)}${holding.valueUsd !== null ? `  <i>${formatUsdValue(holding.valueUsd)}</i>` : ''}`))
+        : '└ <i>Empty — fund an address below to start trading</i>'}${pending}`
       : null,
     wallet
-      ? tgSection('💳', 'Your wallet', [
-        `EVM  <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
-        `SOL  <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
+      ? tgSection('💳', 'Wallet  <i>· tap to copy</i>', [
+        `EVM   <code>${escapeTelegramHtml(wallet.evmAddress)}</code>`,
+        `SOL   <code>${escapeTelegramHtml(wallet.solanaAddress)}</code>`,
         ...(wallet.nearAddress ? [`NEAR  <code>${escapeTelegramHtml(wallet.nearAddress)}</code>`] : []),
       ])
       : tgSection('💳', 'Wallet', ['No trading wallet yet — tap 💳 Wallets to create one in one tap']),
-    tgSection('🚀', 'Trade', [
-      'Paste any token address to open its trading panel',
-      'Pay from any supported chain — the route is found for you',
-      '🟢 Buy · 🔴 Sell · 💼 Portfolio · Ⓝ /swap for NEAR',
-      'Every trade shows a live quote first — you confirm',
+    tgSection('🚀', 'Quick start', [
+      '<b>Paste any token address</b> to open its trading panel',
+      'Pay from any chain — Hopr finds the route, you confirm the live quote',
+      'Ⓝ /swap for NEAR pairs · 🎯 limit, TP &amp; SL in Orders',
     ]),
-    tgFootnote(`🔐 Keys are AES-256 encrypted · ${telegramUtcTime()}`),
+    tgFootnote(`◎ Solana · 🔷 Base · 🔵 Arbitrum · 🟡 BNB · 🟩 Robinhood · ◢ Arc · Ⓝ NEAR\n🔐 Keys AES-256 encrypted · ${telegramUtcTime()}`),
   );
 }
 

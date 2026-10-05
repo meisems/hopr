@@ -71,37 +71,35 @@ float fbm(vec3 p) {
   return sum;
 }
 
-// Approximate blackbody tint for a normalised temperature (≈0.3 deep red … 2 blue-white).
+// Disk colour for a normalised temperature, in the Hopr palette:
+// deep violet (cool) → violet → lavender → white-hot with a hint of mint.
 vec3 blackbody(float t) {
   t = clamp(t, 0.0, 2.2);
-  vec3 c = vec3(1.0, 0.28, 0.05) * smoothstep(0.05, 0.45, t);
-  c = mix(c, vec3(1.0, 0.62, 0.30), smoothstep(0.35, 0.8, t));
-  c = mix(c, vec3(1.0, 0.90, 0.78), smoothstep(0.75, 1.2, t));
-  c = mix(c, vec3(0.78, 0.87, 1.0), smoothstep(1.2, 2.0, t));
+  vec3 c = vec3(0.30, 0.14, 0.75) * smoothstep(0.05, 0.45, t);
+  c = mix(c, vec3(0.55, 0.40, 1.0), smoothstep(0.35, 0.8, t));
+  c = mix(c, vec3(0.86, 0.80, 1.0), smoothstep(0.75, 1.2, t));
+  c = mix(c, vec3(0.85, 1.0, 0.95), smoothstep(1.2, 2.0, t));
   return c;
 }
 
 vec3 sky(vec3 d) {
   vec3 col = vec3(0.0);
-  for (int layer = 0; layer < 3; layer++) {
-    float scale = layer == 0 ? 70.0 : (layer == 1 ? 150.0 : 320.0);
+  // Two sparse star layers only: enough for lensing to visibly drag the sky, nothing busy.
+  for (int layer = 0; layer < 2; layer++) {
+    float scale = layer == 0 ? 70.0 : 150.0;
     vec3 p = d * scale;
     vec3 cell = floor(p);
     vec3 h = hash33(cell);
-    float present = step(layer == 2 ? 0.80 : 0.90, hash13(cell + 17.3));
+    float present = step(0.93, hash13(cell + 17.3));
     vec3 offset = (h - 0.5) * 0.7;
     float dist = length(fract(p) - 0.5 - offset);
-    float size = layer == 0 ? 0.11 : 0.08;
-    float b = present * smoothstep(size, 0.0, dist) * (0.35 + 1.4 * h.x * h.x) * (layer == 2 ? 0.45 : 1.0);
-    float twinkle = 0.82 + 0.18 * sin(uTime * (1.5 + 3.0 * h.z) + h.y * 40.0);
-    col += mix(vec3(1.0, 0.80, 0.60), vec3(0.70, 0.84, 1.0), h.y) * b * twinkle;
+    float size = layer == 0 ? 0.1 : 0.07;
+    float b = present * smoothstep(size, 0.0, dist) * (0.3 + 1.1 * h.x * h.x);
+    float twinkle = 0.85 + 0.15 * sin(uTime * (1.5 + 3.0 * h.z) + h.y * 40.0);
+    col += mix(vec3(0.86, 0.82, 1.0), vec3(0.75, 0.95, 1.0), h.y) * b * twinkle;
   }
-  // A faint galactic band and teal dust, so lensing visibly drags structure.
-  vec3 bandNormal = normalize(vec3(0.32, 1.0, 0.24));
-  float band = exp(-pow(dot(d, bandNormal) * 3.6, 2.0));
-  float dust = fbm(d * 3.2 + 2.0);
-  col += band * (vec3(0.34, 0.33, 0.36) * dust * dust * 0.55 + vec3(0.025, 0.03, 0.04));
-  col += vec3(0.01, 0.045, 0.05) * smoothstep(0.45, 0.8, fbm(d * 1.6 + 11.0));
+  // A whisper of violet haze so the void is not flat black.
+  col += vec3(0.035, 0.02, 0.07) * smoothstep(0.4, 0.85, fbm(d * 1.4 + 11.0));
   return col;
 }
 
@@ -187,13 +185,15 @@ void main() {
       if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0) {
         vec4 mark = texture2D(uLogoTex, vec2(luv.x, 1.0 - luv.y));
         // Lensed light is magnified along the ring; mipmapped sampling keeps it smooth.
-        vec3 tint = mix(vec3(0.25, 0.85, 0.8), vec3(0.75, 1.0, 0.97), 1.0 - clamp(rs, 0.0, 1.0));
-        background += tint * mark.a * uLogo * mix(0.55, 2.0, 1.0 - clamp(rs, 0.0, 1.0));
+        // The mark keeps its own violet / mint colours, so the DOM hand-off is seamless.
+        float flatness = 1.0 - clamp(rs, 0.0, 1.0);
+        vec3 tint = mix(vec3(0.8, 0.72, 1.0), vec3(1.0), flatness);
+        background += mark.rgb * tint * mark.a * uLogo * mix(0.8, 1.5, flatness);
       }
     }
     color += (1.0 - alpha) * background;
   }
-  if (!captured) color += glow * vec3(1.0, 0.78, 0.55) * 0.05 * uDisk;
+  if (!captured) color += glow * vec3(0.78, 0.7, 1.0) * 0.05 * uDisk;
 
   // Hawking burst: the last of the hole's energy leaves as an expanding shock ring.
   float rad = length(uv);
@@ -203,8 +203,9 @@ void main() {
     float fade = pow(1.0 - uFlash, 1.6);
     float ring = exp(-pow((rad - radius) / width, 2.0));
     float wake = smoothstep(radius, radius * 0.4, rad) * 0.045;
-    color += vec3(0.7, 1.0, 0.95) * (ring * 1.8 + wake) * fade;
-    color += vec3(1.0, 1.0, 0.97) * exp(-rad * 12.0) * 2.5 * pow(1.0 - uFlash, 4.0);
+    // Softer than a white-out: one lavender→mint ring and a brief core glow.
+    color += vec3(0.72, 0.62, 1.0) * (ring * 1.1 + wake) * fade;
+    color += vec3(0.95, 0.93, 1.0) * exp(-rad * 14.0) * 1.3 * pow(1.0 - uFlash, 4.0);
   }
 
   color *= uExposure;
@@ -240,7 +241,7 @@ export function lensFactor(width: number, height: number): number {
 
 /** Brand plane geometry (world units), shared with the DOM hand-off. */
 /** aspect must match public/brand/logo-mark.svg viewBox (width / height). */
-export const LOGO_PLANE = { halfHeight: 2.4, aspect: 320 / 372, distance: 16 };
+export const LOGO_PLANE = { halfHeight: 2.4, aspect: 304 / 362, distance: 16 };
 
 /**
  * Screen size (CSS px) of the brand mark once spacetime is flat, so the crisp

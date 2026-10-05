@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { BlackHoleRenderer, flatLogoHeightPx, type BlackHoleFrame } from './splash/blackHoleRenderer';
+import HopSplash from './splash/HopSplash';
+import type { IntroStyle } from '../context/BlackHoleContext';
 
 interface SplashScreenProps {
   isExiting: boolean;
@@ -9,6 +11,8 @@ interface SplashScreenProps {
   spin: number;
   /** Viewing inclination in degrees from the spin axis (90 = edge-on). */
   inclination: number;
+  /** 'hop' is the light default; 'blackhole' is the ray-traced cinematic intro. */
+  style: Exclude<IntroStyle, 'off'>;
 }
 
 const FADE_MS = 420;
@@ -18,12 +22,12 @@ const FADE_MS = 420;
 // flattens, the ring snaps back into the logo and a Hawking flash clears the
 // screen.
 const T = {
-  lensed: 0.35, // ring appears
-  evaporateStart: 2.2,
-  evaporateEnd: 3.25,
-  flash: 3.42,
-  handoff: 3.4, // crisp DOM logo takes over from the shader, under the flash
-  exit: 4.3,
+  lensed: 0.3, // ring appears
+  evaporateStart: 1.8,
+  evaporateEnd: 2.75,
+  flash: 2.9,
+  handoff: 2.88, // crisp DOM logo takes over from the shader, under the flash
+  exit: 3.6,
 };
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -49,7 +53,7 @@ function frameAt(time: number): BlackHoleFrame {
     exposure: smooth(0, 0.7, time),
     // A slow drift around the hole that settles face-on as it evaporates.
     azimuth: -0.55 * (1 - easeInOutSine(time / T.evaporateEnd)),
-    distance: START_DISTANCE - (START_DISTANCE - END_DISTANCE) * easeOutCubic(time / 2.6),
+    distance: START_DISTANCE - (START_DISTANCE - END_DISTANCE) * easeOutCubic(time / 2.3),
   };
 }
 
@@ -58,14 +62,19 @@ function isMobile() {
 }
 
 export default function SplashScreen(props: SplashScreenProps) {
+  // The black hole needs WebGL and full motion; everything else gets the hop intro.
   const [fallback, setFallback] = useState(() => {
+    if (props.style !== 'blackhole') return true;
     try {
       return window.matchMedia('(prefers-reduced-motion: reduce)').matches || !document.createElement('canvas').getContext('webgl');
     } catch {
       return true;
     }
   });
-  return fallback ? <CssSplash {...props} /> : <LensingSplash {...props} onUnsupported={() => setFallback(true)} />;
+  const { isExiting, onExitStart, onExitComplete } = props;
+  return fallback
+    ? <HopSplash isExiting={isExiting} onExitStart={onExitStart} onExitComplete={onExitComplete} />
+    : <LensingSplash {...props} onUnsupported={() => setFallback(true)} />;
 }
 
 /** The ray-traced black hole (WebGL). */
@@ -170,77 +179,6 @@ function LensingSplash({ isExiting, onExitStart, onExitComplete, spin, inclinati
             <span key={index} style={{ transitionDelay: `${120 + index * 60}ms` }}>{letter}</span>
           ))}
         </div>
-        <div className="lens-tagline">Hop across chains</div>
-      </div>
-      <div className="lens-hint">Tap to skip</div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fallback for devices without WebGL or with reduced motion (CSS only).
-// ---------------------------------------------------------------------------
-
-const COLLAPSE_AT = 1750;
-const EXIT_AT = 2250;
-const REDUCED_EXIT_AT = 650;
-
-function CssSplash({ isExiting, onExitStart, onExitComplete, spin, inclination }: SplashScreenProps) {
-  const [stage, setStage] = useState<'intro' | 'collapse'>('intro');
-  const exitStartRef = useRef(onExitStart);
-  const exitCompleteRef = useRef(onExitComplete);
-  exitStartRef.current = onExitStart;
-  exitCompleteRef.current = onExitComplete;
-  const timersRef = useRef<number[]>([]);
-  const finishedRef = useRef(false);
-
-  const finish = () => {
-    if (finishedRef.current) return;
-    finishedRef.current = true;
-    timersRef.current.forEach((timer) => window.clearTimeout(timer));
-    exitStartRef.current();
-    timersRef.current = [window.setTimeout(() => exitCompleteRef.current(), FADE_MS)];
-  };
-
-  useEffect(() => {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    timersRef.current = reduced
-      ? [window.setTimeout(finish, REDUCED_EXIT_AT)]
-      : [window.setTimeout(() => setStage('collapse'), COLLAPSE_AT), window.setTimeout(finish, EXIT_AT)];
-    return () => timersRef.current.forEach((timer) => window.clearTimeout(timer));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const style = {
-    '--hs-turn': `${(4.8 - spin * 2.9).toFixed(2)}s`,
-    '--hs-tilt': `${Math.round(Math.min(82, Math.max(0, inclination)))}deg`,
-    '--hs-fade': `${FADE_MS}ms`,
-  } as CSSProperties;
-
-  return (
-    <div className={`hs-overlay${stage === 'collapse' ? ' hs-overlay--collapse' : ''}${isExiting ? ' hs-overlay--exit' : ''}`} style={style} onClick={finish} role="presentation">
-      <div className="hs-stars hs-stars--far" />
-      <div className="hs-stars hs-stars--near" />
-      <div className="hs-aura" />
-      <div className="hs-stage">
-        <div className="hs-disk-tilt">
-          <div className="hs-disk" />
-          <div className="hs-disk hs-disk--inner" />
-        </div>
-        <div className="hs-photon-ring" />
-        <div className="hs-core" />
-        <div className="hs-mark">
-          <img src="/brand/logo-mark.svg" alt="" draggable={false} />
-        </div>
-      </div>
-      <div className="hs-brand">
-        <div className="hs-wordmark" aria-label="hopr">
-          {'hopr'.split('').map((letter, index) => (
-            <span key={index} style={{ animationDelay: `${620 + index * 70}ms` }}>{letter}</span>
-          ))}
-        </div>
-        <div className="hs-tagline">Scan it. Route it. Trade it.</div>
-        <div className="hs-progress"><span /></div>
       </div>
     </div>
   );

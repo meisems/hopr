@@ -344,7 +344,7 @@ In a private chat with the bot:
 
 ### Bot profile picture
 
-The logo set lives in `public/brand/` (`logo-icon.svg`, `logo-mark.svg`, `logo-full.svg`). Telegram's Bot API cannot set a bot's photo, so upload `public/brand/bot-avatar.png` (640×640, circle-safe) once in @BotFather: `/setuserpic` → choose the bot → send the image.
+The logo set lives in `public/brand/` (`logo-icon.svg`, `logo-mark.svg`, `logo-full.svg`, `favicon.svg`). Every file is generated from one geometry by `python scripts/build-logo.py`; re-render the PNGs (favicons, touch icon, `bot-avatar.png`) with `node scripts/rasterize-logo.mjs`. In the app the logo is drawn by `src/components/BrandLogo.tsx`, which follows the light / dark theme. Telegram's Bot API cannot set a bot's photo, so upload `public/brand/bot-avatar.png` (640×640, circle-safe) once in @BotFather: `/setuserpic` → choose the bot → send the image.
 
 ## 10. Rollback
 

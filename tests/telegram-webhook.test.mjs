@@ -98,17 +98,21 @@ test('help command lists working commands and shows navigation buttons', async (
     ],
     [
       { text: '💼 Portfolio', callback_data: 'positions' },
-      { text: '💳 Wallets', callback_data: 'wallet' },
+      { text: '🎯 Orders', callback_data: 'orders' },
     ],
     [
       { text: '📡 Launch radar', callback_data: 'pools' },
-      { text: '⚙️ Settings', callback_data: 'settings' },
+      { text: '👀 Tracking', callback_data: 'track' },
     ],
     [
+      { text: '💳 Wallets', callback_data: 'wallet' },
       { text: '🎁 Refer & Earn', callback_data: 'referral' },
-      { text: '❓ Help', callback_data: 'help' },
     ],
-    [{ text: '🎯 Orders', callback_data: 'orders' }, { text: '👀 Tracking', callback_data: 'track' }, { text: '🔄 Refresh', callback_data: 'menu' }],
+    [
+      { text: '⚙️ Settings', callback_data: 'settings' },
+      { text: '❓ Help', callback_data: 'help' },
+      { text: '🔄 Refresh', callback_data: 'menu' },
+    ],
   ]);
 });
 
